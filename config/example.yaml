@@ -1,0 +1,11 @@
+platforms:
+  - name: douyin
+    fetcher: mock
+    options:
+      account: "风翮官方账号"
+      path: "data/douyin.json"
+  - name: kuaishou
+    fetcher: mock
+    options:
+      account: "风翮快手号"
+      path: "data/kuaishou.json"
