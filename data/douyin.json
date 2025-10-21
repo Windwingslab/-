@@ -1,0 +1,26 @@
+[
+  {
+    "post_id": "dy001",
+    "published_at": "2024-05-01T10:00:00",
+    "title": "风翮新品上线",
+    "url": "https://www.douyin.com/video/dy001",
+    "metrics": {
+      "views": 120000,
+      "likes": 5400,
+      "comments": 320,
+      "shares": 210
+    }
+  },
+  {
+    "post_id": "dy002",
+    "published_at": "2024-05-02T12:30:00",
+    "title": "幕后花絮",
+    "url": "https://www.douyin.com/video/dy002",
+    "metrics": {
+      "views": 98000,
+      "likes": 4100,
+      "comments": 280,
+      "shares": 150
+    }
+  }
+]

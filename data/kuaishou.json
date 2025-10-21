@@ -1,0 +1,26 @@
+[
+  {
+    "post_id": "ks1001",
+    "published_at": "2024-04-28T08:15:00",
+    "title": "挑战赛首日",
+    "url": "https://www.kuaishou.com/video/ks1001",
+    "metrics": {
+      "views": 75000,
+      "likes": 3200,
+      "comments": 210,
+      "shares": 95
+    }
+  },
+  {
+    "post_id": "ks1002",
+    "published_at": "2024-05-03T09:45:00",
+    "title": "粉丝问答",
+    "url": "https://www.kuaishou.com/video/ks1002",
+    "metrics": {
+      "views": 83000,
+      "likes": 3600,
+      "comments": 240,
+      "shares": 120
+    }
+  }
+]
