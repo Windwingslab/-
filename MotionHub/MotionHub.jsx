@@ -1,6 +1,6 @@
 ﻿/*
     MotionHub —— After Effects 脚本插件合集平台
-    版本 1.1.0
+    版本 1.1.1
 
     · 工具：锚点、缓动、对齐/分布、图层、表达式等常用基础工具
     · 脚本库：整理、搜索、收藏、一键运行你所有的 .jsx / .jsxbin 脚本和 .ffx 预设
@@ -12,7 +12,7 @@
 
 (function MotionHub(thisObj) {
     var NAME = "MotionHub";
-    var VERSION = "1.1.0";
+    var VERSION = "1.1.1";
     var SETTINGS = "MotionHub";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var SCRIPT_FILE = new File($.fileName);
@@ -645,11 +645,8 @@
     var C = {
         ink: hex("#171819"),
         raise: hex("#1D1E1F"),
-        raise2: hex("#252628"),
         line: hex("#343536"),      // rgba(244,244,242,.13) 叠在 ink 上
-        line2: hex("#505152"),     // rgba(244,244,242,.26) 叠在 ink 上
         brand: hex("#FF5900"),
-        brandHover: hex("#FF7A2F"),
         deep: hex("#26110A"),
         text: hex("#F4F4F2"),
         muted: hex("#8A8C8E")
@@ -789,20 +786,13 @@
     // 品牌组件
     // =====================================================================
 
-    // 图标方块按钮：常态抬升面 / 悬停橙色图标 / 按下橙底近黑图标；accent 为橙色实心块
-    function drawTile(ds) {
+    // 图标方块按钮：抬升面 + 浅色图标；accent 为橙色实心块 + 近黑图标
+    // 不读取 drawState 的悬停/按下状态：macOS 上它会在鼠标划过后卡在“按下”，导致按钮一直高亮
+    function drawTile() {
         var g = this.graphics, w = this.size[0], h = this.size[1];
-        var hover = ds && ds.mouseOver, down = ds && ds.leftButtonPressed;
-        var bg, border, fg;
-        if (this.accent_) {
-            bg = down ? C.deep : (hover ? C.brandHover : C.brand);
-            fg = down ? C.brand : C.ink;
-            border = bg;
-        } else {
-            bg = down ? C.brand : (hover ? C.raise2 : C.raise);
-            fg = down ? C.ink : (hover ? C.brand : C.text);
-            border = down ? C.brand : (hover ? C.line2 : C.line);
-        }
+        var bg = this.accent_ ? C.brand : C.raise;
+        var fg = this.accent_ ? C.ink : C.text;
+        var border = this.accent_ ? C.brand : C.line;
         g.newPath();
         g.rectPath(0, 0, w, h);
         g.fillPath(brush(g, bg));
@@ -887,6 +877,7 @@
     function numField(parent, value, w) {
         var e = parent.add("edittext", undefined, String(value));
         e.preferredSize = [w || 36, 22];
+        e.maximumSize = [w || 36, 22];
         e.getNum = function (def) {
             var n = parseFloat(e.text);
             return isNaN(n) ? def : n;
@@ -1156,13 +1147,12 @@
     // =====================================================================
     // 外壳：品牌顶栏 + 文字标签页
     // =====================================================================
-    function drawTab(ds) {
+    function drawTab() {
         var g = this.graphics, w = this.size[0], h = this.size[1];
-        var hover = ds && ds.mouseOver;
         g.newPath();
         g.rectPath(0, 0, w, h);
         g.fillPath(brush(g, C.ink));
-        var col = this.active_ ? C.text : (hover ? C.brand : C.muted);
+        var col = this.active_ ? C.text : C.muted;
         var m = g.measureString(this.text_, F.uiBold);
         var x = (w - m[0]) / 2;
         g.drawString(this.text_, pen(g, col), x, (h - m[1]) / 2 - 2, F.uiBold);
