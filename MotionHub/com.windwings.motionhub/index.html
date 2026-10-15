@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>MotionHub</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="top">
+        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span></div>
+        <div class="ver mono" id="ver">WINDWINGS</div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+        <button data-tab="tools" class="tab">工具</button>
+        <button data-tab="library" class="tab">脚本库</button>
+        <button data-tab="settings" class="tab">设置</button>
+    </nav>
+
+    <main id="pages">
+        <section class="page" id="page-tools"></section>
+
+        <section class="page" id="page-library">
+            <div class="lib-bar">
+                <select id="lib-cat"></select>
+                <label class="search">
+                    <span class="ico" data-icon="search"></span>
+                    <input id="lib-q" type="text" placeholder="搜索名称 / 描述 / 分类">
+                </label>
+            </div>
+            <ul class="lib-list" id="lib-list"></ul>
+            <div class="lib-foot">
+                <button class="btn accent" id="lib-add"><span class="ico" data-icon="plus"></span>添加脚本</button>
+                <button class="btn icon-only" id="lib-refresh" data-hint="lib-refresh"><span class="ico" data-icon="refresh"></span></button>
+                <button class="btn icon-only" id="lib-open" data-hint="lib-open"><span class="ico" data-icon="folder"></span></button>
+            </div>
+        </section>
+
+        <section class="page" id="page-settings">
+            <div class="sec-head"><span class="num">(01) — LIBRARY PATH</span><span class="zh">脚本库文件夹</span></div>
+            <div class="path mono" id="set-path">—</div>
+            <div class="btn-row">
+                <button class="btn" id="set-change"><span class="ico" data-icon="swap"></span>更换</button>
+                <button class="btn" id="set-open"><span class="ico" data-icon="folder"></span>打开</button>
+                <button class="btn" id="set-samples"><span class="ico" data-icon="plus"></span>导入示例</button>
+            </div>
+
+            <div class="sec-head"><span class="num">(02) — AFTER EFFECTS</span><span class="zh">权限与面板</span></div>
+            <p class="status" id="set-perm">—</p>
+            <div class="btn-row">
+                <button class="btn" id="set-recheck"><span class="ico" data-icon="refresh"></span>重新检查</button>
+                <button class="btn" id="set-panels"><span class="ico" data-icon="folder"></span>ScriptUI Panels</button>
+            </div>
+
+            <div class="sec-head"><span class="num">(03) — ABOUT</span><span class="zh">关于</span></div>
+            <p class="muted mono" id="set-about">MOTIONHUB</p>
+            <p class="muted">脚本开头的注释里写 <code>@name</code> / <code>@desc</code> / <code>@author</code>，脚本库就会显示名称和说明。</p>
+        </section>
+    </main>
+
+    <footer class="hint" id="hint"></footer>
+
+    <div class="modal" id="modal" hidden>
+        <div class="dialog">
+            <div class="dlg-title" id="dlg-title"></div>
+            <div class="dlg-body" id="dlg-body"></div>
+            <div class="dlg-btns" id="dlg-btns"></div>
+        </div>
+    </div>
+
+    <script src="js/icons.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
