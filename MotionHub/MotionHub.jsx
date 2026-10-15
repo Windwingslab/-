@@ -1,6 +1,6 @@
 ﻿/*
     MotionHub —— After Effects 脚本插件合集平台
-    版本 1.0.0
+    版本 1.1.0
 
     · 工具：锚点、缓动、对齐/分布、图层、表达式等常用基础工具
     · 脚本库：整理、搜索、收藏、一键运行你所有的 .jsx / .jsxbin 脚本和 .ffx 预设
@@ -12,7 +12,7 @@
 
 (function MotionHub(thisObj) {
     var NAME = "MotionHub";
-    var VERSION = "1.0.0";
+    var VERSION = "1.1.0";
     var SETTINGS = "MotionHub";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var SCRIPT_FILE = new File($.fileName);
@@ -633,39 +633,260 @@
     }
 
     // =====================================================================
-    // 界面
+    // 品牌视觉 · 风翮 windwings
+    // 四色：ink #171819 / brand #FF5900 / deep #26110A / white
+    // 橙底上一律用近黑字（白字对比度不足），分隔只用 1px 线，不用阴影
     // =====================================================================
-    function btn(parent, text, tip, fn, w) {
-        var b = parent.add("button", undefined, text);
-        if (tip) b.helpTip = tip;
-        if (w) b.preferredSize.width = w;
-        b.preferredSize.height = 22;
-        b.onClick = fn;
+    function hex(h) {
+        var n = parseInt(h.replace("#", ""), 16);
+        return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1];
+    }
+
+    var C = {
+        ink: hex("#171819"),
+        raise: hex("#1D1E1F"),
+        raise2: hex("#252628"),
+        line: hex("#343536"),      // rgba(244,244,242,.13) 叠在 ink 上
+        line2: hex("#505152"),     // rgba(244,244,242,.26) 叠在 ink 上
+        brand: hex("#FF5900"),
+        brandHover: hex("#FF7A2F"),
+        deep: hex("#26110A"),
+        text: hex("#F4F4F2"),
+        muted: hex("#8A8C8E")
+    };
+
+    function makeFont(family, style, size) {
+        try { return ScriptUI.newFont(family, style, size); } catch (e) {}
+        return ScriptUI.newFont("dialog", style, size);
+    }
+
+    var F = {
+        mono: makeFont("Geist Mono", "REGULAR", 9),
+        ui: makeFont("dialog", "REGULAR", 11),
+        uiBold: makeFont("dialog", "BOLD", 11),
+        brand: makeFont("Geist Mono", "BOLD", 11)
+    };
+
+    function pen(g, color, w) { return g.newPen(g.PenType.SOLID_COLOR, color, w || 1); }
+    function brush(g, color) { return g.newBrush(g.BrushType.SOLID_COLOR, color); }
+
+    function paintBg(el, color) {
+        try { el.graphics.backgroundColor = brush(el.graphics, color); } catch (e) {}
+    }
+
+    function setText(el, color, font) {
+        try {
+            el.graphics.foregroundColor = pen(el.graphics, color);
+            if (font) el.graphics.font = font;
+        } catch (e) {}
+        return el;
+    }
+
+    // <icons>
+    // 图标：16×16 网格的矢量指令
+    //   ["l", x,y, x,y …] 折线描边    ["p", x,y …] 填充多边形
+    //   ["r", x,y,w,h] 矩形描边       ["R", x,y,w,h] 矩形填充
+    //   ["c", cx,cy,r] 圆描边         ["C", cx,cy,r] 圆填充
+    function iconCurve(fn, x0, y0, x1, y1, n) {
+        var pts = ["l"];
+        for (var i = 0; i <= n; i++) {
+            var t = i / n;
+            pts.push(x0 + (x1 - x0) * t, y0 + (y1 - y0) * fn(t));
+        }
+        return pts;
+    }
+
+    function iconArc(cx, cy, r, a0, a1, n) {
+        var pts = ["l"];
+        for (var i = 0; i <= n; i++) {
+            var a = (a0 + (a1 - a0) * i / n) * Math.PI / 180;
+            pts.push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+        }
+        return pts;
+    }
+
+    function iconKey(x, y) { return ["p", x, y - 2, x + 2, y, x, y + 2, x - 2, y]; }
+
+    var ICONS = {
+        // —— 锚点 ——
+        center: [["r", 2, 2, 12, 12], ["l", 8, 0.5, 8, 4.5], ["l", 8, 11.5, 8, 15.5], ["l", 0.5, 8, 4.5, 8], ["l", 11.5, 8, 15.5, 8], ["C", 8, 8, 1.8]],
+        nullParent: [["r", 1.5, 1.5, 6, 6], ["l", 4.5, 7.5, 4.5, 12, 8.5, 12], ["R", 8.5, 8.5, 7, 7]],
+        // —— 缓动 ——
+        easeBoth: [iconCurve(function (t) { return t * t * (3 - 2 * t); }, 2, 14, 14, 2, 16), iconKey(2, 14), iconKey(14, 2)],
+        easeIn: [iconCurve(function (t) { return 1 - (1 - t) * (1 - t); }, 2, 14, 14, 2, 16), iconKey(2, 14), iconKey(14, 2)],
+        easeOut: [iconCurve(function (t) { return t * t; }, 2, 14, 14, 2, 16), iconKey(2, 14), iconKey(14, 2)],
+        linear: [["l", 2, 14, 14, 2], iconKey(2, 14), iconKey(14, 2)],
+        hold: [["l", 2, 14, 9, 14, 9, 2, 14, 2], iconKey(2, 14), iconKey(14, 2)],
+        // —— 对齐 ——
+        alignLeft: [["l", 1.5, 1, 1.5, 15], ["R", 4, 3, 10, 4], ["R", 4, 9, 6, 4]],
+        alignHCenter: [["l", 8, 1, 8, 15], ["R", 3, 3, 10, 4], ["R", 5, 9, 6, 4]],
+        alignRight: [["l", 14.5, 1, 14.5, 15], ["R", 2, 3, 10, 4], ["R", 6, 9, 6, 4]],
+        alignTop: [["l", 1, 1.5, 15, 1.5], ["R", 3, 4, 4, 10], ["R", 9, 4, 4, 6]],
+        alignVCenter: [["l", 1, 8, 15, 8], ["R", 3, 3, 4, 10], ["R", 9, 5, 4, 6]],
+        alignBottom: [["l", 1, 14.5, 15, 14.5], ["R", 3, 2, 4, 10], ["R", 9, 6, 4, 6]],
+        distH: [["R", 1.5, 4, 3, 8], ["R", 6.5, 4, 3, 8], ["R", 11.5, 4, 3, 8], ["l", 1, 14.5, 15, 14.5]],
+        distV: [["R", 4, 1.5, 8, 3], ["R", 4, 6.5, 8, 3], ["R", 4, 11.5, 8, 3], ["l", 14.5, 1, 14.5, 15]],
+        // —— 图层 ——
+        nullLayer: [["r", 2.5, 2.5, 11, 11], ["l", 2.5, 2.5, 13.5, 13.5], ["l", 13.5, 2.5, 2.5, 13.5]],
+        adjust: [["c", 8, 8, 6], ["p", 8, 2, 8, 14, 5, 13.2, 2.8, 11, 2, 8, 2.8, 5, 5, 2.8]],
+        solid: [["R", 2.5, 2.5, 11, 11]],
+        camera: [["r", 1.5, 4.5, 9, 7], ["p", 11, 7, 15, 4.5, 15, 11.5, 11, 9]],
+        sequence: [["R", 1.5, 2, 7, 2.5], ["R", 4.5, 6.75, 7, 2.5], ["R", 7.5, 11.5, 7, 2.5]],
+        trim: [["l", 4.5, 1.5, 1.5, 1.5, 1.5, 14.5, 4.5, 14.5], ["l", 11.5, 1.5, 14.5, 1.5, 14.5, 14.5, 11.5, 14.5], ["R", 5, 6.5, 6, 3]],
+        precomp: [["r", 1.5, 5.5, 9, 9], ["R", 5.5, 1.5, 9, 9]],
+        reverse: [["l", 5, 14, 5, 2.5], ["l", 2, 5.5, 5, 2.5, 8, 5.5], ["l", 11, 2, 11, 13.5], ["l", 8, 10.5, 11, 13.5, 14, 10.5]],
+        rename: [["l", 1.5, 3, 9.5, 3], ["l", 5.5, 3, 5.5, 13.5], ["l", 12.5, 2.5, 12.5, 14], ["l", 11, 2.5, 14, 2.5], ["l", 11, 14, 14, 14]],
+        // —— 表达式 ——
+        wiggle: [iconCurve(function (t) { return 0.5 + 0.38 * Math.sin(t * Math.PI * 5) * (0.6 + 0.4 * Math.sin(t * 7)); }, 1, 8 + 7, 15, 8 - 7, 40)],
+        loop: [iconArc(8, 8, 5.5, -60, 230, 24), ["p", 12.5, 0.8, 12.6, 5.6, 8.2, 4]],
+        pingpong: [["l", 2, 8, 14, 8], ["l", 5, 5, 2, 8, 5, 11], ["l", 11, 5, 14, 8, 11, 11]],
+        bounce: [iconCurve(function (t) { return Math.abs(Math.cos(t * Math.PI * 2.5)) * Math.exp(-t * 1.6); }, 1, 13.5, 15, 1.5, 40), ["l", 0.5, 14.5, 15.5, 14.5]],
+        clear: [["l", 4, 1.5, 2.5, 1.5, 2.5, 7, 1, 8, 2.5, 9, 2.5, 14.5, 4, 14.5], ["l", 12, 1.5, 13.5, 1.5, 13.5, 7, 15, 8, 13.5, 9, 13.5, 14.5, 12, 14.5], ["l", 5.5, 5.5, 10.5, 10.5], ["l", 10.5, 5.5, 5.5, 10.5]],
+        // —— 脚本库 ——
+        play: [["p", 4, 2, 13.5, 8, 4, 14]],
+        star: [["p", 8, 1, 9.9, 5.6, 14.7, 5.8, 11, 8.9, 12.2, 13.7, 8, 11, 3.8, 13.7, 5, 8.9, 1.3, 5.8, 6.1, 5.6]],
+        plus: [["l", 8, 2, 8, 14], ["l", 2, 8, 14, 8]],
+        refresh: [iconArc(8, 8, 5.5, -30, 250, 24), ["p", 13.8, 1.8, 13.4, 6.9, 9, 4.6]],
+        folder: [["l", 1.5, 3, 6, 3, 7.5, 5, 14.5, 5, 14.5, 13.5, 1.5, 13.5, 1.5, 3]],
+        trash: [["l", 1.5, 3.5, 14.5, 3.5], ["l", 6, 3.5, 6, 1.5, 10, 1.5, 10, 3.5], ["l", 3, 3.5, 4, 14.5, 12, 14.5, 13, 3.5], ["l", 6.5, 6, 6.5, 12], ["l", 9.5, 6, 9.5, 12]],
+        gear: [["c", 8, 8, 2.2], iconArc(8, 8, 5.2, 0, 360, 24), ["l", 8, 0.8, 8, 2.8], ["l", 8, 13.2, 8, 15.2], ["l", 0.8, 8, 2.8, 8], ["l", 13.2, 8, 15.2, 8]],
+        check: [["l", 2, 8.5, 6, 12.5, 14, 3.5]],
+        swap: [["l", 2, 5, 13.5, 5], ["l", 10.5, 2, 13.5, 5, 10.5, 8], ["l", 14, 11, 2.5, 11], ["l", 5.5, 8, 2.5, 11, 5.5, 14]]
+    };
+
+    // 九宫格锚点：外框 + 目标位置的实心方块
+    (function () {
+        for (var y = 0; y < 3; y++) {
+            for (var x = 0; x < 3; x++) {
+                var cx = 3 + x * 5, cy = 3 + y * 5;
+                ICONS["anchor" + x + y] = [["r", 3, 3, 10, 10], ["R", cx - 2.25, cy - 2.25, 4.5, 4.5]];
+            }
+        }
+    })();
+    // </icons>
+
+    function drawIcon(g, cmds, ox, oy, s, color) {
+        var p = pen(g, color, Math.max(1, Math.round(s * 1.4 * 10) / 10));
+        var b = brush(g, color);
+        for (var i = 0; i < cmds.length; i++) {
+            var c = cmds[i], op = c[0];
+            g.newPath();
+            if (op === "l" || op === "p") {
+                g.moveTo(ox + c[1] * s, oy + c[2] * s);
+                for (var j = 3; j < c.length; j += 2) g.lineTo(ox + c[j] * s, oy + c[j + 1] * s);
+                if (op === "p") { g.closePath(); g.fillPath(b); } else { g.strokePath(p); }
+            } else if (op === "r" || op === "R") {
+                g.rectPath(ox + c[1] * s, oy + c[2] * s, c[3] * s, c[4] * s);
+                if (op === "R") g.fillPath(b); else g.strokePath(p);
+            } else if (op === "c" || op === "C") {
+                g.ellipsePath(ox + (c[1] - c[3]) * s, oy + (c[2] - c[3]) * s, c[3] * 2 * s, c[3] * 2 * s);
+                if (op === "C") g.fillPath(b); else g.strokePath(p);
+            }
+        }
+    }
+
+    // =====================================================================
+    // 品牌组件
+    // =====================================================================
+
+    // 图标方块按钮：常态抬升面 / 悬停橙色图标 / 按下橙底近黑图标；accent 为橙色实心块
+    function drawTile(ds) {
+        var g = this.graphics, w = this.size[0], h = this.size[1];
+        var hover = ds && ds.mouseOver, down = ds && ds.leftButtonPressed;
+        var bg, border, fg;
+        if (this.accent_) {
+            bg = down ? C.deep : (hover ? C.brandHover : C.brand);
+            fg = down ? C.brand : C.ink;
+            border = bg;
+        } else {
+            bg = down ? C.brand : (hover ? C.raise2 : C.raise);
+            fg = down ? C.ink : (hover ? C.brand : C.text);
+            border = down ? C.brand : (hover ? C.line2 : C.line);
+        }
+        g.newPath();
+        g.rectPath(0, 0, w, h);
+        g.fillPath(brush(g, bg));
+        g.newPath();
+        g.rectPath(0.5, 0.5, w - 1, h - 1);
+        g.strokePath(pen(g, border));
+
+        var font = this.accent_ ? F.uiBold : F.ui;
+        var size = this.text_ ? 13 : Math.min(18, Math.min(w, h) - 12);
+        var tw = this.text_ ? g.measureString(this.text_, font)[0] : 0;
+        var gap = (this.icon_ && this.text_) ? 6 : 0;
+        var x = (w - ((this.icon_ ? size : 0) + gap + tw)) / 2;
+        if (this.icon_) {
+            drawIcon(g, this.icon_, Math.round(x), Math.round((h - size) / 2), size / 16, fg);
+            x += size + gap;
+        }
+        if (this.text_) {
+            var th = g.measureString(this.text_, font)[1];
+            g.drawString(this.text_, pen(g, fg), x, (h - th) / 2, font);
+        }
+    }
+
+    function tile(parent, o) {
+        var b = parent.add("iconbutton", undefined, undefined, { style: "toolbutton" });
+        b.preferredSize = [o.w || 34, o.h || 30];
+        if (o.fill) b.alignment = ["fill", "center"];
+        if (o.tip) b.helpTip = o.tip;
+        b.icon_ = o.icon ? ICONS[o.icon] : null;
+        b.text_ = o.text || "";
+        b.accent_ = !!o.accent;
+        b.onDraw = drawTile;
+        if (o.onClick) b.onClick = o.onClick;
         return b;
     }
 
-    function row(parent) {
+    function row(parent, spacing) {
         var g = parent.add("group");
         g.orientation = "row";
-        g.alignChildren = ["fill", "center"];
+        g.alignChildren = ["left", "center"];
         g.alignment = ["fill", "top"];
-        g.spacing = 3;
+        g.spacing = spacing === undefined ? 4 : spacing;
+        g.margins = 0;
         return g;
     }
 
-    function section(parent, title) {
-        var p = parent.add("panel", undefined, title);
-        p.orientation = "column";
-        p.alignChildren = ["fill", "top"];
-        p.alignment = ["fill", "top"];
-        p.margins = [6, 12, 6, 6];
-        p.spacing = 3;
-        return p;
+    function column(parent, spacing) {
+        var g = parent.add("group");
+        g.orientation = "column";
+        g.alignChildren = ["fill", "top"];
+        g.alignment = ["fill", "top"];
+        g.spacing = spacing === undefined ? 4 : spacing;
+        g.margins = 0;
+        return g;
+    }
+
+    function hRule(parent) {
+        var r = parent.add("group");
+        r.alignment = ["fill", "top"];
+        r.preferredSize = [10, 1];
+        r.maximumSize.height = 1;
+        paintBg(r, C.line);
+        return r;
+    }
+
+    // 章节头：(01) — ANCHOR ············ 锚点
+    function sectionHead(parent, num, en, zh) {
+        var first = parent.children.length === 0;
+        var wrap = column(parent, 6);
+        wrap.margins = [0, first ? 2 : 6, 0, 0];
+        if (!first) hRule(wrap);
+        var g = row(wrap, 6);
+        setText(g.add("statictext", undefined, "(" + num + ") — " + en), C.brand, F.mono);
+        var z = setText(g.add("statictext", undefined, zh), C.muted, F.mono);
+        z.alignment = ["right", "center"];
+        return wrap;
+    }
+
+    function label(parent, text, color) {
+        return setText(parent.add("statictext", undefined, text), color || C.muted, F.ui);
     }
 
     function numField(parent, value, w) {
         var e = parent.add("edittext", undefined, String(value));
-        e.preferredSize.width = w || 36;
+        e.preferredSize = [w || 36, 22];
         e.getNum = function (def) {
             var n = parseFloat(e.text);
             return isNaN(n) ? def : n;
@@ -673,120 +894,122 @@
         return e;
     }
 
-    function buildToolsTab(tab) {
-        // —— 锚点 ——
-        var pA = section(tab, "锚点");
-        var gA = row(pA);
-        var grid = gA.add("group");
-        grid.orientation = "column";
-        grid.spacing = 2;
-        var arrows = [["↖", "↑", "↗"], ["←", "●", "→"], ["↙", "↓", "↘"]];
+    // =====================================================================
+    // 页面：工具
+    // =====================================================================
+    function buildToolsPage(page) {
+        // (01) 锚点 —— 橙色九宫格 + 两个常用操作
+        sectionHead(page, "01", "ANCHOR", "锚点");
+        var gA = row(page, 6);
+        gA.alignChildren = ["left", "top"];
+        var grid = column(gA, 3);
+        grid.alignment = ["left", "top"];
         for (var y = 0; y < 3; y++) {
-            var r = grid.add("group");
-            r.spacing = 2;
+            var r = row(grid, 3);
             for (var x = 0; x < 3; x++) {
-                var b = r.add("button", undefined, arrows[y][x]);
-                b.preferredSize = [26, 22];
-                b.helpTip = "把锚点移到图层的这个位置（图层不会移动）";
-                b.onClick = anchorTool(x / 2, y / 2);
+                tile(r, {
+                    icon: "anchor" + x + y, accent: true, w: 30, h: 28,
+                    tip: "把锚点移到图层的这个位置（图层不会移动）",
+                    onClick: anchorTool(x / 2, y / 2)
+                });
             }
         }
-        var aSide = gA.add("group");
-        aSide.orientation = "column";
-        aSide.alignChildren = ["fill", "top"];
-        aSide.spacing = 3;
-        btn(aSide, "居中到合成", "锚点居中，并把图层移动到合成中心", centerInComp);
-        btn(aSide, "空对象父级", "新建空对象，放在选中图层中心并设为它们的父级", nullParent);
+        var aSide = column(gA, 3);
+        aSide.alignment = ["fill", "top"];
+        tile(aSide, { icon: "center", text: "居中到合成", h: 28, fill: true, tip: "锚点居中，并把图层移到合成中心", onClick: centerInComp });
+        tile(aSide, { icon: "nullParent", text: "空对象父级", h: 28, fill: true, tip: "新建空对象放在选中图层中心，并设为它们的父级", onClick: nullParent });
+        tile(aSide, { icon: "nullLayer", text: "新建空对象", h: 28, fill: true, tip: "新建空对象图层", onClick: addLayerTool("null") });
 
-        // —— 缓动 ——
-        var pE = section(tab, "缓动（先选中关键帧）");
-        var gE2 = row(pE);
-        gE2.add("statictext", undefined, "影响%");
-        var sl = gE2.add("slider", undefined, 33, 0.1, 100);
+        // (02) 缓动
+        sectionHead(page, "02", "EASE", "缓动 · 先选关键帧");
+        var gS = row(page, 6);
+        label(gS, "影响 %");
+        var sl = gS.add("slider", undefined, 33, 0.1, 100);
         sl.alignment = ["fill", "center"];
-        var slVal = numField(gE2, 33, 34);
+        var slVal = numField(gS, 33, 36);
         sl.onChanging = function () { slVal.text = String(Math.round(sl.value)); };
         slVal.onChange = function () { sl.value = Math.max(0.1, Math.min(100, slVal.getNum(33))); };
         var infl = function () { return Math.max(0.1, Math.min(100, sl.value)); };
-        var gE = row(pE);
-        btn(gE, "缓入缓出", "Easy Ease（F9）", applyEase("both", infl));
-        btn(gE, "缓入", "只对进入关键帧做缓动", applyEase("in", infl));
-        btn(gE, "缓出", "只对离开关键帧做缓动", applyEase("out", infl));
-        var gE3 = row(pE);
-        btn(gE3, "线性", "设为线性插值", applyEase("linear", infl));
-        btn(gE3, "定格", "设为定格关键帧", applyEase("hold", infl));
+        var gE = row(page);
+        tile(gE, { icon: "easeBoth", tip: "缓入缓出（F9）", onClick: applyEase("both", infl) });
+        tile(gE, { icon: "easeIn", tip: "缓入：进入关键帧时减速", onClick: applyEase("in", infl) });
+        tile(gE, { icon: "easeOut", tip: "缓出：离开关键帧时由慢到快", onClick: applyEase("out", infl) });
+        tile(gE, { icon: "linear", tip: "线性", onClick: applyEase("linear", infl) });
+        tile(gE, { icon: "hold", tip: "定格关键帧", onClick: applyEase("hold", infl) });
 
-        // —— 对齐 ——
-        var pAl = section(tab, "对齐到合成");
-        var gAl = row(pAl);
-        btn(gAl, "左", "左对齐", alignTool("left"));
-        btn(gAl, "水平中", "水平居中", alignTool("hcenter"));
-        btn(gAl, "右", "右对齐", alignTool("right"));
-        btn(gAl, "上", "顶部对齐", alignTool("top"));
-        btn(gAl, "垂直中", "垂直居中", alignTool("vcenter"));
-        btn(gAl, "下", "底部对齐", alignTool("bottom"));
-        var gDi = row(pAl);
-        btn(gDi, "水平分布", "按中心点水平均匀分布（≥3 个图层）", distributeTool(true));
-        btn(gDi, "垂直分布", "按中心点垂直均匀分布（≥3 个图层）", distributeTool(false));
+        // (03) 对齐
+        sectionHead(page, "03", "ALIGN", "对齐到合成");
+        var gAl = row(page);
+        tile(gAl, { icon: "alignLeft", tip: "左对齐", onClick: alignTool("left") });
+        tile(gAl, { icon: "alignHCenter", tip: "水平居中", onClick: alignTool("hcenter") });
+        tile(gAl, { icon: "alignRight", tip: "右对齐", onClick: alignTool("right") });
+        tile(gAl, { icon: "alignTop", tip: "顶部对齐", onClick: alignTool("top") });
+        tile(gAl, { icon: "alignVCenter", tip: "垂直居中", onClick: alignTool("vcenter") });
+        tile(gAl, { icon: "alignBottom", tip: "底部对齐", onClick: alignTool("bottom") });
+        var gDi = row(page);
+        tile(gDi, { icon: "distH", tip: "水平均匀分布（≥3 个图层）", onClick: distributeTool(true) });
+        tile(gDi, { icon: "distV", tip: "垂直均匀分布（≥3 个图层）", onClick: distributeTool(false) });
 
-        // —— 图层 ——
-        var pL = section(tab, "图层");
-        var gL1 = row(pL);
-        btn(gL1, "空对象", "新建空对象", addLayerTool("null"));
-        btn(gL1, "调整层", "新建调整图层", addLayerTool("adjust"));
-        btn(gL1, "纯色", "新建合成大小的纯色层", addLayerTool("solid"));
-        btn(gL1, "摄像机", "新建摄像机", addLayerTool("camera"));
-        var gL2 = row(pL);
-        var frames = numField(gL2, 2, 30);
+        // (04) 图层
+        sectionHead(page, "04", "LAYER", "图层");
+        var gL1 = row(page);
+        tile(gL1, { icon: "adjust", tip: "新建调整图层", onClick: addLayerTool("adjust") });
+        tile(gL1, { icon: "solid", tip: "新建合成大小的纯色层", onClick: addLayerTool("solid") });
+        tile(gL1, { icon: "camera", tip: "新建摄像机", onClick: addLayerTool("camera") });
+        tile(gL1, { icon: "precomp", tip: "逐个预合成：每个选中图层各自预合成", onClick: precomposeEach });
+        tile(gL1, { icon: "trim", tip: "把选中图层的入出点剪到工作区", onClick: trimToWorkArea });
+        tile(gL1, { icon: "reverse", tip: "反转选中图层的上下顺序", onClick: reverseOrder });
+        var gL2 = row(page);
+        var frames = numField(gL2, 2, 36);
         frames.helpTip = "每层错开的帧数";
-        btn(gL2, "帧 依次排列", "按选择顺序把图层依次错开", sequenceTool(function () { return frames.getNum(2); }));
-        btn(gL2, "剪到工作区", "把选中图层的入出点剪到工作区", trimToWorkArea);
-        var gL3 = row(pL);
-        btn(gL3, "逐个预合成", "每个选中图层各自预合成", precomposeEach);
-        btn(gL3, "反转顺序", "反转选中图层的上下顺序", reverseOrder);
-        btn(gL3, "批量重命名", "按 名称_01、名称_02 … 重命名", batchRename);
+        label(gL2, "帧");
+        tile(gL2, { icon: "sequence", text: "依次排列", h: 28, fill: true, tip: "按选择顺序把图层依次错开", onClick: sequenceTool(function () { return frames.getNum(2); }) });
+        tile(gL2, { icon: "rename", text: "重命名", h: 28, fill: true, tip: "按 名称_01、名称_02 … 批量重命名", onClick: batchRename });
 
-        // —— 表达式 ——
-        var pX = section(tab, "表达式（先选中属性）");
-        var gX = row(pX);
+        // (05) 表达式
+        sectionHead(page, "05", "EXPRESSION", "表达式 · 先选属性");
+        var gX = row(page);
+        var exprIcons = ["wiggle", "loop", "pingpong", "bounce", "clear"];
         for (var i = 0; i < EXPRESSIONS.length; i++) {
-            btn(gX, EXPRESSIONS[i].label, EXPRESSIONS[i].tip, expressionTool(EXPRESSIONS[i]));
+            tile(gX, { icon: exprIcons[i], tip: EXPRESSIONS[i].label + "：" + EXPRESSIONS[i].tip, onClick: expressionTool(EXPRESSIONS[i]) });
         }
     }
 
-    function buildLibraryTab(tab) {
+    // =====================================================================
+    // 页面：脚本库
+    // =====================================================================
+    function buildLibraryPage(page) {
         var items = [], shown = [], favs = loadFavs();
 
-        var gTop = row(tab);
+        sectionHead(page, "01", "LIBRARY", "脚本库");
+        var gTop = row(page, 4);
         var dd = gTop.add("dropdownlist", undefined, []);
-        dd.preferredSize.width = 100;
+        dd.preferredSize.width = 96;
         var search = gTop.add("edittext", undefined, "");
         search.alignment = ["fill", "center"];
         search.helpTip = "搜索名称 / 描述 / 分类";
 
-        var list = tab.add("listbox", undefined, [], {
+        var list = page.add("listbox", undefined, [], {
             numberOfColumns: 3,
             showHeaders: true,
             columnTitles: ["名称", "分类", "类型"],
-            columnWidths: [150, 70, 60]
+            columnWidths: [140, 64, 60]
         });
         list.alignment = ["fill", "fill"];
-        list.preferredSize = [280, 220];
+        list.preferredSize = [264, 220];
 
-        var info = tab.add("statictext", undefined, "选择一个脚本查看说明。双击即可运行。", { multiline: true });
+        var info = setText(page.add("statictext", undefined, "", { multiline: true }), C.muted, F.ui);
         info.alignment = ["fill", "bottom"];
-        info.preferredSize.height = 44;
+        info.preferredSize.height = 34;
 
-        var g1 = row(tab);
-        g1.alignment = ["fill", "bottom"];
-        var bRun = btn(g1, "▶ 运行", "运行脚本 / 对选中图层应用预设", null);
-        var bFav = btn(g1, "★ 收藏", "收藏 / 取消收藏", null);
-        var bInst = btn(g1, "安装…", "把新的脚本或预设导入脚本库", null);
-        var g2 = row(tab);
-        g2.alignment = ["fill", "bottom"];
-        var bRefresh = btn(g2, "刷新", "重新扫描脚本库文件夹", null);
-        var bReveal = btn(g2, "定位", "在文件管理器中显示", null);
-        var bRemove = btn(g2, "移除", "从脚本库移除（移到 _已移除 文件夹）", null);
+        var gBtn = row(page, 4);
+        gBtn.alignment = ["fill", "bottom"];
+        var bRun = tile(gBtn, { icon: "play", text: "运行", accent: true, fill: true, tip: "运行脚本 / 对选中图层应用预设（也可以双击列表）" });
+        var bFav = tile(gBtn, { icon: "star", tip: "收藏 / 取消收藏" });
+        var bInst = tile(gBtn, { icon: "plus", tip: "安装：把新的脚本或预设导入脚本库" });
+        var bRefresh = tile(gBtn, { icon: "refresh", tip: "刷新：重新扫描脚本库文件夹" });
+        var bReveal = tile(gBtn, { icon: "folder", tip: "在文件管理器中显示" });
+        var bRemove = tile(gBtn, { icon: "trash", tip: "移除（移到库中的 _已移除 文件夹）" });
 
         function current() {
             return list.selection ? shown[list.selection.index] : null;
@@ -796,9 +1019,9 @@
             var keep = dd.selection ? dd.selection.text : "全部";
             dd.removeAll();
             var cats = ["全部", "★ 收藏"].concat(categories());
-            var hasUncat = false;
-            for (var i = 0; i < items.length; i++) if (items[i].cat === "未分类") hasUncat = true;
-            if (hasUncat) cats.push("未分类");
+            for (var i = 0; i < items.length; i++) {
+                if (items[i].cat === "未分类") { cats.push("未分类"); break; }
+            }
             var sel = 0;
             for (var j = 0; j < cats.length; j++) {
                 dd.add("item", cats[j]);
@@ -822,7 +1045,9 @@
                 li.subItems[1].text = it.type;
                 shown.push(it);
             }
-            info.text = shown.length ? "共 " + shown.length + " 项。双击即可运行。" : "没有找到脚本。点「安装…」导入，或在「设置」中更换库文件夹。";
+            info.text = shown.length
+                ? shown.length + " 项 · 双击运行"
+                : "没有找到脚本。点 ＋ 导入，或在「设置」中更换库文件夹。";
         }
 
         function refresh() {
@@ -833,12 +1058,11 @@
 
         dd.onChange = fillList;
         search.onChanging = fillList;
-
         list.onChange = function () {
             var it = current();
             if (!it) return;
-            var t = it.name + "  ·  " + it.type + (it.author ? "  ·  作者：" + it.author : "");
-            info.text = t + "\n" + (it.desc || File.decode(it.file.name));
+            info.text = it.name + " · " + it.type + (it.author ? " · " + it.author : "") +
+                "\n" + (it.desc || File.decode(it.file.name));
         };
         list.onDoubleClick = function () { var it = current(); if (it) runItem(it); };
 
@@ -865,52 +1089,88 @@
             if (it && removeItem(it)) refresh();
         };
 
-        tab.refreshLibrary = refresh;
+        page.refreshLibrary = refresh;
         refresh();
     }
 
-    function buildSettingsTab(tab, onLibChange) {
-        var pLib = section(tab, "脚本库文件夹");
-        var path = pLib.add("statictext", undefined, libRoot().fsName, { truncate: "middle" });
+    // =====================================================================
+    // 页面：设置
+    // =====================================================================
+    function buildSettingsPage(page, onLibChange) {
+        sectionHead(page, "01", "LIBRARY PATH", "脚本库文件夹");
+        var path = setText(page.add("statictext", undefined, libRoot().fsName, { truncate: "middle" }), C.text, F.ui);
         path.alignment = ["fill", "top"];
-        var g = row(pLib);
-        btn(g, "更换…", "选择另一个文件夹作为脚本库（例如网盘同步文件夹）", function () {
-            var f = Folder.selectDialog("选择脚本库文件夹");
-            if (!f) return;
-            setSetting("libPath", f.fsName);
-            path.text = f.fsName;
-            onLibChange();
+        var g = row(page);
+        tile(g, {
+            icon: "swap", text: "更换", h: 28, fill: true, tip: "选择另一个文件夹作为脚本库（例如网盘同步文件夹）",
+            onClick: function () {
+                var f = Folder.selectDialog("选择脚本库文件夹");
+                if (!f) return;
+                setSetting("libPath", f.fsName);
+                path.text = f.fsName;
+                onLibChange();
+            }
         });
-        btn(g, "打开", "在文件管理器中打开脚本库", function () { libRoot().execute(); });
-        btn(g, "导入示例", "把插件附带的示例脚本复制到当前库", function () {
-            var src = new Folder(SCRIPT_FILE.parent.fsName + "/MotionHub_Library");
-            if (!src.exists) { alert("没有找到 MotionHub_Library 文件夹。", NAME); return; }
-            copyFolder(src, libRoot());
-            onLibChange();
-            alert("示例脚本已导入。", NAME);
+        tile(g, { icon: "folder", text: "打开", h: 28, fill: true, tip: "在文件管理器中打开脚本库", onClick: function () { libRoot().execute(); } });
+        tile(g, {
+            icon: "plus", text: "导入示例", h: 28, fill: true, tip: "把插件附带的示例脚本复制到当前库",
+            onClick: function () {
+                var src = new Folder(SCRIPT_FILE.parent.fsName + "/MotionHub_Library");
+                if (!src.exists) { alert("没有找到 MotionHub_Library 文件夹。", NAME); return; }
+                copyFolder(src, libRoot());
+                onLibChange();
+                alert("示例脚本已导入。", NAME);
+            }
         });
 
-        var pAE = section(tab, "After Effects");
-        var perm = pAE.add("statictext", undefined, "", { multiline: true });
+        sectionHead(page, "02", "AFTER EFFECTS", "权限与面板");
+        var perm = page.add("statictext", undefined, "", { multiline: true });
         perm.alignment = ["fill", "top"];
         perm.preferredSize.height = 32;
         function updatePerm() {
-            perm.text = canWriteFiles()
+            var ok = canWriteFiles();
+            perm.text = ok
                 ? "✓ 已允许脚本写入文件，可以正常安装。"
                 : "✗ 未允许脚本写入文件：请到「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」。";
+            setText(perm, ok ? C.text : C.brand, F.ui);
         }
         updatePerm();
-        var g2 = row(pAE);
-        btn(g2, "重新检查", "", updatePerm);
-        btn(g2, "打开 ScriptUI Panels", "打开当前 AE 版本的用户面板文件夹", function () {
-            var f = userPanelsFolder();
-            if (!f.exists && canWriteFiles()) ensureFolder(f);
-            if (f.exists) f.execute(); else alert("文件夹不存在：\n" + f.fsName, NAME);
+        var g2 = row(page);
+        tile(g2, { icon: "refresh", text: "重新检查", h: 28, fill: true, onClick: updatePerm });
+        tile(g2, {
+            icon: "folder", text: "ScriptUI Panels", h: 28, fill: true, tip: "打开当前 AE 版本的用户面板文件夹",
+            onClick: function () {
+                var f = userPanelsFolder();
+                if (!f.exists && canWriteFiles()) ensureFolder(f);
+                if (f.exists) f.execute(); else alert("文件夹不存在：\n" + f.fsName, NAME);
+            }
         });
 
-        var pAbout = section(tab, "关于");
-        pAbout.add("statictext", undefined, NAME + " v" + VERSION + "  ·  AE " + app.version);
-        pAbout.add("statictext", undefined, "脚本头部写 @name / @desc / @author 可在库中显示说明。");
+        sectionHead(page, "03", "ABOUT", "关于");
+        setText(page.add("statictext", undefined, NAME.toUpperCase() + " v" + VERSION + "  ·  AE " + app.version), C.muted, F.mono);
+        var tipText = setText(page.add("statictext", undefined, "脚本头部写 @name / @desc / @author，库里就会显示说明。", { multiline: true }), C.muted, F.ui);
+        tipText.alignment = ["fill", "top"];
+        tipText.preferredSize.height = 30;
+    }
+
+    // =====================================================================
+    // 外壳：品牌顶栏 + 文字标签页
+    // =====================================================================
+    function drawTab(ds) {
+        var g = this.graphics, w = this.size[0], h = this.size[1];
+        var hover = ds && ds.mouseOver;
+        g.newPath();
+        g.rectPath(0, 0, w, h);
+        g.fillPath(brush(g, C.ink));
+        var col = this.active_ ? C.text : (hover ? C.brand : C.muted);
+        var m = g.measureString(this.text_, F.uiBold);
+        var x = (w - m[0]) / 2;
+        g.drawString(this.text_, pen(g, col), x, (h - m[1]) / 2 - 2, F.uiBold);
+        if (this.active_) {
+            g.newPath();
+            g.rectPath(x, h - 2, m[0], 2);
+            g.fillPath(brush(g, C.brand));
+        }
     }
 
     function buildUI(thisObj) {
@@ -918,38 +1178,63 @@
             ? thisObj
             : new Window("palette", NAME, undefined, { resizeable: true });
         win.orientation = "column";
-        win.alignChildren = ["fill", "fill"];
-        win.margins = 6;
+        win.alignChildren = ["fill", "top"];
+        win.margins = [10, 8, 10, 10];
+        win.spacing = 6;
+        paintBg(win, C.ink);
 
-        var tabs = win.add("tabbedpanel");
-        tabs.alignment = ["fill", "fill"];
-        tabs.alignChildren = ["fill", "fill"];
+        // 顶栏：橙色方块字标 + 版本
+        var head = row(win, 6);
+        var mark = head.add("group");
+        mark.preferredSize = [8, 8];
+        mark.alignment = ["left", "center"];
+        paintBg(mark, C.brand);
+        setText(head.add("statictext", undefined, "MOTIONHUB"), C.text, F.brand);
+        var ver = setText(head.add("statictext", undefined, "WINDWINGS · V" + VERSION), C.muted, F.mono);
+        ver.alignment = ["right", "center"];
 
-        function addTab(title) {
-            var t = tabs.add("tab", undefined, title);
-            t.orientation = "column";
-            t.alignChildren = ["fill", "top"];
-            t.margins = [4, 8, 4, 4];
-            t.spacing = 4;
-            return t;
+        // 标签栏
+        var tabBar = row(win, 0);
+        hRule(win);
+        var stack = win.add("group");
+        stack.orientation = "stack";
+        stack.alignment = ["fill", "fill"];
+        stack.alignChildren = ["fill", "fill"];
+
+        var titles = ["工具", "脚本库", "设置"];
+        var tabs = [], pages = [];
+
+        function select(idx) {
+            for (var i = 0; i < pages.length; i++) {
+                pages[i].visible = (i === idx);
+                tabs[i].active_ = (i === idx);
+                tabs[i].hide();
+                tabs[i].show();
+            }
+            setSetting("tab", idx);
+            win.layout.layout(true);
         }
 
-        var tTools = addTab("工具");
-        var tLib = addTab("脚本库");
-        var tSet = addTab("设置");
-        tLib.alignChildren = ["fill", "fill"];
+        for (var i = 0; i < titles.length; i++) {
+            var t = tabBar.add("iconbutton", undefined, undefined, { style: "toolbutton" });
+            t.text_ = titles[i];
+            t.preferredSize = [58, 26];
+            t.onDraw = drawTab;
+            t.onClick = (function (n) { return function () { select(n); }; })(i);
+            tabs.push(t);
+            var p = column(stack, 5);
+            p.alignment = ["fill", "fill"];
+            pages.push(p);
+        }
+        pages[1].alignChildren = ["fill", "fill"];
 
-        buildToolsTab(tTools);
-        buildLibraryTab(tLib);
-        buildSettingsTab(tSet, function () { tLib.refreshLibrary(); });
+        buildToolsPage(pages[0]);
+        buildLibraryPage(pages[1]);
+        buildSettingsPage(pages[2], function () { pages[1].refreshLibrary(); });
+
 
         var last = parseInt(getSetting("tab", "0"), 10) || 0;
-        tabs.selection = tabs.children[Math.min(last, tabs.children.length - 1)];
-        tabs.onChange = function () {
-            for (var i = 0; i < tabs.children.length; i++) {
-                if (tabs.children[i] === tabs.selection) setSetting("tab", i);
-            }
-        };
+        select(Math.min(Math.max(last, 0), titles.length - 1));
 
         win.onResizing = win.onResize = function () { this.layout.resize(); };
         win.layout.layout(true);
