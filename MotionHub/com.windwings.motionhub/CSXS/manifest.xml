@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.0.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.1.0"
     ExtensionBundleName="MotionHub" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.windwings.motionhub.panel1" Version="3.0.0" />
-        <Extension Id="com.windwings.motionhub.panel2" Version="3.0.0" />
-        <Extension Id="com.windwings.motionhub.panel3" Version="3.0.0" />
-        <Extension Id="com.windwings.motionhub.panel4" Version="3.0.0" />
+        <Extension Id="com.windwings.motionhub.panel1" Version="3.1.0" />
+        <Extension Id="com.windwings.motionhub.panel2" Version="3.1.0" />
+        <Extension Id="com.windwings.motionhub.panel3" Version="3.1.0" />
+        <Extension Id="com.windwings.motionhub.panel4" Version="3.1.0" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -26,6 +26,11 @@
                 <Resources>
                     <MainPath>./index.html</MainPath>
                     <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <!-- 节拍分析需要在面板里读取本地音频文件 -->
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                    </CEFCommandLine>
                 </Resources>
                 <Lifecycle>
                     <AutoVisible>true</AutoVisible>
@@ -46,6 +51,11 @@
                 <Resources>
                     <MainPath>./index.html</MainPath>
                     <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <!-- 节拍分析需要在面板里读取本地音频文件 -->
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                    </CEFCommandLine>
                 </Resources>
                 <Lifecycle>
                     <AutoVisible>true</AutoVisible>
@@ -66,6 +76,11 @@
                 <Resources>
                     <MainPath>./index.html</MainPath>
                     <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <!-- 节拍分析需要在面板里读取本地音频文件 -->
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                    </CEFCommandLine>
                 </Resources>
                 <Lifecycle>
                     <AutoVisible>true</AutoVisible>
@@ -86,6 +101,11 @@
                 <Resources>
                     <MainPath>./index.html</MainPath>
                     <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <!-- 节拍分析需要在面板里读取本地音频文件 -->
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                    </CEFCommandLine>
                 </Resources>
                 <Lifecycle>
                     <AutoVisible>true</AutoVisible>

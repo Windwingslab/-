@@ -188,7 +188,7 @@ input[type=range]:hover::-webkit-slider-thumb { background: var(--c, var(--accen
 }
 .preset:hover { color: var(--c); border-color: var(--line-2); }
 .preset.on { color: var(--on-c); background: var(--c); border-color: var(--c); }
-.bz-val { font: 10.5px var(--mono); color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.w-head .bz-val { font: 10px var(--mono); color: var(--muted); letter-spacing: .02em; white-space: nowrap; }
 
 /* =====================================================================
    编辑模式：拖动排序、换色、删除
@@ -356,3 +356,19 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 @media (prefers-reduced-motion: reduce) {
     * { transition: none !important; }
 }
+
+/* =====================================================================
+   3.1：新建图层、节拍、效果收藏、命令搜索
+   ===================================================================== */
+.create-row { gap: var(--gap); }
+.create-row .tile { height: var(--tile); min-height: var(--tile); }
+.create-row .tile svg { width: 18px; height: 18px; }
+
+.wave { width: 100%; height: 58px; display: block; background: var(--field); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+
+.preset.mine { border-style: dashed; color: var(--text); }
+
+.cat-item.on .ci { background: var(--accent); color: var(--on-accent); }
+.cat-item.sel { border-color: var(--accent); background: var(--raise); }
+.fav-list, .pal-list { max-height: 300px; overflow-y: auto; }
+.pal-input, .dlg-body input.pal-input { height: 32px; font-size: 13px; }

@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.0.0";
+    var VERSION = "3.1.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -288,8 +288,30 @@ var MH = (function () {
             L = comp.layers.addSolid([0.09, 0.094, 0.098], uniqueLayerName(comp, "纯色"), comp.width, comp.height, comp.pixelAspect, comp.duration);
         } else if (a.kind === "camera") {
             L = comp.layers.addCamera(uniqueLayerName(comp, "摄像机"), [comp.width / 2, comp.height / 2]);
+        } else if (a.kind === "light") {
+            L = comp.layers.addLight(uniqueLayerName(comp, "灯光"), [comp.width / 2, comp.height / 2]);
+        } else if (a.kind === "null") {
+            L = comp.layers.addNull();
+            L.name = uniqueLayerName(comp, "空对象");
+        } else if (a.kind === "text") {
+            L = comp.layers.addText("文字");
+            L.name = uniqueLayerName(comp, "文字");
+            var r = L.sourceRectAtTime(comp.time, false);
+            L.transform.anchorPoint.setValue([r.left + r.width / 2, r.top + r.height / 2]);
+            L.transform.position.setValue([comp.width / 2, comp.height / 2]);
+        } else if (a.kind === "shape") {
+            L = comp.layers.addShape();
+            L.name = uniqueLayerName(comp, "形状");
+            var grp = L.property("ADBE Root Vectors Group").addProperty("ADBE Vector Group");
+            grp.name = "矩形";
+            var vec = grp.property("ADBE Vectors Group");
+            vec.addProperty("ADBE Vector Shape - Rect").property("ADBE Vector Rect Size").setValue([comp.width / 4, comp.height / 4]);
+            vec.addProperty("ADBE Vector Graphic - Fill").property("ADBE Vector Fill Color").setValue([1, 0.349, 0, 1]);
+            L.transform.position.setValue([comp.width / 2, comp.height / 2]);
+            L.transform.anchorPoint.setValue([0, 0]);
         }
-        if (sel.length && L) L.moveBefore(topmost(sel));
+        if (!L) fail("不支持的图层类型");
+        if (sel.length) L.moveBefore(topmost(sel));
         return "已新建：" + L.name;
     };
 
@@ -782,6 +804,379 @@ var MH = (function () {
         return (on ? "已开启" : "已关闭") + "运动模糊：" + layers.length + " 个图层";
     };
 
+
+    // —— 曲线：从选中的两个关键帧读出 cubic-bezier ——
+    T.bezierRead = function () {
+        var comp = activeComp(), props = selectedKeyedProps(comp);
+        for (var i = 0; i < props.length; i++) {
+            var p = props[i], ks = p.selectedKeys;
+            var k1 = ks[0], k2 = ks.length > 1 ? ks[1] : ks[0] + 1;
+            if (k2 > p.numKeys) continue;
+            var dt = p.keyTime(k2) - p.keyTime(k1);
+            var v1 = p.keyValue(k1), v2 = p.keyValue(k2), dv;
+            if (typeof v1 === "number") dv = v2 - v1;
+            else if (easeDims(p) === 1) {
+                var s2 = 0;
+                for (var d = 0; d < v1.length; d++) s2 += (v2[d] - v1[d]) * (v2[d] - v1[d]);
+                dv = Math.sqrt(s2);
+            } else {
+                // 多维非空间属性：取变化最大的那一维
+                var best = 0;
+                for (var e = 0; e < v1.length; e++) if (Math.abs(v2[e] - v1[e]) > Math.abs(v2[best] - v1[best])) best = e;
+                dv = v2[best] - v1[best];
+            }
+            if (!dt || !dv) continue;
+            var avg = dv / dt;
+            var o = p.keyOutTemporalEase(k1)[0], n = p.keyInTemporalEase(k2)[0];
+            var x1 = o.influence / 100, x2 = 1 - n.influence / 100;
+            var y1 = o.speed / avg * x1, y2 = 1 - n.speed / avg * (1 - x2);
+            if (p.keyOutInterpolationType(k1) === KeyframeInterpolationType.LINEAR) { x1 = 1 / 3; y1 = 1 / 3; }
+            if (p.keyInInterpolationType(k2) === KeyframeInterpolationType.LINEAR) { x2 = 2 / 3; y2 = 2 / 3; }
+            var r = function (v) { return Math.round(v * 100) / 100; };
+            return { msg: "已读取曲线", bezier: [r(x1), r(y1), r(x2), r(y2)] };
+        }
+        fail("请选中同一属性上两个数值不同的关键帧");
+    };
+
+    // —— 节拍：标记、吸附、按节拍排列 ——
+    T.beatMarkers = function (a) {
+        var comp = activeComp();
+        var mk = a.target === "comp" ? comp.markerProperty : comp.layer(a.index).property("ADBE Marker");
+        for (var i = 0; i < a.times.length; i++) {
+            var mv = new MarkerValue(a.numbered ? String(i + 1) : "");
+            try { mv.label = 2; } catch (e) {}
+            mk.setValueAtTime(a.times[i], mv);
+        }
+        return "已添加 " + a.times.length + " 个节拍标记到" + (a.target === "comp" ? "合成" : "音频图层");
+    };
+
+    T.clearMarkers = function (a) {
+        var comp = activeComp();
+        var mk = a.target === "comp" ? comp.markerProperty : comp.layer(a.index).property("ADBE Marker");
+        var n = mk.numKeys;
+        for (var i = n; i >= 1; i--) mk.removeKey(i);
+        return "已清除 " + n + " 个标记";
+    };
+
+    T.beatLayers = function (a) {
+        var comp = activeComp(), sel = comp.selectedLayers, list = [], i;
+        for (i = 0; i < sel.length; i++) if (sel[i].index !== a.index) list.push(sel[i]);
+        if (!list.length) fail("请先选中要对齐节拍的图层（不包括音频图层）");
+        var times = a.times;
+        if (!times.length) fail("没有节拍");
+        if (a.mode === "snap") {
+            // 每个图层的入点吸附到最近的节拍
+            for (i = 0; i < list.length; i++) {
+                var best = times[0];
+                for (var j = 1; j < times.length; j++) if (Math.abs(times[j] - list[i].inPoint) < Math.abs(best - list[i].inPoint)) best = times[j];
+                list[i].startTime += best - list[i].inPoint;
+            }
+            return "已把 " + list.length + " 个图层吸附到最近的节拍";
+        }
+        // 按节拍排列：从播放头之后的第一个节拍开始，每隔 every 拍放一个图层；Alt 同时把出点剪到下一个位置
+        var start = 0;
+        while (start < times.length && times[start] < comp.time - comp.frameDuration / 2) start++;
+        var every = Math.max(1, a.every || 1), placed = 0;
+        for (i = 0; i < list.length; i++) {
+            var k = start + i * every;
+            if (k >= times.length) break;
+            var L = list[i];
+            L.startTime += times[k] - L.inPoint;
+            if (a.mods && a.mods.alt && k + every < times.length) { try { L.outPoint = times[k + every]; } catch (e2) {} }
+            placed++;
+        }
+        return "已按节拍排列 " + placed + " 个图层" + (placed < list.length ? "（节拍不够，剩下 " + (list.length - placed) + " 个没动）" : "");
+    };
+
+    // —— 解散预合成：把里面的图层放回当前合成，位置保持不变 ——
+    function isNeutral(L, inner, comp) {
+        var tr = L.transform;
+        if (L.parent || L.threeDLayer) return false;
+        var props = [tr.anchorPoint, tr.position, tr.scale, tr.property("ADBE Rotate Z")];
+        for (var i = 0; i < props.length; i++) if (props[i].numKeys) return false;
+        var a = tr.anchorPoint.value, p = tr.position.value, s = tr.scale.value;
+        return Math.abs(a[0] - p[0]) < 0.01 && Math.abs(a[1] - p[1]) < 0.01 &&
+            Math.abs(s[0] - 100) < 0.01 && Math.abs(s[1] - 100) < 0.01 &&
+            Math.abs(tr.property("ADBE Rotate Z").value) < 0.01 &&
+            inner.width === comp.width && inner.height === comp.height;
+    }
+
+    T.decompose = function (a) {
+        var comp = activeComp(), sel = comp.selectedLayers, pre = null, i;
+        for (i = 0; i < sel.length; i++) if (sel[i].source instanceof CompItem) { pre = sel[i]; break; }
+        if (!pre) fail("请先选中一个预合成图层");
+        var inner = pre.source, warn = [];
+        if (pre.timeRemapEnabled) warn.push("时间重映射");
+        if (pre.stretch !== 100) warn.push("时间伸缩");
+        if (pre.property("ADBE Effect Parade").numProperties) warn.push("效果");
+        if (pre.property("ADBE Mask Parade").numProperties) warn.push("蒙版");
+
+        // 预合成图层本身有变换时，用一个空对象接住它，里面的图层挂上去，画面不变
+        var carrier = null;
+        if (!isNeutral(pre, inner, comp)) {
+            carrier = comp.layers.addNull(comp.duration);
+            carrier.name = uniqueLayerName(comp, pre.name + " 变换");
+            var names = ["ADBE Anchor Point", "ADBE Position", "ADBE Scale", "ADBE Rotate Z", "ADBE Opacity"];
+            for (i = 0; i < names.length; i++) {
+                var from = pre.transform.property(names[i]), to = carrier.transform.property(names[i]);
+                if (from.numKeys) for (var k = 1; k <= from.numKeys; k++) writeKey(to, from.keyTime(k), keyData(from, k), false);
+                else to.setValue(from.value);
+            }
+            if (pre.parent) carrier.setParentWithJump(pre.parent);
+            carrier.inPoint = pre.inPoint;
+            carrier.outPoint = pre.outPoint;
+        }
+        var moved = [];
+        for (i = inner.numLayers; i >= 1; i--) {
+            inner.layer(i).copyToComp(comp);
+            moved.unshift(comp.layer(1));
+        }
+        for (i = 0; i < moved.length; i++) {
+            var L = moved[i];
+            L.moveBefore(pre);
+            L.startTime += pre.startTime;
+            try {
+                if (L.inPoint < pre.inPoint) L.inPoint = pre.inPoint;
+                if (L.outPoint > pre.outPoint) L.outPoint = pre.outPoint;
+            } catch (e) {}
+            if (carrier && !L.parent) L.setParentWithJump(carrier);
+        }
+        if (carrier && moved.length) carrier.moveBefore(moved[0]);
+        var name = pre.name;
+        pre.remove();
+        var removedItem = false;
+        if (a.mods.alt && inner.usedIn.length === 0) { inner.remove(); removedItem = true; }
+        return "已解散「" + name + "」：放回 " + moved.length + " 个图层" +
+            (removedItem ? "，并删除了项目里的原合成" : "") +
+            (warn.length ? "（预合成图层上的" + warn.join("、") + "没有带过来）" : "");
+    };
+
+    // —— 复制预合成：得到一份独立的副本，改它不影响原来的 ——
+    function cloneComp(c, deep, done) {
+        if (done[c.id]) return done[c.id];
+        var d = c.duplicate();
+        d.name = uniqueItemName(c.name.replace(/ 副本( \d+)?$/, "") + " 副本");
+        done[c.id] = d;
+        if (deep) {
+            for (var i = 1; i <= d.numLayers; i++) {
+                var L = d.layer(i);
+                if (L.source instanceof CompItem) { try { L.replaceSource(cloneComp(L.source, true, done), false); } catch (e) {} }
+            }
+        }
+        return d;
+    }
+
+    T.dupPrecomp = function (a) {
+        var comp = activeComp(), sel = comp.selectedLayers, list = [], i;
+        for (i = 0; i < sel.length; i++) if (sel[i].source instanceof CompItem) list.push(sel[i]);
+        if (!list.length) fail("请先选中预合成图层");
+        var done = {}, n = 0;
+        for (i = 0; i < list.length; i++) {
+            var L = list[i], copy = cloneComp(L.source, !!a.mods.alt, done);
+            var target = a.mods.shift ? L : L.duplicate();
+            target.replaceSource(copy, false);
+            if (!a.mods.shift) target.name = copy.name;
+            n++;
+        }
+        var comps = 0;
+        for (var k in done) if (done.hasOwnProperty(k)) comps++;
+        return (a.mods.shift ? "已把 " + n + " 个预合成图层换成独立副本" : "已复制 " + n + " 个预合成图层并使用独立副本") +
+            (a.mods.alt ? "（连同里面嵌套的 " + (comps - n) + " 个合成）" : "");
+    };
+
+    // —— 智能重命名：按图层类型和内容起名 ——
+    function layerKind(L) {
+        if (L instanceof CameraLayer) return "摄像机";
+        if (L instanceof LightLayer) return "灯光";
+        if (L instanceof TextLayer) return "文字";
+        if (L instanceof ShapeLayer) return "形状";
+        if (L.nullLayer) return "空对象";
+        if (L.adjustmentLayer) return "调整";
+        var s = L.source;
+        if (s instanceof CompItem) return "合成";
+        if (s && s.mainSource instanceof SolidSource) return "纯色";
+        if (s && s.mainSource && s.mainSource.isStill) return "图片";
+        if (s && !s.hasVideo && s.hasAudio) return "音频";
+        return "视频";
+    }
+
+    function layerLabel(L, kind) {
+        try {
+            if (kind === "文字") {
+                var t = String(L.property("ADBE Text Properties").property("ADBE Text Document").value.text).replace(/[\r\n]+/g, " ");
+                return t.length > 20 ? t.substr(0, 19) + "…" : t;
+            }
+            if (kind === "调整") { var fx = L.property("ADBE Effect Parade"); return fx.numProperties ? fx.property(1).name : "调整"; }
+            if (kind === "形状") { var c = L.property("ADBE Root Vectors Group"); return c.numProperties ? c.property(1).name : "形状"; }
+            if (kind === "合成" || kind === "纯色") return L.source.name;
+            if (kind === "图片" || kind === "视频" || kind === "音频") {
+                return File.decode(L.source.file ? L.source.file.name : L.source.name).replace(/\.[^.]+$/, "");
+            }
+        } catch (e) {}
+        return kind === "空对象" ? "控制器" : kind;
+    }
+
+    T.smartRename = function (a) {
+        var comp = activeComp(), list = [], i;
+        if (a.mods.alt) for (i = 1; i <= comp.numLayers; i++) list.push(comp.layer(i));
+        else list = needLayers(comp, 1);
+        var used = {};
+        for (i = 0; i < list.length; i++) {
+            var L = list[i], kind = layerKind(L), name = layerLabel(L, kind);
+            if (a.mods.shift) name = "[" + kind + "] " + name;
+            var base = name, n = 2;
+            while (used[name]) name = base + " " + (n++);
+            used[name] = true;
+            var locked = L.locked;
+            L.locked = false;
+            L.name = name;
+            L.locked = locked;
+        }
+        return "已智能重命名 " + list.length + " 个图层";
+    };
+
+    // —— 首尾相接：选中图层一个接一个排开 ——
+    T.chain = function (a) {
+        var comp = activeComp(), sel = needLayers(comp, 2), list = [], i;
+        for (i = 0; i < sel.length; i++) list.push(sel[i]);
+        if (a.mods.shift) list.reverse();
+        var t = Infinity;
+        if (a.mods.alt) t = comp.time;
+        else for (i = 0; i < list.length; i++) t = Math.min(t, list[i].inPoint);
+        var gap = (a.gap || 0) * comp.frameDuration;
+        for (i = 0; i < list.length; i++) {
+            var L = list[i], locked = L.locked;
+            L.locked = false;
+            L.startTime += t - L.inPoint;
+            t = L.outPoint + gap;
+            L.locked = locked;
+        }
+        return "已首尾相接排列 " + list.length + " 个图层" + (a.gap ? "，间隔 " + a.gap + " 帧" : "");
+    };
+
+    // —— 样式：复制一个图层的效果（含关键帧）、变换和混合模式，粘贴到别的图层 ——
+    function readEffectProps(group, withKeys, path, out) {
+        for (var i = 1; i <= group.numProperties; i++) {
+            var p;
+            try { p = group.property(i); } catch (e) { continue; }
+            var here = path.concat([i]);
+            if (p.propertyType === PropertyType.PROPERTY) {
+                var vt = p.propertyValueType;
+                if (vt === PropertyValueType.NO_VALUE || vt === PropertyValueType.CUSTOM_VALUE || vt === PropertyValueType.LAYER_INDEX || vt === PropertyValueType.MASK_INDEX) continue;
+                var rec = { path: here, value: null, keys: null, expr: "" };
+                try {
+                    if (withKeys && p.numKeys) {
+                        rec.keys = [];
+                        for (var k = 1; k <= p.numKeys; k++) rec.keys.push(keyData(p, k));
+                    } else rec.value = p.value;
+                    if (p.canSetExpression && p.expressionEnabled) rec.expr = p.expression;
+                } catch (e2) { continue; }
+                out.push(rec);
+            } else readEffectProps(p, withKeys, here, out);
+        }
+        return out;
+    }
+
+    function scaleEase(list, k) {
+        if (!list || k === 1) return list;
+        var out = [];
+        for (var i = 0; i < list.length; i++) out.push(new KeyframeEase(list[i].speed / k, list[i].influence));
+        return out;
+    }
+
+    T.styleCopy = function () {
+        var comp = activeComp(), L = needLayers(comp, 1)[0];
+        var fxg = L.property("ADBE Effect Parade"), effects = [], keys = 0, i, j;
+        for (i = 1; i <= fxg.numProperties; i++) {
+            var fx = fxg.property(i), props = readEffectProps(fx, true, [], []);
+            for (j = 0; j < props.length; j++) if (props[j].keys) keys += props[j].keys.length;
+            effects.push({ match: fx.matchName, name: fx.name, props: props, enabled: fx.enabled });
+        }
+        var tr = L.transform;
+        $.global.MH_STYLE = {
+            layer: L.name, inPoint: L.inPoint, duration: L.outPoint - L.inPoint, effects: effects, keys: keys,
+            scale: tr.scale.value, rotation: tr.property("ADBE Rotate Z").value, opacity: tr.opacity.value,
+            blend: L.blendingMode, motionBlur: L.motionBlur
+        };
+        return { msg: "已复制「" + L.name + "」的样式：" + effects.length + " 个效果，" + keys + " 个关键帧", layer: L.name, effects: effects.length, keys: keys };
+    };
+
+    T.stylePaste = function (a) {
+        var st = $.global.MH_STYLE;
+        if (!st) fail("还没有复制样式");
+        var comp = activeComp(), sel = needLayers(comp, 1), n = 0, i, j, q;
+        for (i = 0; i < sel.length; i++) {
+            var L = sel[i];
+            if (!isTransformable(L)) continue;
+            // 关键帧时间映射：保持原来离入点的时间；「适配长度」时按新图层的长度等比例拉伸
+            var len = L.outPoint - L.inPoint;
+            var k = a.fit && st.duration > 0 && len > 0 ? len / st.duration : 1;
+            var mapT = function (t) { return L.inPoint + (t - st.inPoint) * k; };
+            if (a.effects) {
+                var fxg = L.property("ADBE Effect Parade");
+                if (a.replace) for (q = fxg.numProperties; q >= 1; q--) fxg.property(q).remove();
+                for (j = 0; j < st.effects.length; j++) {
+                    var src = st.effects[j], fx = fxg.addProperty(src.match);
+                    try { fx.name = src.name; } catch (e) {}
+                    for (q = 0; q < src.props.length; q++) {
+                        var rec = src.props[q], p = fx;
+                        try {
+                            for (var d = 0; d < rec.path.length; d++) p = p.property(rec.path[d]);
+                            if (rec.keys && a.keys) {
+                                for (var kk = 0; kk < rec.keys.length; kk++) {
+                                    var kd = rec.keys[kk], copy = {};
+                                    for (var f in kd) if (kd.hasOwnProperty(f)) copy[f] = kd[f];
+                                    copy.inE = scaleEase(kd.inE, k);
+                                    copy.outE = scaleEase(kd.outE, k);
+                                    writeKey(p, mapT(kd.t), copy, false);
+                                }
+                            } else if (rec.keys) {
+                                p.setValue(rec.keys[0].v);
+                            } else if (rec.value !== null) {
+                                p.setValue(rec.value);
+                            }
+                            if (rec.expr) p.expression = rec.expr;
+                        } catch (e3) {}
+                    }
+                    // 效果对象可能因为加属性失效，重新取一次再设开关
+                    try { fxg.property(fxg.numProperties).enabled = src.enabled; } catch (e4) {}
+                }
+            }
+            if (a.transform) {
+                var sc = st.scale;
+                if (L.threeDLayer && sc.length < 3) sc = [sc[0], sc[1], 100];
+                L.transform.scale.setValue(sc);
+                L.transform.property("ADBE Rotate Z").setValue(st.rotation);
+            }
+            if (a.blend) {
+                L.blendingMode = st.blend;
+                L.transform.opacity.setValue(st.opacity);
+                try { L.motionBlur = st.motionBlur; } catch (e5) {}
+            }
+            n++;
+        }
+        return "已把「" + st.layer + "」的样式粘贴到 " + n + " 个图层" + (a.fit && a.keys ? "（关键帧已适配各图层长度）" : "");
+    };
+
+    // —— 效果收藏 ——
+    T.applyEffect = function (a) {
+        var comp = activeComp(), sel = comp.selectedLayers, targets = [], i;
+        if (a.mods.alt || !sel.length) {
+            var adj = comp.layers.addSolid([1, 1, 1], uniqueLayerName(comp, a.name || "调整图层"), comp.width, comp.height, comp.pixelAspect, comp.duration);
+            adj.adjustmentLayer = true;
+            if (sel.length) adj.moveBefore(topmost(sel));
+            targets.push(adj);
+        } else {
+            for (i = 0; i < sel.length; i++) if (isTransformable(sel[i])) targets.push(sel[i]);
+        }
+        for (i = 0; i < targets.length; i++) {
+            var fxg = targets[i].property("ADBE Effect Parade");
+            if (!fxg.canAddProperty(a.match)) fail("这个图层不能添加「" + a.name + "」");
+            fxg.addProperty(a.match);
+        }
+        return "已添加「" + a.name + "」" + (a.mods.alt || !sel.length ? "到新的调整图层" : "到 " + targets.length + " 个图层");
+    };
+
     // —— 代码片段 ——
     T.applyExpr = function (a) {
         var comp = activeComp(), props = selectedExprProps(comp);
@@ -1204,6 +1599,60 @@ var MH = (function () {
         return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/") };
     };
 
+    // —— 音频：找到选中的音频图层，返回文件路径和时间信息 ——
+    LIB.audioInfo = function () {
+        var comp = activeComp(), sel = comp.selectedLayers, L = null;
+        for (var i = 0; i < sel.length; i++) {
+            if (sel[i].hasAudio && sel[i].source && sel[i].source.file) { L = sel[i]; break; }
+        }
+        if (!L) fail("请先选中一个带声音的素材图层（音频或视频）");
+        var f = L.source.file;
+        return {
+            path: f.fsName, name: L.name, index: L.index, sourceId: L.source.id,
+            startTime: L.startTime, inPoint: L.inPoint, outPoint: L.outPoint, stretch: L.stretch,
+            timeRemap: L.timeRemapEnabled, isVideo: !!L.source.hasVideo, fps: comp.frameRate
+        };
+    };
+
+    // 视频里的声音面板读不了：让 AE 把它渲染成临时 WAV（每个素材只渲染一次）
+    LIB.extractAudio = function (a) {
+        var comp = activeComp(), L = comp.layer(a.index);
+        if (!L || !L.hasAudio || !L.source) fail("这个图层没有声音");
+        var src = L.source, out = new File(Folder.temp.fsName + "/motionhub_audio_" + src.id + ".wav");
+        if (out.exists && out.length > 1024) return { path: out.fsName, cached: true };
+        var rq = app.project.renderQueue, keep = [], tmp = null, item = null, i;
+        try {
+            tmp = app.project.items.addComp("MotionHub 音频（临时）", 16, 16, 1, Math.max(src.duration, 0.1), 25);
+            var t = tmp.layers.add(src);
+            t.startTime = 0;
+            try { t.enabled = false; } catch (e0) {}
+            for (i = 1; i <= rq.numItems; i++) { keep.push(rq.item(i).render); try { rq.item(i).render = false; } catch (e1) {} }
+            item = rq.items.add(tmp);
+            var om = item.outputModule(1);
+            om.setSettings({ "Format": "WAV", "Output File Info": { "Full Flat Path": out.fsName } });
+            try { om.setSettings({ "Output Audio": "On" }); } catch (e2) {}
+            rq.render();
+        } catch (e) {
+            fail("无法从视频里提取声音（" + (e.message || e) + "），可以先把音频导出成 WAV 再用");
+        } finally {
+            try { if (item) item.remove(); } catch (e3) {}
+            for (i = 0; i < keep.length && i < rq.numItems; i++) { try { rq.item(i + 1).render = keep[i]; } catch (e4) {} }
+            try { if (tmp) tmp.remove(); } catch (e5) {}
+        }
+        if (!out.exists) fail("无法从视频里提取声音，可以先把音频导出成 WAV 再用");
+        return { path: out.fsName };
+    };
+
+    // 已安装的全部效果（给「效果收藏」挑选用）
+    LIB.listEffects = function () {
+        var out = [];
+        for (var i = 0; i < app.effects.length; i++) {
+            var e = app.effects[i];
+            if (e.displayName && e.category) out.push({ name: e.displayName, match: e.matchName, cat: e.category });
+        }
+        return { effects: out };
+    };
+
     LIB.status = function () {
         return { canWrite: canWriteFiles() };
     };
@@ -1218,7 +1667,10 @@ var MH = (function () {
         bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色",
         copyKeys: "复制关键帧", pasteKeys: "粘贴关键帧", keyTime: "关键帧时间", bezier: "自定义缓动",
         quickAnim: "快速动画", splitLayer: "拆分图层", toPlayhead: "移到播放头", motionBlur: "运动模糊",
-        applyExpr: "应用表达式", runCode: "执行脚本"
+        applyExpr: "应用表达式", runCode: "执行脚本", bezierRead: "读取曲线",
+        beatMarkers: "节拍标记", clearMarkers: "清除标记", beatLayers: "按节拍排列", decompose: "解散预合成",
+        dupPrecomp: "复制预合成", smartRename: "智能重命名", chain: "首尾相接", styleCopy: "复制样式",
+        stylePaste: "粘贴样式", applyEffect: "添加效果"
     };
 
     function call(name, args) {
