@@ -4,13 +4,19 @@
 */
 
 var MH = (function () {
-    var VERSION = "2.0.0";
+    var VERSION = "3.0.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
     try { EXT_ROOT = new File($.fileName).parent.parent; } catch (e) {}
 
     var state = { libPath: null };
+    try {
+        if (app.settings.haveSetting("MotionHub", "libPath")) state.libPath = app.settings.getSetting("MotionHub", "libPath");
+    } catch (e0) {}
+
+    // 关键帧剪贴板放在全局，多个面板共用、重新加载脚本也不丢
+    if (!$.global.MH_CLIP) $.global.MH_CLIP = null;
 
     // =====================================================================
     // JSON（ExtendScript 没有内置 JSON）
@@ -377,21 +383,35 @@ var MH = (function () {
         return "已均匀分布 " + list.length + " 个图层";
     };
 
+    // 依次排列：每 num 个图层一组，组与组之间错开 step 帧
+    // order：forward 正序 / reverse 倒序 / center 从中间向两边 / random 随机；Alt 倒序、Shift 随机
     T.sequence = function (a) {
         var comp = activeComp(), sel = needLayers(comp, 2), layers = [], i;
         for (i = 0; i < sel.length; i++) layers.push(sel[i]);
-        if (a.mods.alt) layers.reverse();
-        if (a.mods.shift) {
-            for (i = layers.length - 1; i > 0; i--) {
-                var j = Math.floor(Math.random() * (i + 1)), tmp = layers[i];
-                layers[i] = layers[j]; layers[j] = tmp;
+        var order = a.order || "forward";
+        if (a.mods.alt) order = "reverse";
+        if (a.mods.shift) order = "random";
+        var num = Math.max(1, a.num || 1), step = (a.step === undefined ? (a.frames || 2) : a.step);
+        var rank = [];
+        for (i = 0; i < layers.length; i++) rank.push(i);
+        if (order === "reverse") rank.reverse();
+        else if (order === "random") {
+            for (i = rank.length - 1; i > 0; i--) {
+                var j = Math.floor(Math.random() * (i + 1)), tmp = rank[i];
+                rank[i] = rank[j]; rank[j] = tmp;
             }
+        } else if (order === "center") {
+            var mid = (layers.length - 1) / 2;
+            rank.sort(function (x, y) { return Math.abs(x - mid) - Math.abs(y - mid); });
         }
-        var step = a.frames * comp.frameDuration, base = Infinity;
+        var base = Infinity;
         for (i = 0; i < layers.length; i++) base = Math.min(base, layers[i].inPoint);
-        for (i = 0; i < layers.length; i++) layers[i].startTime += (base + step * i) - layers[i].inPoint;
-        return "已依次排列 " + layers.length + " 个图层，间隔 " + a.frames + " 帧" +
-            (a.mods.alt ? "（倒序）" : a.mods.shift ? "（随机）" : "");
+        for (i = 0; i < rank.length; i++) {
+            var L = layers[rank[i]], g = Math.floor(i / num);
+            L.startTime += (base + g * step * comp.frameDuration) - L.inPoint;
+        }
+        var names = { forward: "正序", reverse: "倒序", center: "从中间", random: "随机" };
+        return "已依次排列 " + layers.length + " 个图层（" + names[order] + "，每组 " + num + " 个，间隔 " + step + " 帧）";
     };
 
     T.trim = function (a) {
@@ -437,48 +457,343 @@ var MH = (function () {
     };
 
     // —— 关键帧：从播放头克隆 ——
+    // 读取一个关键帧的完整信息（值、插值、缓动、空间切线）
+    function keyData(p, k) {
+        var d = {
+            t: p.keyTime(k), v: p.keyValue(k),
+            inI: p.keyInInterpolationType(k), outI: p.keyOutInterpolationType(k),
+            inE: null, outE: null, inS: null, outS: null
+        };
+        try { d.inE = p.keyInTemporalEase(k); d.outE = p.keyOutTemporalEase(k); } catch (e1) {}
+        if (p.isSpatial) {
+            try { d.inS = p.keyInSpatialTangent(k); d.outS = p.keyOutSpatialTangent(k); } catch (e2) {}
+        }
+        return d;
+    }
+
+    // 在时间 t 写入关键帧；reverse 时进出缓动对调
+    function writeKey(p, t, d, reverse) {
+        var KIT = KeyframeInterpolationType;
+        p.setValueAtTime(t, d.v);
+        var idx = p.nearestKeyIndex(t);
+        try {
+            p.setInterpolationTypeAtKey(idx, reverse ? d.outI : d.inI, reverse ? d.inI : d.outI);
+            if (d.inE && d.inI !== KIT.HOLD && d.outI !== KIT.HOLD) {
+                p.setTemporalEaseAtKey(idx, reverse ? d.outE : d.inE, reverse ? d.inE : d.outE);
+            }
+            if (d.inS) p.setSpatialTangentsAtKey(idx, reverse ? d.outS : d.inS, reverse ? d.inS : d.outS);
+        } catch (e) {}
+        return idx;
+    }
+
+    function selectTimes(p, times, clearOthers) {
+        if (clearOthers) for (var j = 1; j <= p.numKeys; j++) p.setSelectedAtKey(j, false);
+        for (var i = 0; i < times.length; i++) p.setSelectedAtKey(p.nearestKeyIndex(times[i]), true);
+    }
+
+    // 把选中的关键帧按 mapFn(旧时间, 序号, 全部数据) 移到新时间
+    function remapSelected(p, mapFn, reverse) {
+        var ks = p.selectedKeys, data = [], i;
+        for (i = 0; i < ks.length; i++) data.push(keyData(p, ks[i]));
+        for (i = ks.length - 1; i >= 0; i--) p.removeKey(ks[i]);
+        var times = [];
+        for (i = 0; i < data.length; i++) {
+            var nt = mapFn(data[i].t, i, data);
+            try { writeKey(p, nt, data[i], reverse); times.push(nt); } catch (e) {}
+        }
+        selectTimes(p, times, false);
+        return times.length;
+    }
+
     T.cloneKeys = function (a) {
         var comp = activeComp(), props = selectedKeyedProps(comp), total = 0;
         if (!props.length) fail("请先选中要克隆的关键帧");
-        var reverse = !!a.mods.shift, KIT = KeyframeInterpolationType;
+        var reverse = !!a.mods.shift;
         for (var i = 0; i < props.length; i++) {
-            var p = props[i], ks = p.selectedKeys, data = [], t0 = Infinity, t1 = -Infinity, j, d;
+            var p = props[i], ks = p.selectedKeys, data = [], t0 = Infinity, t1 = -Infinity, j;
             for (j = 0; j < ks.length; j++) {
-                var k = ks[j];
-                d = {
-                    t: p.keyTime(k), v: p.keyValue(k),
-                    inI: p.keyInInterpolationType(k), outI: p.keyOutInterpolationType(k),
-                    inE: null, outE: null, inS: null, outS: null
-                };
-                try { d.inE = p.keyInTemporalEase(k); d.outE = p.keyOutTemporalEase(k); } catch (e1) {}
-                if (p.isSpatial) {
-                    try { d.inS = p.keyInSpatialTangent(k); d.outS = p.keyOutSpatialTangent(k); } catch (e2) {}
-                }
+                var d = keyData(p, ks[j]);
                 t0 = Math.min(t0, d.t); t1 = Math.max(t1, d.t);
                 data.push(d);
             }
             var newTimes = [];
             for (j = 0; j < data.length; j++) {
-                d = data[j];
-                var nt = reverse ? comp.time + (t1 - d.t) : comp.time + (d.t - t0);
-                try {
-                    p.setValueAtTime(nt, d.v);
-                    var idx = p.nearestKeyIndex(nt);
-                    p.setInterpolationTypeAtKey(idx, reverse ? d.outI : d.inI, reverse ? d.inI : d.outI);
-                    if (d.inE && d.inI !== KIT.HOLD && d.outI !== KIT.HOLD) {
-                        p.setTemporalEaseAtKey(idx, reverse ? d.outE : d.inE, reverse ? d.inE : d.outE);
-                    }
-                    if (d.inS) p.setSpatialTangentsAtKey(idx, reverse ? d.outS : d.inS, reverse ? d.inS : d.outS);
-                    newTimes.push(nt);
-                    total++;
-                } catch (e3) {}
+                var nt = reverse ? comp.time + (t1 - data[j].t) : comp.time + (data[j].t - t0);
+                try { writeKey(p, nt, data[j], reverse); newTimes.push(nt); total++; } catch (e3) {}
             }
-            if (a.mods.alt) {
-                for (j = 1; j <= p.numKeys; j++) p.setSelectedAtKey(j, false);
-                for (j = 0; j < newTimes.length; j++) p.setSelectedAtKey(p.nearestKeyIndex(newTimes[j]), true);
-            }
+            if (a.mods.alt) selectTimes(p, newTimes, true);
         }
         return "已从播放头" + (reverse ? "反向" : "") + "克隆 " + total + " 个关键帧" + (a.mods.alt ? "并选中" : "");
+    };
+
+    // 属性地址（用 matchName），用来把关键帧粘贴到别的图层的同名属性上
+    function matchPath(p) {
+        var names = [], idx = [], q2 = p;
+        while (q2.propertyDepth > 0) {
+            names.unshift(q2.matchName);
+            idx.unshift(q2.propertyIndex);
+            q2 = q2.parentProperty;
+        }
+        return { names: names, idx: idx };
+    }
+
+    function findOnLayer(layer, mp) {
+        var p = layer, i;
+        try {
+            for (i = 0; i < mp.idx.length; i++) p = p.property(mp.idx[i]);
+            if (p && p.matchName === mp.names[mp.names.length - 1]) return p;
+        } catch (e) {}
+        p = layer;
+        try {
+            for (i = 0; i < mp.names.length; i++) { p = p.property(mp.names[i]); if (!p) return null; }
+            return p;
+        } catch (e2) { return null; }
+    }
+
+    T.copyKeys = function () {
+        var comp = activeComp(), props = selectedKeyedProps(comp), clip = [], t0 = Infinity, count = 0, i, j;
+        if (!props.length) fail("请先选中要复制的关键帧");
+        for (i = 0; i < props.length; i++) {
+            var ks = props[i].selectedKeys;
+            for (j = 0; j < ks.length; j++) t0 = Math.min(t0, props[i].keyTime(ks[j]));
+        }
+        for (i = 0; i < props.length; i++) {
+            var p = props[i], keys = [];
+            for (j = 0; j < p.selectedKeys.length; j++) {
+                var d = keyData(p, p.selectedKeys[j]);
+                d.t -= t0;
+                keys.push(d);
+                count++;
+            }
+            clip.push({ path: matchPath(p), name: p.name, keys: keys, span: 0 });
+            for (j = 0; j < keys.length; j++) clip[clip.length - 1].span = Math.max(clip[clip.length - 1].span, keys[j].t);
+        }
+        $.global.MH_CLIP = clip;
+        return { msg: "已复制 " + count + " 个关键帧（" + props.length + " 个属性）", count: count };
+    };
+
+    T.pasteKeys = function (a) {
+        var clip = $.global.MH_CLIP;
+        if (!clip || !clip.length) fail("剪贴板是空的，请先复制关键帧");
+        var comp = activeComp(), targets = [], i, j;
+        var sel = comp.selectedProperties;
+        for (i = 0; i < sel.length; i++) {
+            if (sel[i].propertyType === PropertyType.PROPERTY && sel[i].canVaryOverTime) targets.push(sel[i]);
+        }
+        var pairs = [];
+        if (targets.length) {
+            // 选了属性：按顺序对应；只复制了一个属性时，粘到所有选中属性上
+            for (i = 0; i < targets.length; i++) pairs.push({ p: targets[i], c: clip[clip.length === 1 ? 0 : i % clip.length] });
+        } else {
+            // 只选了图层：粘到每个图层的同名属性上
+            var layers = needLayers(comp, 1);
+            for (i = 0; i < layers.length; i++) {
+                for (j = 0; j < clip.length; j++) {
+                    var tp = findOnLayer(layers[i], clip[j].path);
+                    if (tp) pairs.push({ p: tp, c: clip[j] });
+                }
+            }
+        }
+        if (!pairs.length) fail("没有找到可以粘贴的属性");
+        var reverse = !!a.mods.alt, total = 0;
+        for (i = 0; i < pairs.length; i++) {
+            var c = pairs[i].c, times = [];
+            for (j = 0; j < c.keys.length; j++) {
+                var d = c.keys[j];
+                var nt = comp.time + (reverse ? c.span - d.t : d.t);
+                try { writeKey(pairs[i].p, nt, d, reverse); times.push(nt); total++; } catch (e) {}
+            }
+            if (a.mods.shift) selectTimes(pairs[i].p, times, true);
+        }
+        return "已在播放头" + (reverse ? "反向" : "") + "粘贴 " + total + " 个关键帧";
+    };
+
+    // 关键帧时间：微移 / 拉伸 / 均分 / 反转
+    T.keyTime = function (a) {
+        var comp = activeComp(), props = selectedKeyedProps(comp), total = 0, fd = comp.frameDuration;
+        if (!props.length) fail("请先选中关键帧");
+        var op = a.op;
+        for (var i = 0; i < props.length; i++) {
+            var p = props[i], ks = p.selectedKeys;
+            var t0 = p.keyTime(ks[0]), t1 = p.keyTime(ks[ks.length - 1]);
+            if (op === "nudge") {
+                var off = (a.dir || 1) * (a.frames || 1) * fd * (a.mods.shift ? 10 : 1);
+                total += remapSelected(p, function (t) { return t + off; }, false);
+            } else if (op === "stretch") {
+                var f = a.factor > 0 ? a.factor : 1.5;
+                if (a.mods.alt) f = 1 / f;
+                total += remapSelected(p, function (t) { return t0 + Math.round((t - t0) * f / fd) * fd; }, false);
+            } else if (op === "distribute") {
+                if (ks.length < 3) continue;
+                var stepT = (t1 - t0) / (ks.length - 1);
+                total += remapSelected(p, function (t, idx) { return t0 + Math.round(stepT * idx / fd) * fd; }, false);
+            } else if (op === "reverse") {
+                total += remapSelected(p, function (t) { return t0 + t1 - t; }, true);
+            }
+        }
+        var names = { nudge: "移动", stretch: a.mods.alt ? "压缩" : "拉伸", distribute: "均分", reverse: "反转" };
+        return "已" + names[op] + " " + total + " 个关键帧";
+    };
+
+    // 把 CSS cubic-bezier(x1, y1, x2, y2) 换算成 AE 的速度 + 影响，应用到 k1 → k2 这一段
+    function bezierBetween(p, k1, k2, b) {
+        var KIT = KeyframeInterpolationType;
+        var t1 = p.keyTime(k1), t2 = p.keyTime(k2), dt = t2 - t1;
+        if (dt <= 0) return false;
+        var v1 = p.keyValue(k1), v2 = p.keyValue(k2), dv = [], i;
+        var dims = easeDims(p);
+        if (dims === 1) {
+            if (typeof v1 === "number") dv = [v2 - v1];
+            else {
+                var s = 0;
+                for (i = 0; i < v1.length; i++) s += (v2[i] - v1[i]) * (v2[i] - v1[i]);
+                dv = [Math.sqrt(s)];
+            }
+        } else {
+            for (i = 0; i < dims; i++) dv.push(v2[i] - v1[i]);
+        }
+        var x1 = Math.min(1, Math.max(0.001, b[0])), y1 = b[1];
+        var x2 = Math.min(0.999, Math.max(0, b[2])), y2 = b[3];
+        var outE = [], inE = [];
+        for (i = 0; i < dv.length; i++) {
+            var avg = dv[i] / dt;
+            outE.push(new KeyframeEase(avg * y1 / x1, Math.max(0.1, Math.min(100, x1 * 100))));
+            inE.push(new KeyframeEase(avg * (1 - y2) / (1 - x2), Math.max(0.1, Math.min(100, (1 - x2) * 100))));
+        }
+        var k1In = p.keyInTemporalEase(k1), k2Out = p.keyOutTemporalEase(k2);
+        var k1InT = p.keyInInterpolationType(k1), k2OutT = p.keyOutInterpolationType(k2);
+        p.setInterpolationTypeAtKey(k1, k1InT === KIT.HOLD ? KIT.BEZIER : k1InT, KIT.BEZIER);
+        p.setInterpolationTypeAtKey(k2, KIT.BEZIER, k2OutT === KIT.HOLD ? KIT.BEZIER : k2OutT);
+        p.setTemporalEaseAtKey(k1, k1In, outE);
+        p.setTemporalEaseAtKey(k2, inE, k2Out);
+        return true;
+    }
+
+    T.bezier = function (a) {
+        var comp = activeComp(), props = selectedKeyedProps(comp), segs = 0;
+        if (!props.length) fail("请先选中至少两个关键帧");
+        var b = a.bezier;
+        if (a.mods.alt) b = [1 - b[2], 1 - b[3], 1 - b[0], 1 - b[1]];
+        for (var i = 0; i < props.length; i++) {
+            var p = props[i], ks = p.selectedKeys;
+            try {
+                if (ks.length === 1) {
+                    if (ks[0] < p.numKeys && bezierBetween(p, ks[0], ks[0] + 1, b)) segs++;
+                } else {
+                    for (var j = 0; j < ks.length - 1; j++) if (bezierBetween(p, ks[j], ks[j + 1], b)) segs++;
+                }
+            } catch (e) {}
+        }
+        if (!segs) fail("没有可以应用的关键帧段（需要选中至少两个关键帧）");
+        return "已应用曲线 (" + b.join(", ") + ")：" + segs + " 段";
+    };
+
+    // 快速动画：单击 = 从播放头开始入场；Alt = 在播放头结束出场
+    var EASE_OUT = [0.22, 1, 0.36, 1], EASE_IN = [0.64, 0, 0.78, 0];
+
+    function keySegments(p, times, values, b) {
+        for (var i = 0; i < times.length; i++) p.setValueAtTime(times[i], values[i]);
+        for (var j = 0; j < times.length - 1; j++) {
+            try { bezierBetween(p, p.nearestKeyIndex(times[j]), p.nearestKeyIndex(times[j + 1]), b); } catch (e) {}
+        }
+    }
+
+    function scaleVec(v, f) {
+        var o = [];
+        for (var i = 0; i < v.length; i++) o.push(v[i] * f);
+        return o;
+    }
+
+    T.quickAnim = function (a) {
+        var comp = activeComp(), layers = needLayers(comp, 1), out = !!a.mods.alt, n = 0;
+        var dur = Math.max(1, a.frames || 12) * comp.frameDuration;
+        var t0 = out ? comp.time - dur : comp.time, t1 = t0 + dur;
+        var tRest = out ? t0 : t1, b = out ? EASE_IN : EASE_OUT;
+        for (var i = 0; i < layers.length; i++) {
+            var L = layers[i];
+            if (!isTransformable(L)) continue;
+            var tr = L.transform, p, base;
+            if (a.kind === "fade") {
+                p = tr.opacity; base = p.valueAtTime(tRest, false);
+                keySegments(p, [t0, t1], out ? [base, 0] : [0, base], b);
+            } else if (a.kind === "scale") {
+                p = tr.scale; base = p.valueAtTime(tRest, false);
+                var t2 = t0 + dur * (out ? 0.4 : 0.6);
+                keySegments(p, [t0, t2, t1], out ? [base, scaleVec(base, 1.1), scaleVec(base, 0)] : [scaleVec(base, 0), scaleVec(base, 1.1), base], [0.33, 0, 0.2, 1]);
+            } else if (a.kind === "slide") {
+                var dist = (a.dir === "left" || a.dir === "right") ? comp.width * 0.25 : comp.height * 0.25;
+                var dx = a.dir === "left" ? -dist : a.dir === "right" ? dist : 0;
+                var dy = a.dir === "up" ? -dist : a.dir === "down" ? dist : 0;
+                if (tr.position.dimensionsSeparated) {
+                    var px = tr.property("ADBE Position_0"), py = tr.property("ADBE Position_1");
+                    var bx = px.valueAtTime(tRest, false), by = py.valueAtTime(tRest, false);
+                    if (dx) keySegments(px, [t0, t1], out ? [bx, bx + dx] : [bx + dx, bx], b);
+                    if (dy) keySegments(py, [t0, t1], out ? [by, by + dy] : [by + dy, by], b);
+                } else {
+                    p = tr.position; base = p.valueAtTime(tRest, false);
+                    var moved = addVec(base, [dx, dy]);
+                    keySegments(p, [t0, t1], out ? [base, moved] : [moved, base], b);
+                }
+            } else if (a.kind === "rotate") {
+                p = tr.property("ADBE Rotate Z"); base = p.valueAtTime(tRest, false);
+                keySegments(p, [t0, t1], out ? [base, base + 90] : [base - 90, base], b);
+            } else if (a.kind === "blur") {
+                var fxs = L.property("ADBE Effect Parade");
+                if (!fxs) continue;
+                var blur = fxs.property("MH 模糊") || fxs.addProperty("ADBE Gaussian Blur 2");
+                blur.name = "MH 模糊";
+                p = fxs.property("MH 模糊").property(1);
+                keySegments(p, [t0, t1], out ? [0, 40] : [40, 0], b);
+            }
+            n++;
+        }
+        var names = { fade: "透明度", scale: "缩放", slide: "滑动", rotate: "旋转", blur: "模糊" };
+        return "已添加" + names[a.kind] + (out ? "出场" : "入场") + "动画：" + n + " 个图层，" + (a.frames || 12) + " 帧";
+    };
+
+    // —— 图层时间 ——
+    T.splitLayer = function () {
+        var comp = activeComp(), layers = needLayers(comp, 1), t = comp.time, n = 0;
+        for (var i = 0; i < layers.length; i++) {
+            var L = layers[i];
+            if (t <= L.inPoint || t >= L.outPoint) continue;
+            var dup = L.duplicate();
+            L.outPoint = t;
+            dup.inPoint = t;
+            n++;
+        }
+        if (!n) fail("播放头不在选中图层的范围内");
+        return "已在播放头拆分 " + n + " 个图层";
+    };
+
+    T.toPlayhead = function (a) {
+        var comp = activeComp(), layers = needLayers(comp, 1);
+        for (var i = 0; i < layers.length; i++) {
+            var L = layers[i];
+            L.startTime += comp.time - (a.mods.alt ? L.outPoint : L.inPoint);
+        }
+        return a.mods.alt ? "已把出点对齐到播放头" : "已把入点对齐到播放头";
+    };
+
+    T.motionBlur = function () {
+        var comp = activeComp(), layers = needLayers(comp, 1), on = !layers[0].motionBlur;
+        for (var i = 0; i < layers.length; i++) { try { layers[i].motionBlur = on; } catch (e) {} }
+        if (on) comp.motionBlur = true;
+        return (on ? "已开启" : "已关闭") + "运动模糊：" + layers.length + " 个图层";
+    };
+
+    // —— 代码片段 ——
+    T.applyExpr = function (a) {
+        var comp = activeComp(), props = selectedExprProps(comp);
+        for (var i = 0; i < props.length; i++) {
+            props[i].expression = a.mods.alt && props[i].expression ? props[i].expression + "\n" + a.code : a.code;
+        }
+        return "已应用表达式「" + (a.name || "") + "」：" + props.length + " 个属性";
+    };
+
+    T.runCode = function (a) {
+        (new Function(a.code))();
+        return "已执行「" + (a.name || "脚本") + "」";
     };
 
     // —— 表达式 ——
@@ -727,7 +1042,7 @@ var MH = (function () {
     var LIB = {};
 
     LIB.init = function (a) {
-        if (a.libPath) state.libPath = a.libPath;
+        if (a.libPath && !state.libPath) state.libPath = a.libPath;
         return { libPath: libRoot().fsName, version: VERSION, ae: app.version, canWrite: canWriteFiles(), os: IS_WIN ? "win" : "mac" };
     };
 
@@ -821,6 +1136,7 @@ var MH = (function () {
         var f = Folder.selectDialog("选择脚本库文件夹");
         if (!f) return { libPath: null };
         state.libPath = f.fsName;
+        try { app.settings.saveSetting("MotionHub", "libPath", f.fsName); } catch (e) {}
         return { libPath: f.fsName };
     };
 
@@ -830,6 +1146,62 @@ var MH = (function () {
         if (!f.exists) fail("文件夹不存在：" + f.fsName);
         f.execute();
         return "";
+    };
+
+    // 面板布局等配置：存在用户数据目录，4 个面板共用
+    function configFile(name) {
+        var dir = ensureFolder(new Folder(Folder.userData.fsName + "/MotionHub"));
+        return new File(dir.fsName + "/" + String(name).replace(/[^\w.\-]/g, "_") + ".json");
+    }
+
+    function readText(f) {
+        if (!f.exists) return null;
+        f.encoding = "UTF-8";
+        if (!f.open("r")) return null;
+        var t = f.read();
+        f.close();
+        return t;
+    }
+
+    function writeText(f, text) {
+        f.encoding = "UTF-8";
+        if (!f.open("w")) fail("无法写入：" + f.fsName);
+        f.write(text);
+        f.close();
+    }
+
+    LIB.loadConfig = function (a) { return { text: readText(configFile(a.name)) }; };
+    LIB.saveConfig = function (a) { writeText(configFile(a.name), a.text); return { saved: true }; };
+
+    // 代码片段存在脚本库根目录，跟着脚本库一起同步
+    LIB.loadSnippets = function () { return { text: readText(new File(libRoot().fsName + "/_snippets.json")) }; };
+    LIB.saveSnippets = function (a) { writeText(new File(libRoot().fsName + "/_snippets.json"), a.text); return { saved: true }; };
+
+    var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    function b64decode(s) {
+        var out = [], buf = 0, bits = 0;
+        s = s.replace(/[^A-Za-z0-9+\/]/g, "");
+        for (var i = 0; i < s.length; i++) {
+            buf = (buf << 6) | B64.indexOf(s.charAt(i));
+            bits += 6;
+            if (bits >= 8) { bits -= 8; out.push(String.fromCharCode((buf >> bits) & 255)); }
+        }
+        return out.join("");
+    }
+
+    // 从面板拖进来的文件：面板读出内容（base64）交给这里写进脚本库
+    LIB.writeDropped = function (a) {
+        if (!canWriteFiles()) fail("请先在 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」");
+        if (!EXT_RE.test(a.name)) fail("只支持 .jsx / .jsxbin / .ffx 文件");
+        var root = libRoot(), target = root;
+        var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
+        if (cat && cat !== "未分类") target = ensureFolder(new Folder(root.fsName + "/" + cat));
+        var f = new File(target.fsName + "/" + a.name.replace(/[\\\/:*?"<>|]/g, "_"));
+        f.encoding = "BINARY";
+        if (!f.open("w")) fail("无法写入：" + f.fsName);
+        f.write(b64decode(a.b64));
+        f.close();
+        return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/") };
     };
 
     LIB.status = function () {
@@ -843,7 +1215,10 @@ var MH = (function () {
         anchor: "设置锚点", centerComp: "居中", nullLayer: "空对象", addLayer: "新建图层", ease: "缓动",
         align: "对齐", distribute: "分布", sequence: "依次排列", trim: "剪切图层", precompEach: "逐个预合成",
         reverse: "反转顺序", rename: "批量重命名", cloneKeys: "克隆关键帧", wiggle: "抖动", loop: "循环",
-        bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色"
+        bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色",
+        copyKeys: "复制关键帧", pasteKeys: "粘贴关键帧", keyTime: "关键帧时间", bezier: "自定义缓动",
+        quickAnim: "快速动画", splitLayer: "拆分图层", toPlayhead: "移到播放头", motionBlur: "运动模糊",
+        applyExpr: "应用表达式", runCode: "执行脚本"
     };
 
     function call(name, args) {
@@ -852,9 +1227,10 @@ var MH = (function () {
         try {
             if (T[name]) {
                 app.beginUndoGroup("MotionHub：" + (UNDO_NAMES[name] || name));
-                var msg;
-                try { msg = T[name](args); } finally { app.endUndoGroup(); }
-                return stringify({ ok: true, msg: msg || "" });
+                var res;
+                try { res = T[name](args); } finally { app.endUndoGroup(); }
+                if (res && typeof res === "object") return stringify({ ok: true, msg: res.msg || "", data: res });
+                return stringify({ ok: true, msg: res || "" });
             }
             if (LIB[name]) {
                 var r = LIB[name](args);

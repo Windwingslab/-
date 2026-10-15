@@ -1,23 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="2.0.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.0.0"
     ExtensionBundleName="MotionHub" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.windwings.motionhub.panel" Version="2.0.0" />
+        <Extension Id="com.windwings.motionhub.panel1" Version="3.0.0" />
+        <Extension Id="com.windwings.motionhub.panel2" Version="3.0.0" />
+        <Extension Id="com.windwings.motionhub.panel3" Version="3.0.0" />
+        <Extension Id="com.windwings.motionhub.panel4" Version="3.0.0" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
-            <!-- After Effects 2020 (17.0) 及以上 -->
-            <Host Name="AEFT" Version="[17.0,99.9]" />
+            <!-- After Effects 2022 (22.0) 及以上：内置 Chromium 88 -->
+            <Host Name="AEFT" Version="[22.0,99.9]" />
         </HostList>
         <LocaleList>
             <Locale Code="All" />
         </LocaleList>
         <RequiredRuntimeList>
-            <RequiredRuntime Name="CSXS" Version="9.0" />
+            <RequiredRuntime Name="CSXS" Version="11.0" />
         </RequiredRuntimeList>
     </ExecutionEnvironment>
+    <!-- 4 个独立面板：窗口 → 扩展 → MotionHub / MotionHub 2 / 3 / 4，各自保存布局 -->
     <DispatchInfoList>
-        <Extension Id="com.windwings.motionhub.panel">
+        <Extension Id="com.windwings.motionhub.panel1">
             <DispatchInfo>
                 <Resources>
                     <MainPath>./index.html</MainPath>
@@ -30,18 +34,69 @@
                     <Type>Panel</Type>
                     <Menu>MotionHub</Menu>
                     <Geometry>
-                        <Size>
-                            <Height>720</Height>
-                            <Width>300</Width>
-                        </Size>
-                        <MinSize>
-                            <Height>320</Height>
-                            <Width>200</Width>
-                        </MinSize>
-                        <MaxSize>
-                            <Height>3000</Height>
-                            <Width>1600</Width>
-                        </MaxSize>
+                        <Size><Height>720</Height><Width>300</Width></Size>
+                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+        <Extension Id="com.windwings.motionhub.panel2">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>MotionHub 2</Menu>
+                    <Geometry>
+                        <Size><Height>720</Height><Width>300</Width></Size>
+                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+        <Extension Id="com.windwings.motionhub.panel3">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>MotionHub 3</Menu>
+                    <Geometry>
+                        <Size><Height>720</Height><Width>300</Width></Size>
+                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+        <Extension Id="com.windwings.motionhub.panel4">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>MotionHub 4</Menu>
+                    <Geometry>
+                        <Size><Height>720</Height><Width>300</Width></Size>
+                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
                     </Geometry>
                 </UI>
             </DispatchInfo>
