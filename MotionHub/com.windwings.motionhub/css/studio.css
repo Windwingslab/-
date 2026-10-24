@@ -1,7 +1,14 @@
 /* MotionHub Studio：三栏布局（素材 / 预览 / 设置），沿用 style.css 的品牌变量 */
 
 body.studio { min-width: 0; overflow: hidden; }
-.studio .top { border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.studio .top { border-bottom: 1px solid var(--line); padding-bottom: 8px; position: relative; }
+.live-btn { margin-right: 4px; flex: none; }
+.top-prog { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; }
+.top-prog i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+#btn-cover { flex: none; }
+#btn-cover .ico svg { color: var(--accent); }
+.live-main { width: 100%; height: 44px; font-size: 13px; justify-content: flex-start; gap: 8px; margin-top: 4px; }
+.live-main small { margin-left: auto; font-weight: 400; font-size: 10.5px; opacity: .75; }
 .studio .top { gap: 10px; min-width: 0; }
 .studio .top-acts { min-width: 0; flex: 0 1 auto; align-items: center; }
 .size-label { font-size: 10.5px; color: var(--muted); letter-spacing: .08em; margin-right: 6px; align-self: center; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -46,15 +53,17 @@ body.studio { min-width: 0; overflow: hidden; }
 .transport { display: flex; align-items: center; gap: 6px; }
 .transport .t { font-size: 12px; }
 .transport .sp { flex: 1; }
-.cell-info { font-size: 11px; }
+.transport > * { white-space: nowrap; flex: none; }
+.transport .cell-info { font-size: 11px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.transport .sp { flex: 1 1 0; }
 
 /* 裁切时间线 */
 .trim { background: var(--raise); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px 10px; }
 .trim-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; font-size: 11px; }
 .trim-head .num { color: var(--accent); font-size: 9.5px; letter-spacing: .12em; }
-.track { position: relative; height: 34px; background: var(--field); border-radius: 3px; overflow: hidden; }
-.track canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .55; }
-.range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 3px; background: rgba(255, 89, 0, .12); cursor: grab; }
+.track { position: relative; height: 44px; background: var(--field); border-radius: 3px; overflow: hidden; }
+.track canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 3px; background: none; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); cursor: grab; }
 .range .h { position: absolute; top: -2px; bottom: -2px; width: 10px; background: var(--accent); cursor: ew-resize; }
 .range .h.in { left: -6px; border-radius: 3px 0 0 3px; }
 .range .h.out { right: -6px; border-radius: 0 3px 3px 0; }

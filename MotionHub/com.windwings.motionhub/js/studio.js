@@ -110,7 +110,7 @@
         sel: 0,
         playing: false,
         t: 0,
-        exp: local.get("exp", { fps: 15, width: 540, dither: false, mp4fps: 30, dur: 0, audio: 0, render: true }),
+        exp: (function (e) { e.dur = 0; if (e.photos === undefined) e.photos = true; return e; })(local.get("exp", { fps: 15, width: 540, dither: false, mp4fps: 30, dur: 0, audio: 0, render: true, photos: true })),
         gradeAll: false
     };
     var uid = 0;
@@ -228,7 +228,7 @@
         this.videoWidth = w; this.videoHeight = h;
         this.duration = files.length / fps;
         this.paused = true; this.readyState = 0; this.frame = null;
-        this._t = 0; this._idx = -1; this._ls = {}; this._cache = []; this._raf = 0;
+        this._t = 0; this._idx = -1; this._fi = -1; this._ls = {}; this._cache = []; this._raf = 0;
     }
     FrameMedia.prototype.addEventListener = function (t, f) { (this._ls[t] = this._ls[t] || []).push(f); };
     FrameMedia.prototype.removeEventListener = function (t, f) { var l = this._ls[t] || []; var i = l.indexOf(f); if (i >= 0) l.splice(i, 1); };
@@ -240,21 +240,27 @@
     FrameMedia.prototype._load = function (i) {
         var self = this;
         i = clamp(i, 0, this.files.length - 1);
-        if (i === this._idx && this.frame) { setTimeout(function () { self._emit("seeked"); }, 0); return; }
+        if (i === this._idx && this._fi === i) { setTimeout(function () { self._emit("seeked"); }, 0); return; }
         this._idx = i;
-        var hit = null;
-        this._cache.forEach(function (c) { if (c.i === i) hit = c.img; });
-        if (hit && hit.complete && hit.naturalWidth) { this.frame = hit; this.readyState = 4; setTimeout(function () { self._emit("seeked"); }, 0); return; }
+        var entry = null;
+        this._cache.forEach(function (c) { if (c.i === i) entry = c; });
+        if (entry && entry.img.naturalWidth) { this.frame = entry.img; this._fi = i; this.readyState = 4; setTimeout(function () { self._emit("seeked"); }, 0); return; }
+        if (entry) return; // 已经在读，读完会发 seeked
         var img = new Image();
         img.onload = function () {
-            if (self._idx !== i) return;
-            var first = !self.frame;
-            self.frame = img; self.readyState = 4;
-            if (first) self._emit("loadeddata");
-            self._emit("seeked");
+            if (self._idx === i) {
+                var first = !self.frame;
+                self.frame = img; self._fi = i; self.readyState = 4;
+                if (first) self._emit("loadeddata");
+                self._emit("seeked");
+            } else if (self._fi !== self._idx) {
+                // 拖动裁切时目标帧还没读到，先显示这一帧，预览就不会卡住不动
+                self.frame = img; self._fi = i; self.readyState = 4;
+                self._emit("frame");
+            }
         };
         img.onerror = function () { self._emit("error"); };
-        img.src = (window.MHFrameURL || frameURL)(this.dir + "/" + this.files[i]);
+        Promise.resolve((window.MHFrameURL || frameURL)(this.dir + "/" + this.files[i])).then(function (u) { img.src = u; });
         this._cache.push({ i: i, img: img });
         if (this._cache.length > 90) { var old = this._cache.shift(); if (/^blob:/.test(old.img.src) && old.img !== this.frame) URL.revokeObjectURL(old.img.src); }
     };
@@ -287,6 +293,7 @@
         };
         c.lut = MHGrade.compile(c.grade);
         c.el.addEventListener("seeked", function () { drawThumb(c); if (!S.playing) draw(); });
+        c.el.addEventListener("frame", function () { if (!S.playing) draw(); });
         c.el.currentTime = 0;
         S.clips.push(c);
         syncCells();
@@ -335,8 +342,8 @@
     var MIME = { mp4: "video/mp4", m4v: "video/mp4", mov: "video/quicktime", webm: "video/webm", mkv: "video/x-matroska", png: "image/png", jpg: "image/jpeg" };
     function mimeOf(p) { var m = /\.(\w+)$/.exec(p); return (m && MIME[m[1].toLowerCase()]) || ""; }
     function frameURL(path) {
-        if (!NODE) return fileURL(path);
-        return URL.createObjectURL(new Blob([fs.readFileSync(path)], { type: mimeOf(path) }));
+        if (!NODE) return Promise.resolve(fileURL(path));
+        return fs.promises.readFile(path).then(function (buf) { return URL.createObjectURL(new Blob([buf], { type: mimeOf(path) })); });
     }
     function videoURL(path) {
         if (!NODE) return Promise.resolve(fileURL(path));
@@ -616,7 +623,12 @@
         var ex = Math.max(1, p.w - rect.w), ey = Math.max(1, p.h - rect.h), sx = e.clientX, sy = e.clientY, px = cell.panX, py = cell.panY;
         view.setPointerCapture(e.pointerId);
         view.classList.add("panning");
+        var noRoom = p.w - rect.w < 1 && p.h - rect.h < 1, warned = false;
         function move(ev) {
+            if (noRoom && !warned && Math.abs(ev.clientX - sx) + Math.abs(ev.clientY - sy) > 6) {
+                warned = true;
+                toast({ ok: true, msg: "素材和格子的比例一样，没有多出来的画面可以拖。先用滚轮放大（或在「排版」里调缩放），再拖动调整构图" });
+            }
             cell.panX = clamp(px - (ev.clientX - sx) / viewScale / (ex / 2), -1, 1);
             cell.panY = clamp(py - (ev.clientY - sy) / viewScale / (ey / 2), -1, 1);
             if (!S.playing) draw();
@@ -658,14 +670,60 @@
     // =====================================================================
     // 裁切时间线
     // =====================================================================
-    var track = $("#track"), range = $("#range"), ph = $("#ph");
+    var track = $("#track"), range = $("#range"), ph = $("#ph"), strip = $("#strip");
+
+    // 裁切条背景的胶片缩略图：每个素材取 12 帧，第一次选中时生成
+    var STRIP_N = 12, STRIP_H = 68;
+    function buildStrip(c) {
+        if (c.strip || !c.ok || !c.dur) return;
+        var vw = c.el.videoWidth || 16, vh = c.el.videoHeight || 9, tw = Math.max(20, Math.round(STRIP_H * vw / vh));
+        var cv = document.createElement("canvas");
+        cv.width = tw * STRIP_N; cv.height = STRIP_H;
+        c.strip = cv;
+        var g = cv.getContext("2d");
+        function put(k, img) {
+            try { g.drawImage(img, k * tw, 0, tw, STRIP_H); } catch (e) {}
+            if (selClip() === c) paintStrip();
+        }
+        var k = 0;
+        if (c.frames) {
+            (function next() {
+                if (k >= STRIP_N) return;
+                var idx = Math.min(c.el.files.length - 1, Math.floor((k + 0.5) / STRIP_N * c.el.files.length)), img = new Image(), kk = k;
+                img.onload = function () { put(kk, img); if (/^blob:/.test(img.src)) URL.revokeObjectURL(img.src); k++; next(); };
+                img.onerror = function () { k++; next(); };
+                Promise.resolve((window.MHFrameURL || frameURL)(c.el.dir + "/" + c.el.files[idx])).then(function (u) { img.src = u; });
+            })();
+            return;
+        }
+        var probe = document.createElement("video");
+        probe.muted = true; probe.preload = "auto"; probe.crossOrigin = "anonymous";
+        probe.addEventListener("seeked", function () { put(k, probe); k++; if (k < STRIP_N) probe.currentTime = (k + 0.5) / STRIP_N * c.dur; else probe.removeAttribute("src"); });
+        probe.addEventListener("loadeddata", function () { probe.currentTime = 0.5 / STRIP_N * c.dur; }, { once: true });
+        probe.src = c.el.currentSrc || c.el.src;
+    }
+    function paintStrip() {
+        var c = selClip(), dpr = window.devicePixelRatio || 1;
+        var w = Math.round(track.clientWidth * dpr), h = Math.round(track.clientHeight * dpr);
+        if (strip.width !== w || strip.height !== h) { strip.width = w; strip.height = h; }
+        var g = strip.getContext("2d");
+        g.clearRect(0, 0, w, h);
+        if (!c || !c.strip) return;
+        var tw = c.strip.width / STRIP_N, slot = w / STRIP_N;
+        // 每格按「填满」裁切，避免缩略图被拉变形
+        var sw = Math.min(tw, STRIP_H * slot / h), sx0 = (tw - sw) / 2;
+        for (var k = 0; k < STRIP_N; k++) g.drawImage(c.strip, k * tw + sx0, 0, sw, STRIP_H, k * slot, 0, slot + 1, h);
+    }
     function selClip() { var cell = S.cells[S.sel]; return cell ? S.clips[cell.clip] : null; }
 
     function renderTrim() {
         var c = selClip();
         track.classList.toggle("empty", !(c && c.ok));
+        if (c && c.ok) buildStrip(c);
+        paintStrip();
         if (!c || !c.ok) { $("#trim-info").textContent = "选中一个有素材的格子后，在这里裁切它的时长"; return; }
-        $("#trim-info").textContent = c.name + " · " + fmt(c.in) + "s – " + fmt(c.out) + "s（" + fmt(c.out - c.in) + "s）";
+        $("#trim-info").textContent = c.name + " · " + fmt(c.in) + "s – " + fmt(c.out) + "s（" + fmt(c.out - c.in) + "s）" +
+            (S.exp.dur > 0 ? " · 导出时长固定为 " + fmt(S.exp.dur) + "s" : "");
         var w = track.clientWidth;
         range.style.left = (c.in / c.dur * w) + "px";
         range.style.width = Math.max(4, (c.out - c.in) / c.dur * w) + "px";
@@ -697,7 +755,7 @@
         range.addEventListener("pointerup", up);
     });
     track.addEventListener("pointerdown", function (e) {
-        if (e.target !== track) return;
+        if (e.target !== track && e.target !== strip) return;
         var c = selClip();
         if (!c || !c.ok) return;
         var r = track.getBoundingClientRect();
@@ -1028,11 +1086,28 @@
         var p = $("#sp-export");
         p.innerHTML = "";
         var E = S.exp;
-        head(p, "01", "DURATION", "时长");
-        slider(p, "时长 s", 0, 60, 0.1, E.dur, function (v) { E.dur = v; local.set("exp", E); draw(); });
+        head(p, "01", "LIVE PHOTO", "实况照片");
+        var maxCover = Math.max(0.1, Math.round((duration() - 1 / E.mp4fps) * 100) / 100);
+        slider(p, "封面 s", 0, maxCover, 0.01, Math.min(E.cover || 0, maxCover), function (v) { setCover(v, true); }, "s");
+        var liveBar = el("div", "progress", "<i></i>");
+        var liveBtn = el("button", "btn accent live-main", svg("star") + "<span>导出实况照片</span><small>.pvt 实况包</small>");
+        liveBtn.addEventListener("click", function () { if (!busy) exportLive(liveBar.firstChild); });
+        hint(liveBtn, "导出实况照片", "生成一个 .pvt 实况照片包：照片和视频带同一个配对标识，视频里有封面时间轨道。Mac 上它就是一个文件，双击或拖进「照片」就是一张实况照片");
+        p.appendChild(liveBtn);
+        p.appendChild(liveBar);
+        if (!IS_WIN) {
+            var ph2 = el("label", "check", '<input type="checkbox"' + (E.photos ? " checked" : "") + "> 导出后直接存入「照片」App（开了 iCloud 照片会同步到 iPhone）");
+            ph2.querySelector("input").addEventListener("change", function (e) { E.photos = e.target.checked; local.set("exp", E); });
+            p.appendChild(ph2);
+        }
+        p.appendChild(el("p", "note", "拖动「封面」滑块可以在画面里直接看到封面帧，也可以播放到想要的位置后点下方时间旁边的「设为封面」。实况照片一般 1.5–3 秒，用上面「排版」里的格子和下面的裁切控制长度。" +
+            (IS_WIN ? "Windows 上 .pvt 是一个文件夹，把它整个传到 Mac 再导入「照片」。" : "")));
+
+        head(p, "02", "DURATION", "时长");
+        slider(p, "时长 s", 0, 60, 0.1, E.dur, function (v) { E.dur = v; local.set("exp", E); draw(); renderTrim(); });
         p.appendChild(el("p", "note", "0 = 自动，取各格子裁切后最长的那段；短的素材会循环。"));
 
-        head(p, "02", "GIF", "动图");
+        head(p, "03", "GIF", "动图");
         var fpsRow = el("div", "ctl two");
         fpsRow.appendChild(el("span", "", "帧率"));
         var fseg = el("div", "seg2");
@@ -1057,7 +1132,7 @@
         dith.querySelector("input").addEventListener("change", function (e) { E.dither = e.target.checked; local.set("exp", E); });
         p.appendChild(dith);
 
-        head(p, "03", "VIDEO", "视频 · AE");
+        head(p, "04", "VIDEO", "视频 · AE");
         var mfRow = el("div", "ctl two");
         mfRow.appendChild(el("span", "", "帧率"));
         var mseg = el("div", "seg2");
@@ -1081,11 +1156,7 @@
         rend.querySelector("input").addEventListener("change", function (e) { E.render = e.target.checked; local.set("exp", E); });
         p.appendChild(rend);
 
-        head(p, "04", "LIVE PHOTO", "实况照片");
-        slider(p, "封面 s", 0, Math.max(0.1, Math.round(duration() * 100) / 100), 0.01, Math.min(E.cover || 0, duration()), function (v) { E.cover = v; local.set("exp", E); }, "s");
-        p.appendChild(el("p", "note", "封面是实况照片静止时显示的那一帧。苹果的实况照片一般是 1.5–3 秒，太长的话「照片」可能只播放一部分。"));
-
-        head(p, "05", "EXPORT", "导出");
+        head(p, "05", "MORE", "其他导出");
         var bar = el("div", "progress", "<i></i>");
         var btns = el("div", "exp-btns");
         function expBtn(icon, label, sub, accent, fn, tip) {
@@ -1094,11 +1165,10 @@
             hint(b, label, tip);
             btns.appendChild(b);
         }
-        expBtn("play", "导出 GIF", "面板直接生成", true, exportGif, "按上面的帧率和宽度生成循环 GIF，调色和排版与预览完全一致");
+        expBtn("play", "导出 GIF", "面板直接生成", false, exportGif, "按上面的帧率和宽度生成循环 GIF，调色和排版与预览完全一致");
         expBtn("save", "导出 MP4", "交给 AE 渲染", false, exportMp4, "面板逐帧渲染成 PNG 序列，AE 导入后加入渲染队列（AE 2023 及以上输出 H.264）");
         expBtn("widgets", "发送到 AE", "可编辑的合成", false, sendToAE, "在 AE 里搭出同样的排版：每个格子一个预合成，裁切、构图、圆角都保留；带色阶和色彩平衡效果");
         expBtn("styleCopy", "导出封面 PNG", "当前画面", false, exportPng, "把当前这一帧按原尺寸存成 PNG，可以当封面");
-        expBtn("star", "导出实况照片", "JPG + MOV", false, exportLive, "生成一对配好的 JPG + MOV，导入 Mac「照片」后就是一张实况照片；视频由 AE 渲染成 H.264");
         p.appendChild(btns);
         p.appendChild(bar);
         p.appendChild(el("p", "note", "「发送到 AE」里，曲线没办法用脚本写进 AE 的曲线效果，所以只带色阶和色彩平衡；GIF 和 MP4 的调色与预览完全一致。"));
@@ -1221,14 +1291,81 @@
         }).then(function (r) { busy = false; toast(r); }).catch(function (e) { busy = false; toast({ ok: false, msg: e.message === "已取消" ? "已取消" : "导出失败：" + (e.message || e) }); });
     }
 
+    function sh(cmd, args, timeout) {
+        return new Promise(function (res) {
+            require("child_process").execFile(cmd, args, { timeout: timeout || 60000 }, function (err, out, errOut) {
+                res({ ok: !err, out: String(out || "").trim(), err: String(errOut || (err && err.message) || "").trim() });
+            });
+        });
+    }
+
+    // Mac：用系统自己的 ImageIO / AVFoundation 读回两边的配对标识（和「照片」App 用的是同一套解析）
+    var VERIFY_JXA = [
+        "ObjC.import('Foundation'); ObjC.import('ImageIO'); ObjC.import('AVFoundation');",
+        "function run(argv) {",
+        "  var r = {};",
+        "  try {",
+        "    var src = $.CGImageSourceCreateWithURL($.NSURL.fileURLWithPath(argv[0]), $());",
+        "    var props = ObjC.castRefToObject($.CGImageSourceCopyPropertiesAtIndex(src, 0, $()));",
+        "    var mk = props.objectForKey('{MakerApple}');",
+        "    var v = mk.isNil() ? $() : mk.objectForKey('17');",
+        "    if (!mk.isNil() && v.isNil()) v = mk.objectForKey($.NSNumber.numberWithInt(17));",
+        "    r.photo = v.isNil() ? '' : ObjC.unwrap(v);",
+        "  } catch (e) { r.photoErr = String(e); }",
+        "  try {",
+        "    var asset = $.AVURLAsset.URLAssetWithURLOptions($.NSURL.fileURLWithPath(argv[1]), $());",
+        "    var md = asset.metadata; r.video = '';",
+        "    for (var i = 0; i < md.count; i++) { var it = md.objectAtIndex(i); if (ObjC.unwrap(it.identifier) === 'mdta/com.apple.quicktime.content.identifier') r.video = ObjC.unwrap(it.stringValue); }",
+        "    r.tracks = asset.tracksWithMediaType($.AVMediaTypeMetadata).count;",
+        "  } catch (e) { r.videoErr = String(e); }",
+        "  return JSON.stringify(r);",
+        "}"
+    ].join("\n");
+    function verifyLive(jpg, mov, id, tmp) {
+        if (IS_WIN) return Promise.resolve("skip");
+        var js = nodePath.join(tmp, "verify.js");
+        fs.writeFileSync(js, VERIFY_JXA);
+        return sh("/usr/bin/osascript", ["-l", "JavaScript", js, jpg, mov], 30000).then(function (r) {
+            var o;
+            try { o = JSON.parse(r.out); } catch (e) { return "skip"; }
+            if (o.photoErr || o.videoErr) return "skip";
+            return o.photo === id && o.video === id && o.tracks > 0 ? "ok" : "bad";
+        });
+    }
+
+    // Mac：两份资源一起交给「照片」，它会配成一张实况照片
+    var IMPORT_OSA = [
+        "on run argv",
+        "  set f1 to (POSIX file (item 1 of argv)) as alias",
+        "  set f2 to (POSIX file (item 2 of argv)) as alias",
+        "  with timeout of 300 seconds",
+        "    tell application \"Photos\"",
+        "      activate",
+        "      set r to import {f1, f2} skip check duplicates true",
+        "    end tell",
+        "  end timeout",
+        "  return (count of r) as text",
+        "end run"
+    ];
+    function importToPhotos(jpg, mov) {
+        var args = [];
+        IMPORT_OSA.forEach(function (l) { args.push("-e", l); });
+        return sh("/usr/bin/osascript", args.concat([jpg, mov]), 320000).then(function (r) {
+            if (r.ok) return { ok: true, count: parseInt(r.out, 10) || 0 };
+            if (/-1743|not authori[sz]ed|不允许/i.test(r.err)) return { ok: false, msg: "AE 没有控制「照片」的权限：打开 系统设置 → 隐私与安全性 → 自动化 → Adobe After Effects，勾选「照片」后再试" };
+            return { ok: false, msg: r.err || "未知错误" };
+        });
+    }
+
     function exportLive(bar) {
         if (!ready0()) return;
         if (!NODE || !CEP) { toast({ ok: false, msg: "导出实况照片需要在 After Effects 里使用" }); return; }
         busy = true;
         var E = S.exp, name = "IMG_" + stamp().replace(/\D/g, "").slice(-8);
-        var dir = nodePath.join(os.tmpdir(), "motionhub_studio", name);
+        var dir = nodePath.join(os.tmpdir(), "motionhub_studio", name + "_" + Date.now());
         fs.mkdirSync(dir, { recursive: true });
-        var outDir = null, cover = clamp(E.cover || 0, 0, duration() - 1 / E.mp4fps);
+        var outDir = null, cover = clamp(E.cover || 0, 0, Math.max(0, duration() - 1 / E.mp4fps));
+        var pvt, jpgPath, movPath, id;
         host("chooseFolder", { title: "选择实况照片的保存位置" }).then(function (r) {
             if (!r.ok || !r.data.path) throw new Error("已取消");
             outDir = r.data.path;
@@ -1251,16 +1388,48 @@
                 compose(cv.getContext("2d"), 1, false);
                 return new Promise(function (res) { cv.toBlob(function (b) { b.arrayBuffer().then(res); }, "image/jpeg", 0.95); });
             }).then(function (jpgBuf) {
-                var id = MHLive.uuid();
+                id = MHLive.uuid();
                 var mov = MHLive.writeLiveMov(new Uint8Array(fs.readFileSync(r.data.out)), id, cover, duration(), E.mp4fps);
                 var jpg = MHLive.writeLiveJpeg(new Uint8Array(jpgBuf), id, S.size.w, S.size.h);
                 var check = MHLive.inspectLiveMov(mov);
                 if (check.id !== id || !check.stillTrack) throw new Error("写入后读回校验失败");
-                fs.writeFileSync(nodePath.join(outDir, name + ".JPG"), Buffer.from(jpg));
-                fs.writeFileSync(nodePath.join(outDir, name + ".MOV"), Buffer.from(mov));
-                return { ok: true, msg: "已生成实况照片 " + name + ".JPG + .MOV（" + outDir + "）。把两个文件一起拖进 Mac 的「照片」App，就会合成一张实况照片并同步到 iPhone" };
+                // .pvt：Apple 的实况照片包，Mac 上显示为一个文件
+                var base = name, n = 2;
+                while (fs.existsSync(nodePath.join(outDir, base + ".pvt"))) base = name + "_" + n++;
+                pvt = nodePath.join(outDir, base + ".pvt");
+                fs.mkdirSync(pvt);
+                jpgPath = nodePath.join(pvt, base + ".jpg");
+                movPath = nodePath.join(pvt, base + ".mov");
+                fs.writeFileSync(jpgPath, Buffer.from(jpg));
+                fs.writeFileSync(movPath, Buffer.from(mov));
+                fs.writeFileSync(nodePath.join(pvt, "metadata.plist"), MHLive.pvtPlist());
+                return verifyLive(jpgPath, movPath, id, dir);
             });
-        }).then(function (r) { busy = false; toast(r); }).catch(function (e) { busy = false; toast({ ok: false, msg: e.message === "已取消" ? "已取消" : "导出失败：" + (e.message || e) }); });
+        }).then(function (v) {
+            if (v === "bad") throw new Error("苹果系统读回时没有找到配对标识，这个文件可能不会被识别成实况照片。请把 AE 版本和这条提示发给我");
+            var want = !IS_WIN && E.photos;
+            return (want ? importToPhotos(jpgPath, movPath) : Promise.resolve(null)).then(function (imp) {
+                if (!IS_WIN) sh("/usr/bin/open", ["-R", pvt]);
+                else sh("explorer.exe", ["/select,", pvt]);
+                var msg = "实况照片已生成：" + nodePath.basename(pvt) + (v === "ok" ? "（苹果系统校验通过）" : "");
+                if (imp && imp.ok) msg += imp.count === 1 ? "，已存入「照片」App，识别为 1 张实况照片" : "，已存入「照片」App，请确认左上角有「实况」标记";
+                else if (imp) return { ok: false, msg: msg + "。存入「照片」失败：" + imp.msg + "。也可以直接把 .pvt 拖进「照片」" };
+                else msg += IS_WIN ? "。把整个 .pvt 文件夹传到 Mac，拖进「照片」即可" : "。双击它或拖进「照片」就是一张实况照片";
+                return { ok: true, msg: msg };
+            });
+        }).then(function (r) { busy = false; if (bar) bar.style.width = "0"; toast(r); }).catch(function (e) { busy = false; if (bar) bar.style.width = "0"; toast({ ok: false, msg: e.message === "已取消" ? "已取消" : "导出失败：" + (e.message || e) }); });
+    }
+
+    function setCover(t, preview) {
+        var E = S.exp;
+        E.cover = clamp(t, 0, Math.max(0, duration() - 1 / E.mp4fps));
+        local.set("exp", E);
+        $("#btn-cover").lastChild.textContent = "封面 " + fmt(E.cover) + "s";
+        if (preview && !S.playing) {
+            S.t = E.cover;
+            $("#t-now").textContent = fmt(S.t);
+            seekAll(S.t).then(draw);
+        }
     }
 
     function sendToAE() {
@@ -1293,6 +1462,11 @@
     // =====================================================================
     // 启动
     // =====================================================================
+    $("#btn-live").addEventListener("click", function () { if (!busy) exportLive($("#top-prog i")); });
+    hint($("#btn-live"), "导出实况照片", "随时一键导出：按当前排版和封面生成 .pvt 实况照片包" + (IS_WIN ? "" : "，并存入「照片」App（可在「导出」页关闭）"));
+    $("#btn-cover").addEventListener("click", function () { setCover(S.t, false); renderExportPanel(); toast({ ok: true, msg: "封面设为 " + fmt(S.exp.cover) + "s 这一帧" }); });
+    $("#btn-cover").lastChild.textContent = "封面 " + fmt(S.exp.cover || 0) + "s";
+    hint($("#btn-cover"), "设为封面", "把当前时间这一帧设为实况照片的封面（静止时显示的那张）");
     $$(".tab", $("#stabs")).forEach(function (t) {
         t.addEventListener("click", function () {
             $$(".tab", $("#stabs")).forEach(function (x) { x.classList.toggle("on", x === t); });

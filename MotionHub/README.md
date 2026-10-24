@@ -162,11 +162,11 @@ AE 里的图层边框、锚点、运动路径只是界面显示，渲染出去�
 | 导出 MP4 | 面板逐帧渲染成 PNG 序列，AE 导入后加进渲染队列（AE 2023 及以上用 H.264，否则输出 MOV），可以带上某段素材的声音 |
 | 发送到 AE | 在 AE 里搭出同样的排版：背景纯色 + 每个格子一个预合成，裁切、构图、圆角蒙版、循环都保留，带色阶和色彩平衡效果，可以继续编辑 |
 | 导出封面 PNG | 当前画面按原尺寸存成 PNG |
-| 导出实况照片 | 生成一对配好的 `IMG_xxxx.JPG` + `IMG_xxxx.MOV`（封面时刻可选），导入 Mac「照片」App 后就是一张实况照片，会随 iCloud 同步到 iPhone。视频由 AE 渲染成 H.264，需要 AE 2023 及以上 |
+| 导出实况照片 | **顶栏右上角「导出实况」随时一键导出**，导出页第一项也是它。生成一个 `IMG_xxxx.pvt` 实况照片包（Apple 的 Live Photo 包格式，Mac 上显示为一个文件，双击或拖进「照片」就是一张实况照片）。Mac 上默认导出后直接存入「照片」App，开了 iCloud 照片会同步到 iPhone；导出时还会用系统自带的 ImageIO / AVFoundation 读回配对标识做校验。封面用滑块或时间旁的「设为封面」选，选的时候画面会跳到那一帧。视频由 AE 渲染成 H.264，需要 AE 2023 及以上 |
 
 > 曲线没办法用脚本写进 AE 的「曲线」效果，所以「发送到 AE」的合成里只有色阶和色彩平衡；GIF 和 MP4 的调色与预览完全一致。
 >
-> 实况照片：JPG 的 EXIF 里写入 Apple MakerNote 内容标识，MOV 里写入同一个 `content.identifier` 和 still-image-time 元数据轨（封面时刻）。写法改写自 video-to-live-photo（Apache-2.0）和 LiveCanvas（MIT），许可证见 `third_party/video-to-live-photo/`。两个文件要**一起**导入「照片」才会配成一对，分别保存到相册不会变成实况。
+> 实况照片：JPG 的 EXIF 里写入 Apple MakerNote 内容标识，MOV 里写入同一个 `content.identifier` 和 still-image-time 元数据轨（封面时刻），影片时间基统一为 60000，再打包成 `.pvt`（照片 + 视频 + `metadata.plist`）。结构与 LiveCanvas 在 macOS PhotoKit 上验证过的输出一致，并用它的 `verify_pair` 校验通过。写法改写自 video-to-live-photo（Apache-2.0）和 LiveCanvas（MIT），许可证见 `third_party/video-to-live-photo/`。第一次存入「照片」时 macOS 会询问是否允许 After Effects 控制「照片」，选「好」；如果点了拒绝，到 系统设置 → 隐私与安全性 → 自动化 里打开。Windows 上 `.pvt` 是一个文件夹，整个传到 Mac 再导入。
 
 ## 视觉规范（风翮 windwings）
 

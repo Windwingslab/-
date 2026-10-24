@@ -134,6 +134,32 @@
     }
 
     // mp4/mov（H.264，单个 mdat）→ 实况照片用的 MOV
+    // 把影片时间基统一成 60000（与 livecanvas 先用 ffmpeg -movie_timescale 60000 重封装一致）：
+    // 30 / 25 / 24 / 60 fps 的一帧都是整数个 tick，封面样本的位置和时长没有舍入误差
+    var MOVIE_TS = 60000;
+    function rescaleMovie(b, moovAtom, to) {
+        var mvhd = firstChild(b, moovAtom, "mvhd"), v1 = b[mvhd.body] === 1;
+        var from = rd32(b, mvhd.body + (v1 ? 20 : 12));
+        if (from === to) return;
+        function fix(o, wide) {
+            var val = wide ? rd64(b, o) : rd32(b, o);
+            if (!wide && val === 0xFFFFFFFF) return;
+            var nv = Math.round(val * to / from);
+            if (wide) wr64(b, o, nv); else wr32(b, o, nv);
+        }
+        wr32(b, mvhd.body + (v1 ? 20 : 12), to);
+        fix(mvhd.body + (v1 ? 24 : 16), v1);
+        children(b, moovAtom).forEach(function (t) {
+            if (t.type !== "trak") return;
+            var tkhd = firstChild(b, t, "tkhd"), tv1 = b[tkhd.body] === 1;
+            fix(tkhd.body + (tv1 ? 28 : 20), tv1);
+            var edts = firstChild(b, t, "edts"), elst = edts && firstChild(b, edts, "elst");
+            if (!elst) return;
+            var ev1 = b[elst.body] === 1, n = rd32(b, elst.body + 4), o = elst.body + 8;
+            for (var i = 0; i < n; i++) { fix(o, ev1); o += ev1 ? 20 : 12; }
+        });
+    }
+
     function writeLiveMov(src, id, stillTime, duration, fps) {
         var top = parseAtoms(src, 0, src.length), mdat = null, moov = null, mdats = 0, i;
         for (i = 0; i < top.length; i++) {
@@ -142,8 +168,7 @@
             if (top[i].type === "moof") throw new Error("不支持分段（fragmented）的视频");
         }
         if (!mdat || !moov || mdats !== 1) throw new Error("视频必须是只有一个 mdat 的 MP4 / MOV");
-        var mvhd = firstChild(src, moov, "mvhd");
-        var timescale = rd32(src, mvhd.start + (src[mvhd.body] === 1 ? 28 : 20));
+        var timescale = MOVIE_TS;
         var tracks = children(src, moov).filter(function (a) { return a.type === "trak"; });
         var video = null, maxId = 0;
         tracks.forEach(function (t) { maxId = Math.max(maxId, trackId(src, t)); if (!video && handler(src, t) === "vide") video = t; });
@@ -163,6 +188,7 @@
         var pm = patchChunkOffsets(src.subarray(moov.start, moov.end), delta);
         var pmAtom = parseAtoms(pm, 0, pm.length)[0], pmvhd = firstChild(pm, pmAtom, "mvhd");
         wr32(pm, pmvhd.end - 4, metaId + 1);   // next_track_ID
+        rescaleMovie(pm, pmAtom, timescale);
         var additions = concat(contentIdentifierMeta(id), timedMetadataTrack(metaId, trackId(src, video), timescale, cover, sampleOffset, Math.max(1, Math.round(timescale / fps))));
         var newMoov = atom("moov", concat(pm.subarray(pmAtom.body, pmAtom.end), additions));
         return concat(prefix, newMdat, newMoov);
@@ -237,5 +263,11 @@
         return h.slice(0, 8) + "-" + h.slice(8, 12) + "-" + h.slice(12, 16) + "-" + h.slice(16, 20) + "-" + h.slice(20);
     }
 
-    root.MHLive = { writeLiveMov: writeLiveMov, writeLiveJpeg: writeLiveJpeg, inspectLiveMov: inspectLiveMov, uuid: uuid };
+    // .pvt 实况照片包里的 metadata.plist（与 livecanvas / makelive 相同）
+    function pvtPlist() {
+        return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+            '<plist version="1.0">\n<dict>\n\t<key>PFVideoComplementMetadataVersionKey</key>\n\t<string>1</string>\n</dict>\n</plist>\n';
+    }
+
+    root.MHLive = { writeLiveMov: writeLiveMov, writeLiveJpeg: writeLiveJpeg, inspectLiveMov: inspectLiveMov, uuid: uuid, pvtPlist: pvtPlist };
 })(typeof window !== "undefined" ? window : globalThis);
