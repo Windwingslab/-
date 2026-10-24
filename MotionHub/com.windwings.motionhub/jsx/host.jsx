@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.1.0";
+    var VERSION = "3.2.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -1651,6 +1651,197 @@ var MH = (function () {
             if (e.displayName && e.category) out.push({ name: e.displayName, match: e.matchName, cat: e.category });
         }
         return { effects: out };
+    };
+
+    // =====================================================================
+    // Studio：剪辑排版
+    // =====================================================================
+    var VIDEO_RE = /\.(mp4|mov|m4v|webm|mkv|avi)$/i;
+
+    LIB.pickVideos = function () {
+        var filter = IS_WIN
+            ? "视频:*.mp4;*.mov;*.m4v;*.webm;*.mkv;*.avi,所有文件:*.*"
+            : function (f) { return f instanceof Folder || VIDEO_RE.test(File.decode(f.name)); };
+        var files = File.openDialog("选择视频（可多选）", filter, true);
+        if (!files) return { files: [] };
+        if (!(files instanceof Array)) files = [files];
+        var out = [];
+        for (var i = 0; i < files.length; i++) out.push({ path: files[i].fsName, name: File.decode(files[i].name) });
+        return { files: out };
+    };
+
+    LIB.saveFile = function (a) {
+        var start = new File(Folder.desktop.fsName + "/" + a.name + "." + a.ext);
+        var f = start.saveDlg(a.title || "保存", IS_WIN ? (a.ext.toUpperCase() + ":*." + a.ext) : undefined);
+        if (!f) return { path: null, msg: "已取消" };
+        var path = f.fsName;
+        if (!new RegExp("\\." + a.ext + "$", "i").test(path)) path += "." + a.ext;
+        return { path: path };
+    };
+
+    function studioFolder() {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var it = app.project.item(i);
+            if (it instanceof FolderItem && it.name === "MotionHub Studio") return it;
+        }
+        return app.project.items.addFolder("MotionHub Studio");
+    }
+
+    function importFootage(path) {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var it = app.project.item(i);
+            if (it instanceof FootageItem && it.file && it.file.fsName === new File(path).fsName) return it;
+        }
+        var item = app.project.importFile(new ImportOptions(new File(path)));
+        item.parentFolder = studioFolder();
+        return item;
+    }
+
+    function addAudio(comp, audio) {
+        if (!audio) return;
+        var foot = importFootage(audio.path);
+        if (!foot.hasAudio) return;
+        var L = comp.layers.add(foot);
+        L.name = "声音 · " + foot.name;
+        L.startTime = -audio.start;
+        try { L.enabled = false; } catch (e) {}
+        L.audioEnabled = true;
+        L.moveToEnd();
+    }
+
+    // PNG 序列 → 合成 → 渲染队列（优先 H.264）
+    LIB.studioRender = function (a) {
+        var io = new ImportOptions(new File(a.first));
+        io.sequence = true;
+        io.forceAlphabetical = true;
+        var seq = app.project.importFile(io);
+        seq.mainSource.conformFrameRate = a.fps;
+        seq.parentFolder = studioFolder();
+        seq.name = a.name + " 帧序列";
+        var comp = app.project.items.addComp(a.name, a.width, a.height, 1, a.duration, a.fps);
+        comp.parentFolder = studioFolder();
+        comp.layers.add(seq).startTime = 0;
+        addAudio(comp, a.audio);
+
+        var rq = app.project.renderQueue.items.add(comp), om = rq.outputModule(1), used = "";
+        var tpls = om.templates;
+        for (var i = 0; i < tpls.length; i++) {
+            if (/H\.?264/i.test(tpls[i])) { used = tpls[i]; break; }
+        }
+        if (used) om.applyTemplate(used);
+        var outPath = a.out;
+        if (!used) outPath = outPath.replace(/\.mp4$/i, ".mov");
+        om.file = new File(outPath);
+        if (a.render) {
+            app.project.renderQueue.render();
+            return "已渲染：" + outPath + (used ? "" : "（这个 AE 版本没有 H.264 输出模板，已输出为 MOV）");
+        }
+        comp.openInViewer();
+        return "已加入渲染队列：" + comp.name + (used ? "（H.264）" : "（没有 H.264 模板，输出为 MOV）");
+    };
+
+    // 圆角矩形蒙版
+    function roundRectShape(w, h, r) {
+        r = Math.max(0, Math.min(r, w / 2, h / 2));
+        var sh = new Shape(), k = 0.5523 * r;
+        if (r <= 0) {
+            sh.vertices = [[0, 0], [w, 0], [w, h], [0, h]];
+        } else {
+            sh.vertices = [[r, 0], [w - r, 0], [w, r], [w, h - r], [w - r, h], [r, h], [0, h - r], [0, r]];
+            sh.inTangents = [[-k, 0], [0, 0], [0, -k], [0, 0], [k, 0], [0, 0], [0, k], [0, 0]];
+            sh.outTangents = [[0, 0], [k, 0], [0, 0], [0, k], [0, 0], [-k, 0], [0, 0], [0, -k]];
+        }
+        sh.closed = true;
+        return sh;
+    }
+
+    function findParam(fx, matchNames, names, index) {
+        var i, p;
+        for (i = 0; i < matchNames.length; i++) { try { p = fx.property(matchNames[i]); if (p) return p; } catch (e) {} }
+        for (i = 0; i < names.length; i++) { try { p = fx.property(names[i]); if (p) return p; } catch (e2) {} }
+        try { return fx.property(index); } catch (e3) { return null; }
+    }
+
+    // 色阶：数值单位跟着项目位深变（0–1、0–255 或 0–32768），按「输入白色」的默认值换算
+    function addLevels(L, lv) {
+        if (lv.inB === 0 && lv.inW === 255 && lv.gamma === 1 && lv.outB === 0 && lv.outW === 255) return true;
+        var fxs = L.property("ADBE Effect Parade");
+        if (!fxs.canAddProperty("ADBE Easy Levels2")) return false;
+        var fx = fxs.addProperty("ADBE Easy Levels2");
+        var inB = findParam(fx, ["ADBE Easy Levels2-0003"], ["Input Black", "输入黑色"], 3);
+        var inW = findParam(fx, ["ADBE Easy Levels2-0004"], ["Input White", "输入白色"], 4);
+        var gm = findParam(fx, ["ADBE Easy Levels2-0005"], ["Gamma", "灰度系数"], 5);
+        var outB = findParam(fx, ["ADBE Easy Levels2-0006"], ["Output Black", "输出黑色"], 6);
+        var outW = findParam(fx, ["ADBE Easy Levels2-0007"], ["Output White", "输出白色"], 7);
+        var unit = inW.value / 255;
+        inB.setValue(lv.inB * unit); inW.setValue(lv.inW * unit); gm.setValue(lv.gamma);
+        outB.setValue(lv.outB * unit); outW.setValue(lv.outW * unit);
+        return true;
+    }
+
+    function addBalance(L, bal) {
+        var all = bal.shadows.concat(bal.mid, bal.high), any = false, i;
+        for (i = 0; i < all.length; i++) if (all[i]) any = true;
+        if (!any) return true;
+        var fxs = L.property("ADBE Effect Parade"), mn = null, cands = ["ADBE Color Balance 2", "ADBE Color Balance"];
+        for (i = 0; i < cands.length; i++) if (fxs.canAddProperty(cands[i])) { mn = cands[i]; break; }
+        if (!mn) return false;
+        var fx = fxs.addProperty(mn);
+        for (i = 0; i < 9; i++) { try { fx.property(i + 1).setValue(all[i]); } catch (e) {} }
+        try { fx.property(10).setValue(bal.preserve ? 1 : 0); } catch (e2) {}
+        return true;
+    }
+
+    // 可编辑排版：背景纯色 + 每个格子一个预合成（裁切、构图、调色在里面，圆角用蒙版）
+    LIB.studioBuild = function (a) {
+        app.beginUndoGroup("MotionHub Studio：发送到 AE");
+        var notes = [];
+        try {
+            var folder = studioFolder();
+            var comp = app.project.items.addComp(a.name, a.width, a.height, 1, a.duration, a.fps);
+            comp.parentFolder = folder;
+            var bg = comp.layers.addSolid(a.bg, "背景", a.width, a.height, 1, a.duration);
+            bg.locked = true;
+            var curved = false;
+            for (var i = 0; i < a.cells.length; i++) {
+                var c = a.cells[i], foot = importFootage(c.path);
+                var w = Math.max(4, Math.round(c.w)), h = Math.max(4, Math.round(c.h));
+                var pre = app.project.items.addComp(a.name + " · 格子 " + (i + 1), w, h, 1, Math.max(c.length, 1 / a.fps), a.fps);
+                pre.parentFolder = folder;
+                var L = pre.layers.add(foot);
+                L.startTime = -c.start;
+                var sx = c.place.w / c.vw * 100, sy = c.place.h / c.vh * 100;
+                L.transform.scale.setValue([sx, sy]);
+                L.transform.position.setValue([c.place.x + c.place.w / 2, c.place.y + c.place.h / 2]);
+                if (!addLevels(L, c.levels)) notes.push("色阶");
+                if (!addBalance(L, c.balance)) notes.push("色彩平衡");
+                if (c.curved) curved = true;
+
+                var cell = comp.layers.add(pre);
+                cell.name = "格子 " + (i + 1) + " · " + c.name;
+                cell.transform.position.setValue([c.x + w / 2, c.y + h / 2]);
+                // 素材比成片短：时间重映射循环播放
+                if (c.length < a.duration - 0.001) {
+                    cell.timeRemapEnabled = true;
+                    cell.property("ADBE Time Remapping").expression = 'loopOut("cycle")';
+                }
+                cell.inPoint = 0;
+                cell.outPoint = a.duration;
+                if (a.radius > 0) {
+                    var m = cell.property("ADBE Mask Parade").addProperty("ADBE Mask Atom");
+                    m.property("ADBE Mask Shape").setValue(roundRectShape(w, h, a.radius));
+                }
+                cell.moveBefore(bg);
+            }
+            addAudio(comp, a.audio);
+            comp.openInViewer();
+            var msg = "已在 AE 里生成合成「" + comp.name + "」：" + a.cells.length + " 个格子";
+            if (curved) msg += "。曲线不能通过脚本写进 AE，这个合成里没有曲线调整";
+            if (notes.length) msg += "。没能添加：" + notes.join("、");
+            return msg;
+        } finally {
+            app.endUndoGroup();
+        }
     };
 
     LIB.status = function () {

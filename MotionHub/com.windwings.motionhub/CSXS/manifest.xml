@@ -1,11 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.1.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.2.0"
     ExtensionBundleName="MotionHub" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.windwings.motionhub.panel1" Version="3.1.0" />
-        <Extension Id="com.windwings.motionhub.panel2" Version="3.1.0" />
-        <Extension Id="com.windwings.motionhub.panel3" Version="3.1.0" />
-        <Extension Id="com.windwings.motionhub.panel4" Version="3.1.0" />
+        <Extension Id="com.windwings.motionhub.panel1" Version="3.2.0" />
+        <Extension Id="com.windwings.motionhub.panel2" Version="3.2.0" />
+        <Extension Id="com.windwings.motionhub.panel3" Version="3.2.0" />
+        <Extension Id="com.windwings.motionhub.panel4" Version="3.2.0" />
+        <Extension Id="com.windwings.motionhub.studio" Version="3.2.0" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -117,6 +118,34 @@
                         <Size><Height>720</Height><Width>300</Width></Size>
                         <MinSize><Height>200</Height><Width>180</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+        <!-- Studio：剪辑排版大窗口 -->
+        <Extension Id="com.windwings.motionhub.studio">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./studio.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <!-- 读写本地视频、帧序列和导出文件 -->
+                        <Parameter>--enable-nodejs</Parameter>
+                        <Parameter>--mixed-context</Parameter>
+                        <Parameter>--allow-file-access-from-files</Parameter>
+                        <Parameter>--autoplay-policy=no-user-gesture-required</Parameter>
+                    </CEFCommandLine>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>MotionHub Studio · 剪辑排版</Menu>
+                    <Geometry>
+                        <Size><Height>780</Height><Width>1180</Width></Size>
+                        <MinSize><Height>520</Height><Width>860</Width></MinSize>
+                        <MaxSize><Height>3000</Height><Width>4000</Width></MaxSize>
                     </Geometry>
                 </UI>
             </DispatchInfo>

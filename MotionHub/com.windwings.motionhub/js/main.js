@@ -266,7 +266,7 @@
     var PRESETS = {
         main: {
             name: "主面板", items: [
-                H("CREATE", "新建图层"), T("create"),
+                H("CREATE", "新建图层"), T("create"), T("studio"),
                 H("ANCHOR", "锚点"), T("anchor"), T("centerComp"), T("nullLayer"), T("precomp"),
                 H("KEYFRAME", "缓动 · 关键帧"), T("ease"), T("keys"), T("graph"),
                 H("ANIMATE", "快速动画 · 依次排列"), T("quick"), T("seq"),
@@ -466,6 +466,15 @@
     toolType("dupPrecomp", { name: "复制预合成（独立）", cat: "图层", icon: "dupPrecomp", hint: { title: "复制预合成（独立副本）", click: "复制图层，并换成一份独立的合成副本，改副本不会影响原来的", alt: "连里面嵌套的预合成也一起独立复制", shift: "不新建图层，直接把当前图层换成独立副本" }, run: call("dupPrecomp") });
     toolType("smartRename", { name: "智能重命名", cat: "图层", icon: "smartRename", hint: { title: "智能重命名", click: "按图层内容自动起名：文字用文字内容，素材用文件名，调整层用第一个效果名", alt: "重命名合成里的全部图层", shift: "名字前加上类型，例如 [文字] 标题" }, run: call("smartRename") });
     toolType("chain", { name: "首尾相接", cat: "图层", icon: "chain", hint: { title: "首尾相接", click: "按选择顺序把图层一个接一个排开", alt: "从播放头开始排", shift: "倒序" }, run: call("chain", { gap: 0 }) });
+
+    toolType("studio", {
+        name: "打开 Studio", cat: "新建", icon: "widgets", w: 3,
+        hint: { title: "MotionHub Studio · 剪辑排版", click: "打开剪辑排版窗口：多视频拼图、社交媒体尺寸、调色、导出 GIF / MP4" },
+        run: function () {
+            if (CEP && CEP.requestOpenExtension) { CEP.requestOpenExtension("com.windwings.motionhub.studio", ""); return null; }
+            return Promise.resolve({ ok: false, msg: "请从 窗口 → 扩展 → MotionHub Studio 打开" });
+        }
+    });
 
     toolType("colors", { name: "收集颜色", cat: "合成 · 颜色", icon: "colors", hint: { title: "收集颜色", click: "收集选中图层（含图层样式）里不重复的颜色，放进「颜色控制器」并自动关联", alt: "只收集，不关联" }, run: call("collectColors") });
 
