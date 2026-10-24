@@ -1046,7 +1046,7 @@
         var wRow = el("div", "ctl two");
         wRow.appendChild(el("span", "", "宽度"));
         var wseg = el("div", "seg2");
-        [[360, "360"], [540, "540"], [720, "720"], [0, "原尺寸"]].forEach(function (o) {
+        [[360, "360"], [540, "540"], [720, "720"], [0, "原始"]].forEach(function (o) {
             var b = el("button", E.width === o[0] ? "on" : "", o[1]);
             b.addEventListener("click", function () { E.width = o[0]; local.set("exp", E); renderExportPanel(); });
             wseg.appendChild(b);

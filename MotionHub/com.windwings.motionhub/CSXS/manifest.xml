@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.2.0"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.3.1"
     ExtensionBundleName="MotionHub" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.windwings.motionhub.panel1" Version="3.2.0" />
-        <Extension Id="com.windwings.motionhub.panel2" Version="3.2.0" />
-        <Extension Id="com.windwings.motionhub.panel3" Version="3.2.0" />
-        <Extension Id="com.windwings.motionhub.panel4" Version="3.2.0" />
-        <Extension Id="com.windwings.motionhub.studio" Version="3.2.0" />
+        <Extension Id="com.windwings.motionhub.panel1" Version="3.3.1" />
+        <Extension Id="com.windwings.motionhub.panel2" Version="3.3.1" />
+        <Extension Id="com.windwings.motionhub.panel3" Version="3.3.1" />
+        <Extension Id="com.windwings.motionhub.panel4" Version="3.3.1" />
+        <Extension Id="com.windwings.motionhub.studio" Version="3.3.1" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -144,7 +144,7 @@
                     <Menu>MotionHub Studio · 剪辑排版</Menu>
                     <Geometry>
                         <Size><Height>780</Height><Width>1180</Width></Size>
-                        <MinSize><Height>520</Height><Width>860</Width></MinSize>
+                        <MinSize><Height>480</Height><Width>600</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>4000</Width></MaxSize>
                     </Geometry>
                 </UI>
