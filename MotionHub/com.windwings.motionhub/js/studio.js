@@ -387,7 +387,7 @@
         var list = $("#clip-list");
         list.innerHTML = "";
         $("#clip-count").textContent = S.clips.length ? S.clips.length + " 个素材" : "素材";
-        $("#stage-empty").style.display = S.clips.length ? "none" : "";
+        $("#stage-empty").style.display = "none";
         S.clips.forEach(function (c, i) {
             var used = [];
             S.cells.forEach(function (cell, k) { if (cell.clip === i) used.push(k + 1); });
@@ -541,6 +541,7 @@
         compose(vctx, viewScale * dpr, true);
         $("#size-label").textContent = S.size.w + " × " + S.size.h + " · " + (S.size.label || "");
         $("#t-total").textContent = fmt(duration()) + " s";
+        $("#btn-cover").lastChild.textContent = "封面 " + fmt(Math.min(S.exp.cover || 0, Math.max(0, duration() - 1 / S.exp.mp4fps))) + "s";
         var cell = S.cells[S.sel], clip = cell && S.clips[cell.clip];
         $("#cell-info").textContent = "格子 " + (S.sel + 1) + (clip ? " · " + clip.name : " · 空");
         drawPlayhead();

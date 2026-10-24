@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.4.0";
+    var VERSION = "3.4.1";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -2090,37 +2090,71 @@ var MH = (function () {
         return { comps: out };
     };
 
+    // 输出模块设成 PNG 序列。格式名随 AE 界面语言变化，新版 AE 也不一定自带 PNG 模板，所以挨个试
+    var PNG_FORMATS = ["PNG Sequence", "PNG 序列", "PNG序列", "PNG シーケンス", "PNG 시퀀스", "PNG-Sequenz", "Séquence PNG",
+        "Secuencia PNG", "Sequenza PNG", "Sequência PNG", "Последовательность PNG"];
+    function isPng(om) {
+        try { return /PNG/i.test(om.getSettings(GetSettingsFormat.STRING)["Format"]); } catch (e) { return false; }
+    }
+    function setPngFormat(om) {
+        var tpls = om.templates, i;
+        for (i = 0; i < tpls.length; i++) {
+            if (/PNG/i.test(tpls[i])) { try { om.applyTemplate(tpls[i]); if (isPng(om)) return true; } catch (e) {} }
+        }
+        for (i = 0; i < PNG_FORMATS.length; i++) {
+            try { om.setSettings({ "Format": PNG_FORMATS[i] }); if (isPng(om)) return true; } catch (e2) {}
+        }
+        return false;
+    }
+    function pad5(n) { return ("0000" + n).slice(-5); }
+
+    // 备用：不经过渲染队列，逐帧存 PNG（AE 2022 起在后台写文件，需要等它写完）
+    function saveFramesPng(comp, dir, start, dur) {
+        if (typeof comp.saveFrameToPng !== "function") return false;
+        var fps = comp.frameRate, n = Math.max(1, Math.round(dur * fps)), i;
+        for (i = 0; i < n; i++) comp.saveFrameToPng(start + i / fps, new File(dir.fsName + "/frame_" + pad5(i) + ".png"));
+        var last = new File(dir.fsName + "/frame_" + pad5(n - 1) + ".png"), t0 = new Date().getTime();
+        while (!(last.exists && last.length > 0) && new Date().getTime() - t0 < 120000) $.sleep(100);
+        $.sleep(200);
+        return true;
+    }
+
     LIB.renderComp = function (a) {
         var comp = app.project.itemByID(a.id);
         if (!(comp instanceof CompItem)) fail("找不到这个合成");
         var dir = new Folder(Folder.temp.fsName + "/motionhub_comp_" + comp.id + "_" + new Date().getTime());
         dir.create();
-        var rq = app.project.renderQueue, keep = [], item = null, i;
+        var start = a.workArea ? comp.workAreaStart : 0, dur = a.workArea ? comp.workAreaDuration : comp.duration;
+        var rq = app.project.renderQueue, keep = [], item = null, i, viaQueue = false, why = "";
         try {
             for (i = 1; i <= rq.numItems; i++) { keep.push(rq.item(i).render); try { rq.item(i).render = false; } catch (e0) {} }
             item = rq.items.add(comp);
-            if (a.workArea) {
-                item.timeSpanStart = comp.workAreaStart;
-                item.timeSpanDuration = comp.workAreaDuration;
-            }
+            item.timeSpanStart = start;
+            item.timeSpanDuration = dur;
             if (a.half) { try { item.setSettings({ "Resolution": [2, 2] }); } catch (e1) {} }
-            var om = item.outputModule(1), tpls = om.templates, png = "";
-            for (i = 0; i < tpls.length; i++) if (/PNG/i.test(tpls[i])) { png = tpls[i]; break; }
-            if (png) om.applyTemplate(png);
-            else om.setSettings({ "Format": "PNG Sequence" });
-            om.file = new File(dir.fsName + "/frame_[#####].png");
-            rq.render();
+            var om = item.outputModule(1);
+            if (setPngFormat(om)) {
+                om.file = new File(dir.fsName + "/frame_[#####].png");
+                rq.render();
+                viaQueue = true;
+            }
         } catch (e) {
-            fail("渲染合成失败：" + (e.message || e));
+            why = e.message || String(e);
         } finally {
             try { if (item) item.remove(); } catch (e2) {}
             for (i = 0; i < keep.length && i < rq.numItems; i++) { try { rq.item(i + 1).render = keep[i]; } catch (e3) {} }
         }
+        if (!viaQueue || !dir.getFiles("*.png").length) {
+            var old = dir.getFiles("*"), saved = false;
+            for (i = 0; i < old.length; i++) { try { old[i].remove(); } catch (e4) {} }
+            try { saved = saveFramesPng(comp, dir, start, dur); } catch (e5) { why = why || (e5.message || String(e5)); }
+            if (!saved) fail("渲染合成失败" + (why ? "：" + why : "：这个 AE 版本既没有 PNG 序列输出，也不支持逐帧存图"));
+        }
         var files = dir.getFiles("*.png"), names = [];
         for (i = 0; i < files.length; i++) names.push(File.decode(files[i].name));
         names.sort();
-        if (!names.length) fail("没有渲染出画面，请检查合成的工作区和输出模块");
-        var k = a.half ? 0.5 : 1;
+        if (!names.length) fail("没有渲染出画面，请检查合成的工作区");
+        var k = a.half && viaQueue ? 0.5 : 1;
         return {
             dir: dir.fsName, files: names, fps: comp.frameRate, name: comp.name, id: comp.id,
             width: Math.round(comp.width * k), height: Math.round(comp.height * k),
