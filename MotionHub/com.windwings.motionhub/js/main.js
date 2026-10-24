@@ -272,6 +272,7 @@
                 H("ANIMATE", "快速动画 · 依次排列"), T("quick"), T("seq"),
                 H("BEAT", "音乐节拍"), T("beat"),
                 H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
+                H("WIREFRAME", "线框叠加"), T("wire"),
                 H("ALIGN", "对齐 · 分布"), T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
                 H("LAYER", "图层"), T("decompose"), T("dupPrecomp"), T("smartRename"), T("chain"), T("trim"), T("split"), T("toPlayhead"), T("reverseLayers"), T("motionBlur"), T("rename"),
                 H("EXPRESSION", "表达式 · 先选属性"), T("wiggle"), T("loop"), T("bounce"), T("clearExpr"),
@@ -285,6 +286,7 @@
                 H("KEYS", "关键帧"), T("keys"),
                 H("ANIMATE", "快速动画"), T("quick"), T("seq"),
                 H("BEAT", "音乐节拍"), T("beat"),
+                H("WIREFRAME", "线框叠加"), T("wire"),
                 H("EXPRESSION", "表达式"), T("wiggle"), T("loop"), T("bounce"), T("clearExpr")
             ]
         },
@@ -1038,6 +1040,52 @@
                     return host("stylePaste", { effects: on("fx", true), keys: on("keys", true), fit: on("fit", true), transform: on("tr", false), blend: on("blend", false), replace: on("replace", false) });
                 }
             }));
+        }
+    });
+
+    // —— 智能组件：线框叠加（图层边界、锚点、运动轨迹、摄像机信息，渲染出来也看得到）——
+    var WIRE_OPTS = [
+        ["bounds", "边界框", true, "每个图层的外框，3D 图层会跟着摄像机透视"],
+        ["anchor", "锚点", true, "锚点位置的十字"],
+        ["path", "运动轨迹", true, "锚点在整个时间里走过的路线（虚线）"],
+        ["grow", "轨迹随时间生长", false, "轨迹只画到当前时间，像拖尾一样边走边画"],
+        ["labels", "图层名", true, "在边界框左上角标出图层名"],
+        ["grid", "3D 地面网格", true, "合成里有 3D 图层或摄像机时，加一张跟着摄像机透视的地面网格，摄像机一动就看得出来"],
+        ["hud", "摄像机信息", false, "左上角显示时间码、摄像机位置和缩放"],
+        ["safe", "安全框", false, "动作安全框、字幕安全框和中心十字"]
+    ];
+
+    reg("wire", {
+        name: "线框叠加", cat: "智能组件", icon: "widgets", desc: "把图层边界、锚点、运动轨迹、摄像机信息做成真实图层，渲染出来也看得到", size: "full",
+        render: function (cell, item) {
+            var w = widgetBox(cell, "WIREFRAME · 线框叠加", "渲染可见");
+            var chips = el("div", "chips");
+            WIRE_OPTS.forEach(function (o) { toggleChip(chips, o[1], item, "w_" + o[0], o[2], { title: o[1], click: o[3] }); });
+            w.appendChild(chips);
+            var r = row(w);
+            var opts = function () {
+                var out = {};
+                WIRE_OPTS.forEach(function (o) { out[o[0]] = item["w_" + o[0]] === undefined ? o[2] : item["w_" + o[0]]; });
+                return out;
+            };
+            r.appendChild(tile({
+                icon: "widgets", label: "生成线框", left: false, cls: "grow", filled: true,
+                hint: { title: "生成线框", click: "给选中图层生成线框图层", alt: "给合成里所有显示中的图层生成", note: "颜色、线宽、不透明度在「MH 线框控制」空对象的效果控件里调，所有线框一起变" },
+                run: function (m) { return host("wireframe", { opts: opts(), mods: m }); }
+            }));
+            r.appendChild(tile({
+                icon: "colors", hint: { title: "线框颜色", click: "换成品牌色板里的颜色" },
+                run: function () {
+                    var anchor = cell.querySelector(".w-row:last-child .tile:nth-child(2)");
+                    showPop(anchor || cell, [el("div", "p-title", "线框颜色"), swatches(null, function (hex) {
+                        hidePop();
+                        var c = rgb(hex).map(function (v) { return v / 255; });
+                        host("wireStyle", { color: [c[0], c[1], c[2], 1] }).then(toast);
+                    }, false)]);
+                    return null;
+                }
+            }));
+            r.appendChild(tile({ icon: "trash", hint: { title: "清除线框", click: "删除这个合成里所有 MotionHub 生成的线框图层" }, run: call("wireClear") }));
         }
     });
 

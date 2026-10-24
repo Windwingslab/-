@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.2.0";
+    var VERSION = "3.3.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -1177,6 +1177,227 @@ var MH = (function () {
         return "已添加「" + a.name + "」" + (a.mods.alt || !sel.length ? "到新的调整图层" : "到 " + targets.length + " 个图层");
     };
 
+    // —— 线框叠加：把图层边界、锚点、运动轨迹、摄像机信息做成真实图层，渲染时也看得到 ——
+    var WIRE_TAG = "motionhub-wireframe";
+
+    function isWire(L) { try { return L.comment === WIRE_TAG; } catch (e) { return false; } }
+
+    function wireControl(comp) {
+        for (var i = 1; i <= comp.numLayers; i++) if (isWire(comp.layer(i)) && comp.layer(i).name === "MH 线框控制") return comp.layer(i);
+        var c = comp.layers.addNull(comp.duration);
+        c.name = "MH 线框控制";
+        c.comment = WIRE_TAG;
+        c.label = 2;
+        var fx = c.property("ADBE Effect Parade");
+        var col = fx.addProperty("ADBE Color Control"); col.name = "线框颜色"; col.property(1).setValue([1, 0.349, 0, 1]);
+        var w = fx.addProperty("ADBE Slider Control"); w.name = "线宽"; w.property(1).setValue(Math.max(1, Math.round(comp.height / 540)));
+        var o = fx.addProperty("ADBE Slider Control"); o.name = "不透明度"; o.property(1).setValue(100);
+        return c;
+    }
+
+    var CTRL = 'thisComp.layer("MH 线框控制")';
+
+    function wireStroke(group, dashed) {
+        var st = group.property("ADBE Vectors Group").addProperty("ADBE Vector Graphic - Stroke");
+        st.property("ADBE Vector Stroke Color").expression = CTRL + '.effect("线框颜色")(1)';
+        st.property("ADBE Vector Stroke Width").expression = CTRL + '.effect("线宽")(1)';
+        if (dashed) {
+            try {
+                var d = st.property("ADBE Vector Stroke Dashes").addProperty("ADBE Vector Stroke Dash 1");
+                d.expression = CTRL + '.effect("线宽")(1) * 4';
+            } catch (e) {}
+        }
+        return st;
+    }
+
+    function wirePath(root, name, expr, dashed) {
+        var g = root.addProperty("ADBE Vector Group");
+        g.name = name;
+        var p = g.property("ADBE Vectors Group").addProperty("ADBE Vector Shape - Group");
+        p.property("ADBE Vector Shape").expression = expr;
+        wireStroke(g, dashed);
+        return g;
+    }
+
+    function newWireShape(comp, name) {
+        var S = comp.layers.addShape();
+        S.name = name;
+        S.comment = WIRE_TAG;
+        S.label = 2;
+        S.transform.anchorPoint.setValue([0, 0]);
+        S.transform.position.setValue([0, 0]);
+        return S;
+    }
+
+    T.wireframe = function (a) {
+        var comp = activeComp(), o = a.opts || {}, i;
+        var targets = [];
+        if (a.mods.alt) { for (i = 1; i <= comp.numLayers; i++) targets.push(comp.layer(i)); }
+        else targets = needLayers(comp, 1);
+        var list = [], seen = {}, dup = 0;
+        for (i = 0; i < targets.length; i++) {
+            var T0 = targets[i];
+            if (isWire(T0) || T0 instanceof CameraLayer || T0 instanceof LightLayer) continue;
+            if (!a.mods.alt || T0.enabled) { if (seen[T0.name]) dup++; seen[T0.name] = true; list.push(T0); }
+        }
+        var ctrl = wireControl(comp), made = 0, top = comp.layer(1);
+        var opacity = CTRL + '.effect("不透明度")(1)';
+        for (i = 0; i < list.length; i++) {
+            var L = list[i], ref = "thisComp.layer(" + q(L.name) + ")";
+            var isNull = L.nullLayer;
+            var S = newWireShape(comp, "MH 线框 · " + L.name);
+            var root = S.property("ADBE Root Vectors Group");
+            if (o.bounds !== false && !isNull) {
+                wirePath(root, "边界框",
+                    "var L = " + ref + ";\n" +
+                    "var r = L.sourceRectAtTime(time, false);\n" +
+                    "var c = [[r.left, r.top, 0], [r.left + r.width, r.top, 0], [r.left + r.width, r.top + r.height, 0], [r.left, r.top + r.height, 0]];\n" +
+                    "var pts = [];\n" +
+                    "for (var i = 0; i < 4; i++) { var v = L.toComp(c[i]); pts.push([v[0], v[1]]); }\n" +
+                    "createPath(pts, [], [], true);", false);
+            }
+            if (o.anchor !== false) {
+                wirePath(root, "锚点",
+                    "var L = " + ref + ";\n" +
+                    "var a = L.toComp(L.transform.anchorPoint);\n" +
+                    "var s = " + CTRL + '.effect("线宽")(1) * 6;\n' +
+                    "createPath([[a[0] - s, a[1]], [a[0] + s, a[1]], [a[0], a[1]], [a[0], a[1] - s], [a[0], a[1] + s]], [], [], false);", false);
+            }
+            if (o.path) {
+                wirePath(root, "运动轨迹",
+                    "var L = " + ref + ";\n" +
+                    "var a = Math.max(L.inPoint, 0), b = Math.min(L.outPoint, thisComp.duration)" + (o.grow ? ", b = Math.min(b, time)" : "") + ";\n" +
+                    "var step = Math.max(thisComp.frameDuration, (b - a) / 300);\n" +
+                    "var pts = [];\n" +
+                    "for (var t = a; t <= b + 0.0001; t += step) { var v = L.toComp(L.transform.anchorPoint.valueAtTime(t), t); pts.push([v[0], v[1]]); }\n" +
+                    "if (pts.length < 2) pts = [[0, 0], [0, 0]];\n" +
+                    "createPath(pts, [], [], false);", true);
+            }
+            // 图层不显示的时候，线框也隐藏（轨迹除外）
+            S.transform.opacity.expression = (o.path && o.grow === false ? opacity : "var L = " + ref + ";\n(L.active ? 1 : 0) * " + opacity);
+            S.moveBefore(top);
+            if (o.labels !== false) {
+                var tx = comp.layers.addText(L.name);
+                tx.name = "MH 标签 · " + L.name;
+                tx.comment = WIRE_TAG;
+                var doc = tx.property("ADBE Text Properties").property("ADBE Text Document").value;
+                doc.fontSize = Math.max(12, Math.round(comp.height / 60));
+                doc.fillColor = [1, 0.349, 0];
+                doc.applyFill = true;
+                doc.applyStroke = false;
+                doc.justification = ParagraphJustification.LEFT_JUSTIFY;
+                tx.property("ADBE Text Properties").property("ADBE Text Document").setValue(doc);
+                tx.transform.anchorPoint.setValue([0, 0]);
+                tx.transform.position.expression =
+                    "var L = " + ref + ";\n" +
+                    "var r = L.sourceRectAtTime(time, false);\n" +
+                    "var v = L.toComp([r.left, r.top, 0]);\n" +
+                    "[v[0], v[1] - " + CTRL + '.effect("线宽")(1) * 4]';
+                tx.transform.opacity.expression = "var L = " + ref + ";\n(L.active ? 1 : 0) * " + opacity;
+                tx.moveBefore(S);
+            }
+            made++;
+        }
+        var has3D = false;
+        for (i = 1; i <= comp.numLayers; i++) if (comp.layer(i) instanceof CameraLayer || comp.layer(i).threeDLayer) has3D = true;
+        var extras = [];
+        if (o.grid && has3D && !findWire(comp, "MH 地面网格")) { addGrid(comp); extras.push("地面网格"); }
+        if (o.hud && !findWire(comp, "MH 摄像机信息")) { addHud(comp); extras.push("摄像机信息"); }
+        if (o.safe && !findWire(comp, "MH 安全框")) { addSafe(comp); extras.push("安全框"); }
+        ctrl.moveToBeginning();
+        return "已为 " + made + " 个图层生成线框" + (extras.length ? "，并加上" + extras.join("、") : "") +
+            "。颜色、线宽和不透明度在「MH 线框控制」的效果控件里改" + (dup ? "（有 " + dup + " 个图层重名，线框会跟着第一个同名图层）" : "");
+    };
+
+    function findWire(comp, name) {
+        for (var i = 1; i <= comp.numLayers; i++) if (isWire(comp.layer(i)) && comp.layer(i).name === name) return comp.layer(i);
+        return null;
+    }
+
+    // 3D 地面网格：放在画面底部所在的水平面上，跟着摄像机一起透视
+    function addGrid(comp) {
+        var S = comp.layers.addShape();
+        S.name = "MH 地面网格";
+        S.comment = WIRE_TAG;
+        S.threeDLayer = true;
+        S.transform.anchorPoint.setValue([0, 0, 0]);
+        S.transform.position.setValue([comp.width / 2, comp.height, 0]);
+        S.transform.property("ADBE Orientation").setValue([90, 0, 0]);
+        var size = Math.max(comp.width, comp.height) * 4, n = 20, root = S.property("ADBE Root Vectors Group");
+        for (var dir = 0; dir < 2; dir++) {
+            var g = root.addProperty("ADBE Vector Group");
+            g.name = dir ? "纵线" : "横线";
+            var rect = g.property("ADBE Vectors Group").addProperty("ADBE Vector Shape - Rect");
+            rect.property("ADBE Vector Rect Size").setValue(dir ? [0.01, size] : [size, 0.01]);
+            rect.property("ADBE Vector Rect Position").setValue(dir ? [-size / 2, 0] : [0, -size / 2]);
+            wireStroke(g, false);
+            var rep = g.property("ADBE Vectors Group").addProperty("ADBE Vector Filter - Repeater");
+            rep.property("ADBE Vector Repeater Copies").setValue(n + 1);
+            rep.property("ADBE Vector Repeater Transform").property("ADBE Vector Repeater Position").setValue(dir ? [size / n, 0] : [0, size / n]);
+        }
+        S.transform.opacity.expression = CTRL + '.effect("不透明度")(1) * 0.45';
+        S.moveToEnd();
+        try { S.moveBefore(comp.layer(comp.numLayers)); } catch (e) {}
+    }
+
+    function addHud(comp) {
+        var tx = comp.layers.addText("CAM");
+        tx.name = "MH 摄像机信息";
+        tx.comment = WIRE_TAG;
+        var src = tx.property("ADBE Text Properties").property("ADBE Text Document");
+        var doc = src.value;
+        doc.fontSize = Math.max(12, Math.round(comp.height / 54));
+        doc.fillColor = [1, 0.349, 0];
+        doc.applyFill = true;
+        doc.justification = ParagraphJustification.LEFT_JUSTIFY;
+        src.setValue(doc);
+        src.expression =
+            "function f(v) { return (v >= 0 ? \" \" : \"\") + v.toFixed(0); }\n" +
+            "var out = \"TC  \" + timeToTimecode(time);\n" +
+            "try {\n" +
+            "  var c = thisComp.activeCamera;\n" +
+            "  var p = c.toWorld([0, 0, 0]);\n" +
+            "  out += \"\\rCAM  X\" + f(p[0]) + \"  Y\" + f(p[1]) + \"  Z\" + f(p[2]) + \"\\rZOOM \" + c.zoom.toFixed(0);\n" +
+            "} catch (e) { out += \"\\r没有摄像机\"; }\n" +
+            "out;";
+        tx.transform.anchorPoint.setValue([0, 0]);
+        tx.transform.position.setValue([Math.round(comp.width * 0.04), Math.round(comp.height * 0.05)]);
+        tx.transform.opacity.expression = CTRL + '.effect("不透明度")(1)';
+    }
+
+    function addSafe(comp) {
+        var S = newWireShape(comp, "MH 安全框");
+        var root = S.property("ADBE Root Vectors Group"), w = comp.width, h = comp.height;
+        var frames = [[0.9, false], [0.8, true]];
+        for (var i = 0; i < frames.length; i++) {
+            var s = frames[i], g = root.addProperty("ADBE Vector Group");
+            g.name = s[1] ? "字幕安全框" : "动作安全框";
+            var r = g.property("ADBE Vectors Group").addProperty("ADBE Vector Shape - Rect");
+            r.property("ADBE Vector Rect Size").setValue([w * s[0], h * s[0]]);
+            r.property("ADBE Vector Rect Position").setValue([w / 2, h / 2]);
+            wireStroke(g, s[1]);
+        }
+        wirePath(root, "中心十字", "var w = thisComp.width, h = thisComp.height, s = Math.min(w, h) * 0.03;\ncreatePath([[w / 2 - s, h / 2], [w / 2 + s, h / 2], [w / 2, h / 2], [w / 2, h / 2 - s], [w / 2, h / 2 + s]], [], [], false);", false);
+        S.transform.opacity.expression = CTRL + '.effect("不透明度")(1) * 0.6';
+    }
+
+    T.wireClear = function () {
+        var comp = activeComp(), n = 0;
+        for (var i = comp.numLayers; i >= 1; i--) {
+            var L = comp.layer(i);
+            if (isWire(L)) { L.locked = false; L.remove(); n++; }
+        }
+        return n ? "已清除 " + n + " 个线框图层" : "这个合成里没有线框图层";
+    };
+
+    T.wireStyle = function (a) {
+        var comp = activeComp(), c = findWire(comp, "MH 线框控制");
+        if (!c) fail("先生成线框");
+        var fx = c.property("ADBE Effect Parade");
+        if (a.color) fx.property("线框颜色").property(1).setValue(a.color);
+        return "已更新线框颜色";
+    };
+
     // —— 代码片段 ——
     T.applyExpr = function (a) {
         var comp = activeComp(), props = selectedExprProps(comp);
@@ -1670,6 +1891,11 @@ var MH = (function () {
         return { files: out };
     };
 
+    LIB.chooseFolder = function (a) {
+        var f = Folder.selectDialog(a.title || "选择文件夹");
+        return f ? { path: f.fsName } : { path: null, msg: "已取消" };
+    };
+
     LIB.saveFile = function (a) {
         var start = new File(Folder.desktop.fsName + "/" + a.name + "." + a.ext);
         var f = start.saveDlg(a.title || "保存", IS_WIN ? (a.ext.toUpperCase() + ":*." + a.ext) : undefined);
@@ -1699,7 +1925,7 @@ var MH = (function () {
 
     function addAudio(comp, audio) {
         if (!audio) return;
-        var foot = importFootage(audio.path);
+        var foot = audio.compId ? app.project.itemByID(audio.compId) : importFootage(audio.path);
         if (!foot.hasAudio) return;
         var L = comp.layers.add(foot);
         L.name = "声音 · " + foot.name;
@@ -1734,10 +1960,14 @@ var MH = (function () {
         om.file = new File(outPath);
         if (a.render) {
             app.project.renderQueue.render();
-            return "已渲染：" + outPath + (used ? "" : "（这个 AE 版本没有 H.264 输出模板，已输出为 MOV）");
+            if (a.cleanup) {
+                try { rq.remove(); } catch (e0) {}
+                try { comp.remove(); seq.remove(); } catch (e1) {}
+            }
+            return { msg: "已渲染：" + outPath + (used ? "" : "（这个 AE 版本没有 H.264 输出模板，已输出为 MOV）"), out: outPath, h264: !!used };
         }
         comp.openInViewer();
-        return "已加入渲染队列：" + comp.name + (used ? "（H.264）" : "（没有 H.264 模板，输出为 MOV）");
+        return { msg: "已加入渲染队列：" + comp.name + (used ? "（H.264）" : "（没有 H.264 模板，输出为 MOV）"), out: outPath, h264: !!used };
     };
 
     // 圆角矩形蒙版
@@ -1804,7 +2034,7 @@ var MH = (function () {
             bg.locked = true;
             var curved = false;
             for (var i = 0; i < a.cells.length; i++) {
-                var c = a.cells[i], foot = importFootage(c.path);
+                var c = a.cells[i], foot = c.compId ? app.project.itemByID(c.compId) : importFootage(c.path);
                 var w = Math.max(4, Math.round(c.w)), h = Math.max(4, Math.round(c.h));
                 var pre = app.project.items.addComp(a.name + " · 格子 " + (i + 1), w, h, 1, Math.max(c.length, 1 / a.fps), a.fps);
                 pre.parentFolder = folder;
@@ -1844,6 +2074,60 @@ var MH = (function () {
         }
     };
 
+    // —— 把 AE 合成送进 Studio：列出合成，渲染成 PNG 序列 ——
+    LIB.listComps = function () {
+        var out = [], active = app.project.activeItem, sel = app.project.selection, selIds = {};
+        for (var s = 0; s < sel.length; s++) selIds[sel[s].id] = true;
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var c = app.project.item(i);
+            if (!(c instanceof CompItem)) continue;
+            out.push({
+                id: c.id, name: c.name, width: c.width, height: c.height, duration: c.duration, fps: c.frameRate,
+                workStart: c.workAreaStart, workDur: c.workAreaDuration,
+                active: !!(active && active.id === c.id), selected: !!selIds[c.id]
+            });
+        }
+        return { comps: out };
+    };
+
+    LIB.renderComp = function (a) {
+        var comp = app.project.itemByID(a.id);
+        if (!(comp instanceof CompItem)) fail("找不到这个合成");
+        var dir = new Folder(Folder.temp.fsName + "/motionhub_comp_" + comp.id + "_" + new Date().getTime());
+        dir.create();
+        var rq = app.project.renderQueue, keep = [], item = null, i;
+        try {
+            for (i = 1; i <= rq.numItems; i++) { keep.push(rq.item(i).render); try { rq.item(i).render = false; } catch (e0) {} }
+            item = rq.items.add(comp);
+            if (a.workArea) {
+                item.timeSpanStart = comp.workAreaStart;
+                item.timeSpanDuration = comp.workAreaDuration;
+            }
+            if (a.half) { try { item.setSettings({ "Resolution": [2, 2] }); } catch (e1) {} }
+            var om = item.outputModule(1), tpls = om.templates, png = "";
+            for (i = 0; i < tpls.length; i++) if (/PNG/i.test(tpls[i])) { png = tpls[i]; break; }
+            if (png) om.applyTemplate(png);
+            else om.setSettings({ "Format": "PNG Sequence" });
+            om.file = new File(dir.fsName + "/frame_[#####].png");
+            rq.render();
+        } catch (e) {
+            fail("渲染合成失败：" + (e.message || e));
+        } finally {
+            try { if (item) item.remove(); } catch (e2) {}
+            for (i = 0; i < keep.length && i < rq.numItems; i++) { try { rq.item(i + 1).render = keep[i]; } catch (e3) {} }
+        }
+        var files = dir.getFiles("*.png"), names = [];
+        for (i = 0; i < files.length; i++) names.push(File.decode(files[i].name));
+        names.sort();
+        if (!names.length) fail("没有渲染出画面，请检查合成的工作区和输出模块");
+        var k = a.half ? 0.5 : 1;
+        return {
+            dir: dir.fsName, files: names, fps: comp.frameRate, name: comp.name, id: comp.id,
+            width: Math.round(comp.width * k), height: Math.round(comp.height * k),
+            msg: "已把「" + comp.name + "」渲染成 " + names.length + " 帧"
+        };
+    };
+
     LIB.status = function () {
         return { canWrite: canWriteFiles() };
     };
@@ -1861,7 +2145,7 @@ var MH = (function () {
         applyExpr: "应用表达式", runCode: "执行脚本", bezierRead: "读取曲线",
         beatMarkers: "节拍标记", clearMarkers: "清除标记", beatLayers: "按节拍排列", decompose: "解散预合成",
         dupPrecomp: "复制预合成", smartRename: "智能重命名", chain: "首尾相接", styleCopy: "复制样式",
-        stylePaste: "粘贴样式", applyEffect: "添加效果"
+        stylePaste: "粘贴样式", applyEffect: "添加效果", wireframe: "线框叠加", wireClear: "清除线框", wireStyle: "线框颜色"
     };
 
     function call(name, args) {
