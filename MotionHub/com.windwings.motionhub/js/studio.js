@@ -10,6 +10,23 @@
     var fs = NODE ? require("fs") : null, os = NODE ? require("os") : null, nodePath = NODE ? require("path") : null;
     var IS_WIN = navigator.platform.indexOf("Win") === 0;
 
+    // 拖动统一用鼠标事件：AE 内置的 Chromium 里 pointer 事件经常收不到 pointermove
+    function onDrag(node, down) {
+        node.addEventListener("mousedown", function (e) {
+            if (e.button !== 0) return;
+            var h = down(e);
+            if (!h) return;
+            e.preventDefault();
+            function mv(ev) { if (h.move) h.move(ev); }
+            function up(ev) {
+                document.removeEventListener("mousemove", mv, true);
+                document.removeEventListener("mouseup", up, true);
+                if (h.up) h.up(ev);
+            }
+            document.addEventListener("mousemove", mv, true);
+            document.addEventListener("mouseup", up, true);
+        });
+    }
     function el(tag, cls, html) { var n = document.createElement(tag); if (cls) n.className = cls; if (html !== undefined) n.innerHTML = html; return n; }
     function esc(s) { return String(s === undefined || s === null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
     function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -119,13 +136,57 @@
 
     function syncCells() {
         var tpl = currentTemplate(), n = tpl.cells.length;
-        while (S.cells.length < n) S.cells.push({ clip: S.clips.length ? S.cells.length % S.clips.length : -1, zoom: 1, panX: 0, panY: 0, fit: "cover" });
+        // 新格子是空的，放什么素材由你来定；只把还没用过的素材依次补进空格子
+        while (S.cells.length < n) S.cells.push({ clip: -1, zoom: 1, panX: 0, panY: 0, fit: "cover" });
         S.cells.length = n;
-        S.cells.forEach(function (c, i) {
-            if (c.clip >= S.clips.length) c.clip = S.clips.length ? i % S.clips.length : -1;
-            if (c.clip < 0 && S.clips.length) c.clip = i % S.clips.length;
-        });
+        S.cells.forEach(function (c) { if (c.clip >= S.clips.length) c.clip = -1; });
         S.sel = clamp(S.sel, 0, n - 1);
+    }
+    function isUsed(ci) { return S.cells.some(function (c) { return c.clip === ci; }); }
+    function firstEmpty(from) {
+        for (var k = 0; k < S.cells.length; k++) { var j = (from + k) % S.cells.length; if (S.cells[j].clip < 0) return j; }
+        return -1;
+    }
+    // 新加的素材：放进选中的空格子，否则放进下一个空格子；没有空格子就先留在素材列表里
+    function autoPlace(ci) {
+        if (ci < 0 || isUsed(ci)) return;
+        var j = S.cells[S.sel] && S.cells[S.sel].clip < 0 ? S.sel : firstEmpty(S.sel);
+        if (j >= 0) { S.cells[j].clip = ci; animateCell(j); }
+    }
+    // 把素材放进格子：构图复位，淡入，然后自动跳到下一个空格子
+    function assignClip(j, ci) {
+        var cell = S.cells[j];
+        cell.clip = ci; cell.zoom = 1; cell.panX = 0; cell.panY = 0;
+        var c = S.clips[ci];
+        if (c && c.ok) c.el.currentTime = c.in + (S.t % Math.max(0.01, c.out - c.in));
+        animateCell(j);
+        var next = firstEmpty(j);
+        S.sel = next >= 0 ? next : j;
+        renderClips(); renderTrim(); renderLayoutPanel(); renderGradePanel(); renderExportPanel(); draw();
+        toast({ ok: true, msg: "「" + (c ? c.name : "") + "」已放进格子 " + (j + 1) + (next >= 0 && next !== j ? "，接着点素材放进格子 " + (next + 1) : "。在画面里拖动调构图，滚轮缩放，双击复位") });
+    }
+    function fillUnused() {
+        S.clips.forEach(function (c, ci) {
+            if (isUsed(ci)) return;
+            var j = firstEmpty(0);
+            if (j >= 0) S.cells[j].clip = ci;
+        });
+    }
+    function selectCell(i) {
+        S.sel = i;
+        renderClips(); renderTrim(); renderLayoutPanel(); renderGradePanel(); draw();
+        var cl = S.clips[S.cells[i].clip];
+        toast({ ok: true, msg: "已选中格子 " + (i + 1) + (cl ? "（" + cl.name + "）。拖动画面调构图，滚轮缩放；点左侧其他素材可以替换" : "。点左侧的素材放进来") });
+    }
+    var anims = {};
+    function animateCell(j) {
+        anims[j] = performance.now();
+        (function tick() {
+            var live = false, now = performance.now();
+            for (var k in anims) { if (now - anims[k] < 320) live = true; else delete anims[k]; }
+            if (!S.playing) draw();
+            if (live) requestAnimationFrame(tick);
+        })();
     }
 
     // 输出时长：默认取各格子素材裁切后最长的那段
@@ -297,6 +358,7 @@
         c.el.currentTime = 0;
         S.clips.push(c);
         syncCells();
+        autoPlace(S.clips.length - 1);
         renderClips(); renderLayoutPanel(); renderTrim(); renderExportPanel();
         return c;
     }
@@ -370,6 +432,7 @@
         });
         S.clips.push(c);
         syncCells();
+        autoPlace(S.clips.length - 1);
         renderClips();
         return c;
     }
@@ -406,12 +469,9 @@
                 syncCells(); renderClips(); renderLayoutPanel(); renderTrim(); draw();
             });
             row.appendChild(x);
-            row.addEventListener("click", function () {
-                S.cells[S.sel].clip = i;
-                renderClips(); renderTrim(); renderGradePanel(); draw();
-            });
+            row.addEventListener("click", function () { assignClip(S.sel, i); });
             row.addEventListener("dragstart", function (e) { e.dataTransfer.setData("text/mh-clip", String(i)); e.dataTransfer.effectAllowed = "copy"; });
-            hint(row, c.name, "点一下：放进当前选中的格子；拖到画面里的格子上：放进那个格子");
+            hint(row, c.name, "先在画面里点选一个格子，再点这里把素材放进去；也可以直接把它拖到画面里的格子上");
             list.appendChild(row);
             requestAnimationFrame(function () { drawThumb(c); });
         });
@@ -474,6 +534,11 @@
         return { x: (rw - dw) / 2 - cell.panX * ex / 2, y: (rh - dh) / 2 - cell.panY * ey / 2, w: dw, h: dh };
     }
 
+    function accentRGBA(a) {
+        var c = rgb(getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#FF5900");
+        return "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
+    }
+
     // 画一帧：k = 输出像素 / 设计像素
     function compose(g, k, preview) {
         var W = S.size.w * k, H = S.size.h * k;
@@ -498,19 +563,30 @@
                     MHGrade.apply(img.data, clip.lut);
                     sctx.putImageData(img, 0, 0);
                 }
-                g.drawImage(scratch, r.x, r.y, r.w, r.h);
+                var a0 = preview && anims[i] ? clamp((performance.now() - anims[i]) / 320, 0, 1) : 1;
+                if (a0 < 1) {
+                    var e0 = 1 - Math.pow(1 - a0, 3), sc = 1.04 - 0.04 * e0;
+                    g.globalAlpha = e0;
+                    g.drawImage(scratch, r.x + r.w * (1 - sc) / 2, r.y + r.h * (1 - sc) / 2, r.w * sc, r.h * sc);
+                    g.globalAlpha = 1;
+                } else g.drawImage(scratch, r.x, r.y, r.w, r.h);
             } else if (preview) {
                 g.fillStyle = "rgba(244,244,242,.06)";
                 g.fillRect(r.x, r.y, r.w, r.h);
                 g.fillStyle = "rgba(244,244,242,.4)";
                 g.font = Math.max(10, 12 * k * 2) + "px sans-serif";
                 g.textAlign = "center";
-                g.fillText(clip && clip.err ? "无法预览" : "拖入视频", r.x + r.w / 2, r.y + r.h / 2);
+                if (i === S.sel && !(clip && clip.err)) {
+                    g.fillStyle = accentRGBA(.14);
+                    g.fillRect(r.x, r.y, r.w, r.h);
+                    g.fillStyle = accentRGBA(1);
+                }
+                g.fillText(clip && clip.err ? "无法预览" : i === S.sel ? "已选中 · 点左侧素材放进来" : "点这里选中", r.x + r.w / 2, r.y + r.h / 2);
             }
             g.restore();
             if (preview) {
                 g.strokeStyle = i === S.sel ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() : "rgba(244,244,242,.18)";
-                g.lineWidth = i === S.sel ? 2 : 1;
+                g.lineWidth = i === S.sel ? 3 * Math.max(1, k / 2) : 1;
                 g.setLineDash(i === S.sel ? [] : [4, 4]);
                 roundRect(g, r.x + 1, r.y + 1, r.w - 2, r.h - 2, Math.max(0, S.radius * k - 1));
                 g.stroke();
@@ -614,15 +690,14 @@
         }
         return -1;
     }
-    view.addEventListener("pointerdown", function (e) {
+    onDrag(view, function (e) {
         var i = hitCell(e);
-        if (i < 0) return;
-        if (S.sel !== i) { S.sel = i; renderClips(); renderTrim(); renderLayoutPanel(); renderGradePanel(); draw(); }
+        if (i < 0) return null;
+        if (S.sel !== i) selectCell(i);
         var cell = S.cells[i], clip = S.clips[cell.clip];
-        if (!clip || !clip.ok) return;
+        if (!clip || !clip.ok) return null;
         var rect = cellRects(S.size.w, S.size.h)[i], p = placement(cell, clip, rect.w, rect.h);
         var ex = Math.max(1, p.w - rect.w), ey = Math.max(1, p.h - rect.h), sx = e.clientX, sy = e.clientY, px = cell.panX, py = cell.panY;
-        view.setPointerCapture(e.pointerId);
         view.classList.add("panning");
         var noRoom = p.w - rect.w < 1 && p.h - rect.h < 1, warned = false;
         function move(ev) {
@@ -634,9 +709,8 @@
             cell.panY = clamp(py - (ev.clientY - sy) / viewScale / (ey / 2), -1, 1);
             if (!S.playing) draw();
         }
-        function up() { view.classList.remove("panning"); view.removeEventListener("pointermove", move); view.removeEventListener("pointerup", up); renderLayoutPanel(); }
-        view.addEventListener("pointermove", move);
-        view.addEventListener("pointerup", up);
+        function up() { view.classList.remove("panning"); renderLayoutPanel(); }
+        return { move: move, up: up };
     });
     view.addEventListener("wheel", function (e) {
         var i = hitCell(e);
@@ -736,13 +810,12 @@
         ph.style.left = (c.el.currentTime / c.dur * track.clientWidth) + "px";
     }
 
-    range.addEventListener("pointerdown", function (e) {
+    onDrag(range, function (e) {
         var c = selClip();
-        if (!c || !c.ok) return;
-        e.preventDefault();
+        if (!c || !c.ok) return null;
         var mode = e.target.classList.contains("in") ? "in" : e.target.classList.contains("out") ? "out" : "move";
         var sx = e.clientX, a = c.in, b = c.out, k = c.dur / track.clientWidth;
-        range.setPointerCapture(e.pointerId);
+        range.classList.add("dragging");
         function move(ev) {
             var d = (ev.clientX - sx) * k;
             if (mode === "in") c.in = clamp(a + d, 0, c.out - 0.1);
@@ -751,16 +824,21 @@
             c.el.currentTime = mode === "out" ? c.out - 0.02 : c.in;
             renderTrim();
         }
-        function up() { range.removeEventListener("pointermove", move); range.removeEventListener("pointerup", up); renderClips(); draw(); }
-        range.addEventListener("pointermove", move);
-        range.addEventListener("pointerup", up);
+        function up() { range.classList.remove("dragging"); renderClips(); draw(); }
+        return { move: move, up: up };
     });
-    track.addEventListener("pointerdown", function (e) {
-        if (e.target !== track && e.target !== strip) return;
+    // 点空白处跳过去，按住还可以继续拖着看
+    onDrag(track, function (e) {
+        if (e.target !== track && e.target !== strip && e.target !== ph) return null;
         var c = selClip();
-        if (!c || !c.ok) return;
-        var r = track.getBoundingClientRect();
-        c.el.currentTime = clamp((e.clientX - r.left) / r.width * c.dur, 0, c.dur);
+        if (!c || !c.ok) return null;
+        function seek(ev) {
+            var r = track.getBoundingClientRect();
+            c.el.currentTime = clamp((ev.clientX - r.left) / r.width * c.dur, 0, c.dur);
+            drawPlayhead();
+        }
+        seek(e);
+        return { move: seek };
     });
     hint(track, "裁切", "拖动橙色框两端设置入点和出点，拖动中间整体移动；点空白处跳到那个位置");
 
@@ -824,12 +902,12 @@
         head(p, "02", "LAYOUT", "拼图模板");
         var tp = el("div", "tpls"), n = S.clips.length;
         var auto = el("button", "tpl" + (S.tpl === "auto" ? " on" : ""), tplIcon(tplById(autoTemplate())) + "<span>自动</span>");
-        auto.addEventListener("click", function () { S.tpl = "auto"; syncCells(); renderLayoutPanel(); renderClips(); draw(); });
+        auto.addEventListener("click", function () { S.tpl = "auto"; syncCells(); fillUnused(); renderLayoutPanel(); renderClips(); draw(); });
         hint(auto, "自动排版", "按素材数量和画面方向自动挑选模板");
         tp.appendChild(auto);
         TEMPLATES.forEach(function (t) {
             var b = el("button", "tpl" + (S.tpl === t.id ? " on" : "") + (n && t.cells.length !== n ? " dim" : ""), tplIcon(t) + "<span>" + esc(t.name) + "</span>");
-            b.addEventListener("click", function () { S.tpl = t.id; syncCells(); renderLayoutPanel(); renderClips(); renderTrim(); draw(); });
+            b.addEventListener("click", function () { S.tpl = t.id; syncCells(); fillUnused(); renderLayoutPanel(); renderClips(); renderTrim(); draw(); });
             hint(b, t.name + " · " + t.cells.length + " 格", n && t.cells.length !== n ? "格子数和素材数不一样：多的格子会重复使用素材" : "");
             tp.appendChild(b);
         });
@@ -1048,7 +1126,7 @@
             pts.forEach(function (q, i) { var d = (q[0] - p[0]) * (q[0] - p[0]) + (q[1] - p[1]) * (q[1] - p[1]); if (d < bd) { bd = d; bi = i; } });
             return bi;
         }
-        cv.addEventListener("pointerdown", function (e) {
+        onDrag(cv, function (e) {
             var pts = c.grade.curves[curveCh], p = pos(e), i = nearest(pts, p);
             if (i < 0) {
                 pts.push([Math.round(p[0]), Math.round(p[1])]);
@@ -1056,7 +1134,6 @@
                 i = nearest(pts, p);
             }
             var isEnd = i === 0 || i === pts.length - 1;
-            cv.setPointerCapture(e.pointerId);
             function move(ev) {
                 var q = pos(ev), lo = i > 0 ? pts[i - 1][0] + 2 : 0, hi = i < pts.length - 1 ? pts[i + 1][0] - 2 : 255;
                 if (!isEnd) pts[i][0] = Math.round(clamp(q[0], lo, hi));
@@ -1065,11 +1142,9 @@
                 updateGrade(function () {});
                 drawCurve(cv, c);
             }
-            function up() { cv.removeEventListener("pointermove", move); cv.removeEventListener("pointerup", up); }
-            cv.addEventListener("pointermove", move);
-            cv.addEventListener("pointerup", up);
             updateGrade(function () {});
             drawCurve(cv, c);
+            return { move: move };
         });
         cv.addEventListener("dblclick", function (e) {
             var pts = c.grade.curves[curveCh], i = nearest(pts, pos(e));

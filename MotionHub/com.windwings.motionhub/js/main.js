@@ -589,16 +589,16 @@
                         draw();
                     }
                     function up() {
-                        window.removeEventListener("pointermove", move);
-                        window.removeEventListener("pointerup", up);
+                        window.removeEventListener("mousemove", move, true);
+                        window.removeEventListener("mouseup", up, true);
                         item.bz = b.slice(); saveConfig();
                     }
-                    window.addEventListener("pointermove", move);
-                    window.addEventListener("pointerup", up);
+                    window.addEventListener("mousemove", move, true);
+                    window.addEventListener("mouseup", up, true);
                 };
             }
-            h1.addEventListener("pointerdown", drag(0));
-            h2.addEventListener("pointerdown", drag(2));
+            h1.addEventListener("mousedown", drag(0));
+            h2.addEventListener("mousedown", drag(2));
             BEZ_PRESETS.concat(userCurves).forEach(function (p, i) {
                 var mine = i >= BEZ_PRESETS.length;
                 var btn = el("button", "preset" + (mine ? " mine" : ""), esc(p[0]));
