@@ -5,12 +5,12 @@
     <title>MotionHub Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
-    <link rel="stylesheet" href="css/style.css?v=3.4.3">
-    <link rel="stylesheet" href="css/studio.css?v=3.4.3">
+    <link rel="stylesheet" href="css/style.css?v=3.4.4">
+    <link rel="stylesheet" href="css/studio.css?v=3.4.4">
 </head>
 <body class="studio">
     <header class="top">
-        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span><em>Studio · 剪辑排版 · v3.4.3</em></div>
+        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span><em>Studio · 剪辑排版 · v3.4.4</em></div>
         <div class="top-acts">
             <span class="size-label mono" id="size-label"></span>
             <button class="btn accent sm live-btn" id="btn-live"><span class="ico" data-icon="star"></span><span>导出实况</span></button>
@@ -37,10 +37,14 @@
                 <span class="mono t" id="t-now">0.00</span><span class="mono muted">/</span><span class="mono t muted" id="t-total">0.00 s</span>
                 <span class="sp"></span>
                 <span class="muted cell-info" id="cell-info"></span>
-                <button class="btn sm" id="btn-cover"><span class="ico" data-icon="star"></span><span>封面 0.00s</span></button>
+                <button class="btn sm" id="btn-cover"><span class="ico" data-icon="star"></span><span>设为封面</span></button>
+            </div>
+            <div class="otl" id="otl">
+                <div class="trim-head"><span class="num mono">OUTPUT · 成片</span><span class="muted" id="otl-info"></span></div>
+                <div class="otl-bar" id="otl-bar"><i class="otl-fill" id="otl-fill"></i><i class="otl-ph" id="otl-ph"></i><b class="otl-cover" id="otl-cover"></b></div>
             </div>
             <div class="trim" id="trim">
-                <div class="trim-head"><span class="num mono">TRIM · 裁切</span><span class="muted" id="trim-info">选中一个格子后在这里裁切它的素材</span></div>
+                <div class="trim-head"><span class="num mono" id="trim-title">TRIM · 本格裁切</span><span class="muted" id="trim-info">选中一个格子后在这里裁切它的素材</span></div>
                 <div class="track" id="track"><canvas id="strip"></canvas><div class="range" id="range"><i class="h in"></i><i class="h out"></i></div><div class="ph" id="ph"></div></div>
             </div>
         </section>
@@ -69,10 +73,10 @@
         </div>
     </div>
 
-    <script src="js/icons.js?v=3.4.3"></script>
-    <script src="js/grade.js?v=3.4.3"></script>
-    <script src="js/gif.js?v=3.4.3"></script>
-    <script src="js/livephoto.js?v=3.4.3"></script>
-    <script src="js/studio.js?v=3.4.3"></script>
+    <script src="js/icons.js?v=3.4.4"></script>
+    <script src="js/grade.js?v=3.4.4"></script>
+    <script src="js/gif.js?v=3.4.4"></script>
+    <script src="js/livephoto.js?v=3.4.4"></script>
+    <script src="js/studio.js?v=3.4.4"></script>
 </body>
 </html>

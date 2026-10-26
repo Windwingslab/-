@@ -617,7 +617,7 @@
         compose(vctx, viewScale * dpr, true);
         $("#size-label").textContent = S.size.w + " × " + S.size.h + " · " + (S.size.label || "");
         $("#t-total").textContent = fmt(duration()) + " s";
-        $("#btn-cover").lastChild.textContent = "封面 " + fmt(Math.min(S.exp.cover || 0, Math.max(0, duration() - 1 / S.exp.mp4fps))) + "s";
+        renderOtl();
         var cell = S.cells[S.sel], clip = cell && S.clips[cell.clip];
         $("#cell-info").textContent = "格子 " + (S.sel + 1) + (clip ? " · " + clip.name : " · 空");
         drawPlayhead();
@@ -797,8 +797,10 @@
         if (c && c.ok) buildStrip(c);
         paintStrip();
         if (!c || !c.ok) { $("#trim-info").textContent = "选中一个有素材的格子后，在这里裁切它的时长"; return; }
-        $("#trim-info").textContent = c.name + " · " + fmt(c.in) + "s – " + fmt(c.out) + "s（" + fmt(c.out - c.in) + "s）" +
-            (S.exp.dur > 0 ? " · 导出时长固定为 " + fmt(S.exp.dur) + "s" : "");
+        var len = c.out - c.in, D = duration();
+        $("#trim-title").textContent = "TRIM · 格子 " + (S.sel + 1) + " 裁切";
+        $("#trim-info").textContent = c.name + " · 从原视频取用 " + fmt(c.in) + "–" + fmt(c.out) + "s（" + fmt(len) + "s）" +
+            (len < D - 0.05 ? " · 比成片短，会循环" : len > D + 0.05 ? " · 只用前 " + fmt(D) + "s" : "");
         var w = track.clientWidth;
         range.style.left = (c.in / c.dur * w) + "px";
         range.style.width = Math.max(4, (c.out - c.in) / c.dur * w) + "px";
@@ -1500,7 +1502,7 @@
         var E = S.exp;
         E.cover = clamp(t, 0, Math.max(0, duration() - 1 / E.mp4fps));
         local.set("exp", E);
-        $("#btn-cover").lastChild.textContent = "封面 " + fmt(E.cover) + "s";
+        renderOtl();
         if (preview && !S.playing) {
             S.t = E.cover;
             $("#t-now").textContent = fmt(S.t);
@@ -1541,8 +1543,62 @@
     $("#btn-live").addEventListener("click", function () { if (!busy) exportLive($("#top-prog i")); });
     hint($("#btn-live"), "导出实况照片", "随时一键导出：按当前排版和封面生成 .pvt 实况照片包" + (IS_WIN ? "" : "，并存入「照片」App（可在「导出」页关闭）"));
     $("#btn-cover").addEventListener("click", function () { setCover(S.t, false); renderExportPanel(); toast({ ok: true, msg: "封面设为 " + fmt(S.exp.cover) + "s 这一帧" }); });
-    $("#btn-cover").lastChild.textContent = "封面 " + fmt(S.exp.cover || 0) + "s";
-    hint($("#btn-cover"), "设为封面", "把当前时间这一帧设为实况照片的封面（静止时显示的那张）");
+    hint($("#btn-cover"), "设为封面", "把当前画面这一帧设为实况照片的封面：不按住时显示的那张静态图");
+
+    // —— 成片时间线：整条是输出的实况 / GIF / MP4，星标是封面 ——
+    var otlBar = $("#otl-bar");
+    function coverTime() { return Math.min(S.exp.cover || 0, Math.max(0, duration() - 1 / S.exp.mp4fps)); }
+    var otlKey = "";
+    function renderOtl() {
+        var D = duration(), c = coverTime();
+        $("#otl-ph").style.left = (S.t / D * 100) + "%";
+        $("#otl-fill").style.width = (S.t / D * 100) + "%";
+        $("#otl-cover").style.left = (c / D * 100) + "%";
+        var key = [fmt(D), fmt(c), S.exp.dur].join("|");
+        if (key === otlKey) return;
+        otlKey = key;
+        var info = $("#otl-info");
+        info.innerHTML = "成片 " + fmt(D) + "s" + (S.exp.dur > 0 ? "（固定）" : "（取最长的格子）") + " · 封面 " + fmt(c) + "s";
+        if (S.exp.dur > 0) {
+            var auto = el("button", "otl-link", "改回自动");
+            auto.addEventListener("click", function () { setDur(0); });
+            info.appendChild(auto);
+        } else if (D > 3.05) {
+            info.appendChild(el("span", "otl-warn", " · 实况照片建议 3 秒以内"));
+            var three = el("button", "otl-link", "改为 3 秒");
+            three.addEventListener("click", function () { setDur(3); });
+            info.appendChild(three);
+        }
+    }
+    function setDur(v) {
+        S.exp.dur = v; local.set("exp", S.exp);
+        if (S.t > duration()) S.t = 0;
+        renderExportPanel(); renderTrim(); draw();
+        toast({ ok: true, msg: v ? "成片固定为 " + v + " 秒，格子里的素材从各自的入点开始播放" : "成片长度改回自动：取裁切后最长的那个格子" });
+    }
+    function seekOutput(t) {
+        if (S.playing) setPlaying(false);
+        S.t = clamp(t, 0, duration());
+        $("#t-now").textContent = fmt(S.t);
+        renderOtl();
+        seekAll(S.t).then(draw);
+    }
+    onDrag($("#otl-cover"), function (e) {
+        e.stopPropagation();
+        function mv(ev) {
+            var r = otlBar.getBoundingClientRect();
+            setCover(clamp((ev.clientX - r.left) / r.width, 0, 1) * duration(), true);
+        }
+        return { move: mv, up: function () { renderExportPanel(); toast({ ok: true, msg: "封面设为成片第 " + fmt(coverTime()) + " 秒这一帧" }); } };
+    });
+    onDrag(otlBar, function (e) {
+        if (e.target === $("#otl-cover")) return null;
+        function mv(ev) { var r = otlBar.getBoundingClientRect(); seekOutput(clamp((ev.clientX - r.left) / r.width, 0, 1) * duration()); }
+        mv(e);
+        return { move: mv };
+    });
+    hint(otlBar, "成片时间线", "整条就是最后输出的实况照片 / GIF / MP4。拖动看任意时刻；橙色星标是封面，拖它换封面");
+    renderOtl();
     $$(".tab", $("#stabs")).forEach(function (t) {
         t.addEventListener("click", function () {
             $$(".tab", $("#stabs")).forEach(function (x) { x.classList.toggle("on", x === t); });
