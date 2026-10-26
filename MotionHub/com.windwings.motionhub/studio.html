@@ -5,12 +5,12 @@
     <title>MotionHub Studio</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
-    <link rel="stylesheet" href="css/style.css?v=3.4.4">
-    <link rel="stylesheet" href="css/studio.css?v=3.4.4">
+    <link rel="stylesheet" href="css/style.css?v=3.5.0">
+    <link rel="stylesheet" href="css/studio.css?v=3.5.0">
 </head>
 <body class="studio">
     <header class="top">
-        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span><em>Studio · 剪辑排版 · v3.4.4</em></div>
+        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span><em>Studio · 剪辑排版 · v3.5.0</em></div>
         <div class="top-acts">
             <span class="size-label mono" id="size-label"></span>
             <button class="btn accent sm live-btn" id="btn-live"><span class="ico" data-icon="star"></span><span>导出实况</span></button>
@@ -26,7 +26,13 @@
             <div class="clip-list" id="clip-list"></div>
             <button class="btn accent wide" id="add-clips"><span class="ico" data-icon="plus"></span>添加视频</button>
             <button class="btn wide" id="add-comp"><span class="ico" data-icon="precomp"></span>导入 AE 合成</button>
-            <p class="drop-tip">先在画面里点选一个格子，再点这里的素材放进去，放好会自动跳到下一个空格子。也可以把视频文件直接拖进来，或把素材拖到格子上。</p>
+            <p class="drop-tip">先在画面里点选格子，再点素材放进去。视频文件也可以直接拖进来。</p>
+            <div class="trim" id="trim">
+                <div class="sec-head"><span class="num">(02) — TRIM</span><span class="zh" id="trim-title">裁切</span></div>
+                <canvas id="src-view"></canvas>
+                <div class="track" id="track"><canvas id="strip"></canvas><div class="range" id="range"></div><div class="ph" id="ph"></div></div>
+                <div class="trim-row"><span class="muted">入点</span><input class="num-in" id="trim-in"><span class="muted">s</span><span class="muted trim-info" id="trim-info"></span></div>
+            </div>
         </aside>
 
         <!-- 中：预览 + 时间线 -->
@@ -40,12 +46,13 @@
                 <button class="btn sm" id="btn-cover"><span class="ico" data-icon="star"></span><span>设为封面</span></button>
             </div>
             <div class="otl" id="otl">
-                <div class="trim-head"><span class="num mono">OUTPUT · 成片</span><span class="muted" id="otl-info"></span></div>
+                <div class="trim-head">
+                    <span class="num mono">OUTPUT · 成片</span>
+                    <span class="otl-ctl"><span class="muted">时长</span><input class="num-in" id="otl-dur"><span class="muted">s</span>
+                        <button class="otl-chip" data-d="2">2s</button><button class="otl-chip" data-d="3">3s</button><button class="otl-chip" data-d="5">5s</button>
+                        <span class="muted otl-info" id="otl-info"></span></span>
+                </div>
                 <div class="otl-bar" id="otl-bar"><i class="otl-fill" id="otl-fill"></i><i class="otl-ph" id="otl-ph"></i><b class="otl-cover" id="otl-cover"></b></div>
-            </div>
-            <div class="trim" id="trim">
-                <div class="trim-head"><span class="num mono" id="trim-title">TRIM · 本格裁切</span><span class="muted" id="trim-info">选中一个格子后在这里裁切它的素材</span></div>
-                <div class="track" id="track"><canvas id="strip"></canvas><div class="range" id="range"><i class="h in"></i><i class="h out"></i></div><div class="ph" id="ph"></div></div>
             </div>
         </section>
 
@@ -73,10 +80,10 @@
         </div>
     </div>
 
-    <script src="js/icons.js?v=3.4.4"></script>
-    <script src="js/grade.js?v=3.4.4"></script>
-    <script src="js/gif.js?v=3.4.4"></script>
-    <script src="js/livephoto.js?v=3.4.4"></script>
-    <script src="js/studio.js?v=3.4.4"></script>
+    <script src="js/icons.js?v=3.5.0"></script>
+    <script src="js/grade.js?v=3.5.0"></script>
+    <script src="js/gif.js?v=3.5.0"></script>
+    <script src="js/livephoto.js?v=3.5.0"></script>
+    <script src="js/studio.js?v=3.5.0"></script>
 </body>
 </html>

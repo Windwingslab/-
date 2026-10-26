@@ -127,7 +127,7 @@
         sel: 0,
         playing: false,
         t: 0,
-        exp: (function (e) { e.dur = 0; if (e.photos === undefined) e.photos = true; return e; })(local.get("exp", { fps: 15, width: 540, dither: false, mp4fps: 30, dur: 0, audio: 0, render: true, photos: true })),
+        exp: (function (e) { if (!(e.dur > 0)) e.dur = 3; if (e.photos === undefined) e.photos = true; return e; })(local.get("exp", { fps: 15, width: 540, dither: false, mp4fps: 30, dur: 3, audio: 0, render: true, photos: true })),
         gradeAll: false
     };
     var uid = 0;
@@ -137,9 +137,10 @@
     function syncCells() {
         var tpl = currentTemplate(), n = tpl.cells.length;
         // 新格子是空的，放什么素材由你来定；只把还没用过的素材依次补进空格子
-        while (S.cells.length < n) S.cells.push({ clip: -1, zoom: 1, panX: 0, panY: 0, fit: "cover" });
+        while (S.cells.length < n) S.cells.push({ clip: -1, in: 0, zoom: 1, panX: 0, panY: 0, fit: "cover", el: null, elFor: 0 });
+        for (var k = n; k < S.cells.length; k++) dropPlayer(S.cells[k]);
         S.cells.length = n;
-        S.cells.forEach(function (c) { if (c.clip >= S.clips.length) c.clip = -1; });
+        S.cells.forEach(function (c) { if (c.clip >= S.clips.length) setCellClip(c, -1); });
         S.sel = clamp(S.sel, 0, n - 1);
     }
     function isUsed(ci) { return S.cells.some(function (c) { return c.clip === ci; }); }
@@ -151,14 +152,14 @@
     function autoPlace(ci) {
         if (ci < 0 || isUsed(ci)) return;
         var j = S.cells[S.sel] && S.cells[S.sel].clip < 0 ? S.sel : firstEmpty(S.sel);
-        if (j >= 0) { S.cells[j].clip = ci; animateCell(j); }
+        if (j >= 0) { setCellClip(S.cells[j], ci); animateCell(j); }
     }
     // 把素材放进格子：构图复位，淡入，然后自动跳到下一个空格子
     function assignClip(j, ci) {
         var cell = S.cells[j];
-        cell.clip = ci; cell.zoom = 1; cell.panX = 0; cell.panY = 0;
+        setCellClip(cell, ci);
+        cell.zoom = 1; cell.panX = 0; cell.panY = 0;
         var c = S.clips[ci];
-        if (c && c.ok) c.el.currentTime = c.in + (S.t % Math.max(0.01, c.out - c.in));
         animateCell(j);
         var next = firstEmpty(j);
         S.sel = next >= 0 ? next : j;
@@ -169,7 +170,7 @@
         S.clips.forEach(function (c, ci) {
             if (isUsed(ci)) return;
             var j = firstEmpty(0);
-            if (j >= 0) S.cells[j].clip = ci;
+            if (j >= 0) setCellClip(S.cells[j], ci);
         });
     }
     function selectCell(i) {
@@ -189,13 +190,57 @@
         })();
     }
 
-    // 输出时长：默认取各格子素材裁切后最长的那段
-    function duration() {
-        if (S.exp.dur > 0) return S.exp.dur;
-        var d = 0;
-        S.cells.forEach(function (c) { var cl = S.clips[c.clip]; if (cl && cl.ok) d = Math.max(d, cl.out - cl.in); });
-        return d || 3;
+    // 成片时长：所有格子都按这个长度从各自的入点取一段（素材比它短就循环）
+    function duration() { return S.exp.dur > 0 ? S.exp.dur : 3; }
+    function winLen(c) { return Math.max(0.01, Math.min(duration(), c.dur || 0.01)); }
+    function cellIn(cell, c) { return clamp(cell.in || 0, 0, Math.max(0, (c.dur || 0) - winLen(c))); }
+    function cellTime(cell, t) {
+        var c = S.clips[cell.clip];
+        return c ? cellIn(cell, c) + (t % winLen(c)) : 0;
     }
+    // 某个素材第一次出现的格子的入点（给声音用）
+    function clipStart(ci) {
+        for (var k = 0; k < S.cells.length; k++) if (S.cells[k].clip === ci) return cellIn(S.cells[k], S.clips[ci]);
+        return 0;
+    }
+    function setCellClip(cell, ci) {
+        if (cell.clip !== ci) dropPlayer(cell);
+        cell.clip = ci; cell.in = 0;
+    }
+
+    // 每个格子有自己的播放器：同一个视频放进两个格子，也能各播各的一段
+    function player(cell) {
+        var c = S.clips[cell.clip];
+        if (!c || !c.ok) return null;
+        if (cell.el && cell.elFor === c.id) return cell.el;
+        dropPlayer(cell);
+        var p;
+        if (c.frames) p = new FrameMedia(c.el.dir, c.el.files, c.el.fps, c.el.videoWidth, c.el.videoHeight);
+        else {
+            p = document.createElement("video");
+            p.muted = true; p.preload = "auto"; p.playsInline = true; p.crossOrigin = "anonymous";
+            p.src = c.el.currentSrc || c.el.src;
+        }
+        p.addEventListener("seeked", onPlayerFrame);
+        p.addEventListener("frame", onPlayerFrame);
+        p.addEventListener("loadeddata", function () { if (cell.el === p) p.currentTime = cellTime(cell, S.t); });
+        cell.el = p; cell.elFor = c.id;
+        p.currentTime = cellTime(cell, S.t);
+        return p;
+    }
+    function dropPlayer(cell) {
+        var p = cell.el;
+        cell.el = null; cell.elFor = 0;
+        if (!p) return;
+        p.pause();
+        p.removeAttribute("src");
+        if (p.load) { try { p.load(); } catch (e) {} }
+    }
+    function cellReady(cell) {
+        var p = player(cell);
+        return p && p.readyState >= 2 ? p : null;
+    }
+    function onPlayerFrame() { if (!S.playing) draw(); }
 
     function cellRects(W, H) {
         var tpl = currentTemplate(), g = S.gap, p = S.pad, iw = W - 2 * p, ih = H - 2 * p;
@@ -420,7 +465,7 @@
         if (src.url) v.src = src.url;
         else videoURL(src.path).then(function (u) { v.src = u; }).catch(function (e) { c.err = "读取文件失败：" + (e.message || e); renderClips(); });
         v.addEventListener("loadedmetadata", function () {
-            c.dur = v.duration || 0; c.in = 0; c.out = c.dur; c.ok = true;
+            c.dur = v.duration || 0; c.ok = true;
             v.currentTime = Math.min(0.1, c.dur / 2);
             renderClips(); syncCells(); renderLayoutPanel(); renderTrim(); draw();
         });
@@ -458,14 +503,14 @@
             row.draggable = true;
             row.innerHTML = '<canvas data-clip="' + c.id + '"></canvas><div style="min-width:0"><div class="nm">' +
                 used.map(function (u) { return '<span class="badge">' + u + "</span>"; }).join("") + esc(c.name) + "</div>" +
-                (c.err ? '<div class="ds bad">无法预览</div>' : '<div class="ds">' + (c.ok ? fmt(c.in) + " – " + fmt(c.out) + " / " + fmt(c.dur) + "s" : "读取中…") + (c.frames ? " · 合成" : "") + "</div>") + "</div>";
+                (c.err ? '<div class="ds bad">无法预览</div>' : '<div class="ds">' + (c.ok ? "时长 " + fmt(c.dur) + "s" : "读取中…") + (c.frames ? " · 合成" : "") + "</div>") + "</div>";
             var x = el("button", "act", svg("close"));
             x.title = "移除";
             x.addEventListener("click", function (e) {
                 e.stopPropagation();
                 c.el.pause(); c.el.removeAttribute("src");
                 S.clips.splice(i, 1);
-                S.cells.forEach(function (cell) { if (cell.clip === i) cell.clip = -1; else if (cell.clip > i) cell.clip--; });
+                S.cells.forEach(function (cell) { if (cell.clip === i) setCellClip(cell, -1); else if (cell.clip > i) cell.clip--; });
                 syncCells(); renderClips(); renderLayoutPanel(); renderTrim(); draw();
             });
             row.appendChild(x);
@@ -551,13 +596,14 @@
             g.save();
             roundRect(g, r.x, r.y, r.w, r.h, S.radius * k);
             g.clip();
-            if (clip && ready(clip)) {
+            var pl = clip && clip.ok ? cellReady(cell) : null;
+            if (pl) {
                 var pw = Math.max(1, Math.round(r.w)), ph = Math.max(1, Math.round(r.h));
                 if (scratch.width !== pw || scratch.height !== ph) { scratch.width = pw; scratch.height = ph; }
                 sctx.fillStyle = S.bg;
                 sctx.fillRect(0, 0, pw, ph);
                 var p = placement(cell, clip, pw, ph);
-                sctx.drawImage(source(clip), p.x, p.y, p.w, p.h);
+                sctx.drawImage(pl.frame || pl, p.x, p.y, p.w, p.h);
                 if (!clip.lut.neutral) {
                     var img = sctx.getImageData(0, 0, pw, ph);
                     MHGrade.apply(img.data, clip.lut);
@@ -632,11 +678,12 @@
         var dt = lastTick ? (now - lastTick) / 1000 : 0;
         lastTick = now;
         S.t = (S.t + dt) % duration();
-        usedClips().forEach(function (c) {
-            var len = c.out - c.in;
-            if (c.el.currentTime >= c.out - 0.02 || c.el.currentTime < c.in - 0.05) c.el.currentTime = c.in;
-            if (c.el.paused) c.el.play().catch(function () {});
-            if (len <= 0) c.el.pause();
+        S.cells.forEach(function (cell) {
+            var pl = cellReady(cell);
+            if (!pl) return;
+            // 偏离成片时间太多（循环回头、刚换素材）就对齐一下
+            if (Math.abs(pl.currentTime - cellTime(cell, S.t)) > 0.25) pl.currentTime = cellTime(cell, S.t);
+            if (pl.paused) pl.play().catch(function () {});
         });
         $("#t-now").textContent = fmt(S.t);
         draw();
@@ -651,11 +698,11 @@
         S.playing = on;
         $("#btn-play").innerHTML = svg(on ? "hold" : "play");
         if (on) {
-            usedClips().forEach(function (c) { c.el.currentTime = c.in + (S.t % Math.max(0.01, c.out - c.in)); });
+            S.cells.forEach(function (cell) { var pl = player(cell); if (pl) pl.currentTime = cellTime(cell, S.t); });
             lastTick = 0;
             requestAnimationFrame(loop);
         } else {
-            S.clips.forEach(function (c) { c.el.pause(); });
+            S.cells.forEach(function (cell) { if (cell.el) cell.el.pause(); });
             draw();
         }
     }
@@ -667,15 +714,17 @@
 
     // 跳到某个时间：每个格子的素材按自己的裁切范围循环
     function seekAll(t) {
-        return Promise.all(usedClips().map(function (c) {
-            var len = Math.max(0.01, c.out - c.in), target = c.in + (t % len);
+        return Promise.all(S.cells.map(function (cell) {
+            var pl = player(cell);
+            if (!pl) return Promise.resolve();
+            var target = cellTime(cell, t);
             return new Promise(function (res) {
-                if (Math.abs(c.el.currentTime - target) < 0.001 && c.el.readyState >= 2) return res();
+                if (Math.abs(pl.currentTime - target) < 0.001 && pl.readyState >= 2) return res();
                 var done = false;
-                var fin = function () { if (!done) { done = true; c.el.removeEventListener("seeked", fin); res(); } };
-                c.el.addEventListener("seeked", fin);
+                var fin = function () { if (!done) { done = true; pl.removeEventListener("seeked", fin); res(); } };
+                pl.addEventListener("seeked", fin);
                 setTimeout(fin, 2000);
-                c.el.currentTime = target;
+                pl.currentTime = target;
             });
         }));
     }
@@ -737,7 +786,7 @@
         e.stopPropagation();
         var i = hitCell(e);
         if (i < 0) return;
-        S.cells[i].clip = +data;
+        setCellClip(S.cells[i], +data);
         S.sel = i;
         renderClips(); renderTrim(); renderGradePanel(); draw();
     });
@@ -791,58 +840,96 @@
     }
     function selClip() { var cell = S.cells[S.sel]; return cell ? S.clips[cell.clip] : null; }
 
+    var srcView = $("#src-view"), trimIn = $("#trim-in");
     function renderTrim() {
-        var c = selClip();
+        var cell = S.cells[S.sel], c = selClip();
         track.classList.toggle("empty", !(c && c.ok));
+        $("#trim").classList.toggle("off", !(c && c.ok));
         if (c && c.ok) buildStrip(c);
         paintStrip();
-        if (!c || !c.ok) { $("#trim-info").textContent = "选中一个有素材的格子后，在这里裁切它的时长"; return; }
-        var len = c.out - c.in, D = duration();
-        $("#trim-title").textContent = "TRIM · 格子 " + (S.sel + 1) + " 裁切";
-        $("#trim-info").textContent = c.name + " · 从原视频取用 " + fmt(c.in) + "–" + fmt(c.out) + "s（" + fmt(len) + "s）" +
-            (len < D - 0.05 ? " · 比成片短，会循环" : len > D + 0.05 ? " · 只用前 " + fmt(D) + "s" : "");
+        $("#trim-title").textContent = "格子 " + (S.sel + 1) + " · 裁切";
+        if (!c || !c.ok) {
+            $("#trim-info").textContent = "先在画面里点选一个有素材的格子";
+            drawSource();
+            return;
+        }
+        var D = duration(), len = winLen(c), a = cellIn(cell, c);
+        cell.in = a;
+        if (document.activeElement !== trimIn) trimIn.value = fmt(a);
+        $("#trim-info").textContent = "取用 " + fmt(a) + "–" + fmt(a + len) + "s" + (c.dur < D - 0.01 ? " · 素材只有 " + fmt(c.dur) + "s，会循环" : " · 共 " + fmt(c.dur) + "s");
         var w = track.clientWidth;
-        range.style.left = (c.in / c.dur * w) + "px";
-        range.style.width = Math.max(4, (c.out - c.in) / c.dur * w) + "px";
+        range.style.left = (a / c.dur * w) + "px";
+        range.style.width = Math.max(6, len / c.dur * w) + "px";
+        range.classList.toggle("fixed", c.dur <= D + 0.001);
         drawPlayhead();
+        drawSource();
     }
     function drawPlayhead() {
-        var c = selClip();
-        if (!c || !c.ok) return;
-        ph.style.left = (c.el.currentTime / c.dur * track.clientWidth) + "px";
+        var cell = S.cells[S.sel], c = selClip();
+        if (!c || !c.ok || !cell.el) return;
+        ph.style.left = (cell.el.currentTime / c.dur * track.clientWidth) + "px";
     }
-
-    onDrag(range, function (e) {
-        var c = selClip();
-        if (!c || !c.ok) return null;
-        var mode = e.target.classList.contains("in") ? "in" : e.target.classList.contains("out") ? "out" : "move";
-        var sx = e.clientX, a = c.in, b = c.out, k = c.dur / track.clientWidth;
-        range.classList.add("dragging");
-        function move(ev) {
-            var d = (ev.clientX - sx) * k;
-            if (mode === "in") c.in = clamp(a + d, 0, c.out - 0.1);
-            else if (mode === "out") c.out = clamp(b + d, c.in + 0.1, c.dur);
-            else { var len = b - a; c.in = clamp(a + d, 0, c.dur - len); c.out = c.in + len; }
-            c.el.currentTime = mode === "out" ? c.out - 0.02 : c.in;
-            renderTrim();
+    // 原视频画面：显示当前格子正在用的这一帧（不裁切构图）
+    function drawSource() {
+        var cell = S.cells[S.sel], c = selClip(), dpr = window.devicePixelRatio || 1;
+        var w = srcView.clientWidth, vw = c && c.el.videoWidth || 16, vh = c && c.el.videoHeight || 9;
+        var h = Math.round(Math.min(w * vh / vw, 220));
+        if (srcView.width !== Math.round(w * dpr) || srcView.height !== Math.round(h * dpr)) {
+            srcView.width = Math.round(w * dpr); srcView.height = Math.round(h * dpr); srcView.style.height = h + "px";
         }
-        function up() { range.classList.remove("dragging"); renderClips(); draw(); }
+        var g = srcView.getContext("2d");
+        g.clearRect(0, 0, srcView.width, srcView.height);
+        var pl = c && c.ok && cell ? cellReady(cell) : null;
+        if (!pl) return;
+        var s0 = Math.min(srcView.width / vw, srcView.height / vh);
+        try { g.drawImage(pl.frame || pl, (srcView.width - vw * s0) / 2, (srcView.height - vh * s0) / 2, vw * s0, vh * s0); } catch (e) {}
+    }
+    function setCellIn(cell, c, v) {
+        cell.in = clamp(v, 0, Math.max(0, c.dur - winLen(c)));
+        var pl = player(cell);
+        if (pl) pl.currentTime = cell.in;
+        renderTrim();
+    }
+    function startTrimEdit() {
+        if (S.playing) setPlaying(false);
+        S.t = 0;
+        $("#t-now").textContent = fmt(0);
+    }
+    function endTrimEdit() { renderTrim(); seekAll(0).then(draw); }
+
+    // 拖动橙色框：框的长度就是成片时长，左右移动选取用哪一段
+    onDrag(range, function (e) {
+        var cell = S.cells[S.sel], c = selClip();
+        if (!c || !c.ok || c.dur <= duration() + 0.001) return null;
+        var sx = e.clientX, a = cellIn(cell, c), k = c.dur / track.clientWidth;
+        startTrimEdit();
+        range.classList.add("dragging");
+        function move(ev) { setCellIn(cell, c, a + (ev.clientX - sx) * k); }
+        function up() { range.classList.remove("dragging"); endTrimEdit(); }
         return { move: move, up: up };
     });
-    // 点空白处跳过去，按住还可以继续拖着看
+    // 点框外面：把框移到那里（以点击位置为中心），按住可以继续拖
     onDrag(track, function (e) {
-        if (e.target !== track && e.target !== strip && e.target !== ph) return null;
-        var c = selClip();
-        if (!c || !c.ok) return null;
-        function seek(ev) {
+        if (e.target === range) return null;
+        var cell = S.cells[S.sel], c = selClip();
+        if (!c || !c.ok || c.dur <= duration() + 0.001) return null;
+        startTrimEdit();
+        function at(ev) {
             var r = track.getBoundingClientRect();
-            c.el.currentTime = clamp((ev.clientX - r.left) / r.width * c.dur, 0, c.dur);
-            drawPlayhead();
+            setCellIn(cell, c, (ev.clientX - r.left) / r.width * c.dur - winLen(c) / 2);
         }
-        seek(e);
-        return { move: seek };
+        at(e);
+        return { move: at, up: endTrimEdit };
     });
-    hint(track, "裁切", "拖动橙色框两端设置入点和出点，拖动中间整体移动；点空白处跳到那个位置");
+    trimIn.addEventListener("change", function () {
+        var cell = S.cells[S.sel], c = selClip();
+        if (!c || !c.ok) return;
+        startTrimEdit();
+        setCellIn(cell, c, parseFloat(trimIn.value) || 0);
+        endTrimEdit();
+    });
+    hint(track, "裁切", "橙色框的长度就是成片时长。左右拖动它，选这个格子用原视频的哪一段；点框外面可以直接跳过去。成片时长在画面下方的「成片」里改");
+    hint(trimIn, "入点", "这个格子从原视频的第几秒开始取用");
 
     // =====================================================================
     // 右侧：排版
@@ -1182,8 +1269,8 @@
             (IS_WIN ? "Windows 上 .pvt 是一个文件夹，把它整个传到 Mac 再导入「照片」。" : "")));
 
         head(p, "02", "DURATION", "时长");
-        slider(p, "时长 s", 0, 60, 0.1, E.dur, function (v) { E.dur = v; local.set("exp", E); draw(); renderTrim(); });
-        p.appendChild(el("p", "note", "0 = 自动，取各格子裁切后最长的那段；短的素材会循环。"));
+        slider(p, "时长 s", 0.5, 60, 0.1, E.dur, function (v) { setDur(v, true); });
+        p.appendChild(el("p", "note", "所有格子都按这个长度，从各自的入点取一段（在左侧「裁切」里拖橙色框选）；素材比它短就循环。画面下方的「成片」里也能改。"));
 
         head(p, "03", "GIF", "动图");
         var fpsRow = el("div", "ctl two");
@@ -1357,7 +1444,7 @@
                 fs.writeFileSync(nodePath.join(dir, "frame_" + ("0000" + i).slice(-5) + ".png"), Buffer.from(data, "base64"));
             }, bar).then(function () {
                 var ac = S.clips[E.audio];
-                var audio = ac && ac.ok ? (ac.compId ? Promise.resolve({ compId: ac.compId, start: ac.in }) : ensurePath(ac).then(function (p) { return { path: p, start: ac.in, length: ac.out - ac.in }; })) : Promise.resolve(null);
+                var audio = ac && ac.ok ? (ac.compId ? Promise.resolve({ compId: ac.compId, start: clipStart(S.exp.audio) }) : ensurePath(ac).then(function (p) { return { path: p, start: clipStart(S.exp.audio), length: winLen(ac) }; })) : Promise.resolve(null);
                 return audio;
             }).then(function (audio) {
                 toast({ ok: true, msg: E.render ? "AE 正在渲染…（期间 AE 会暂时不响应）" : "正在导入到 AE…" }, true);
@@ -1521,14 +1608,14 @@
             return (c.compId ? Promise.resolve(null) : ensurePath(c)).then(function (path) {
                 var r = rects[i], p = placement(cell, c, r.w, r.h);
                 return {
-                    x: r.x, y: r.y, w: r.w, h: r.h, path: path, compId: c.compId || 0, name: c.name, start: c.in, length: c.out - c.in,
+                    x: r.x, y: r.y, w: r.w, h: r.h, path: path, compId: c.compId || 0, name: c.name, start: cellIn(cell, c), length: winLen(c),
                     vw: c.el.videoWidth, vh: c.el.videoHeight, place: p, levels: c.grade.levels, balance: c.grade.balance,
                     curved: JSON.stringify(c.grade.curves) !== JSON.stringify(MHGrade.defaults().curves)
                 };
             });
         })).then(function (cells) {
             var ac = S.clips[S.exp.audio];
-            return (ac && ac.ok ? (ac.compId ? Promise.resolve({ compId: ac.compId, start: ac.in }) : ensurePath(ac).then(function (p) { return { path: p, start: ac.in }; })) : Promise.resolve(null)).then(function (audio) {
+            return (ac && ac.ok ? (ac.compId ? Promise.resolve({ compId: ac.compId, start: clipStart(S.exp.audio) }) : ensurePath(ac).then(function (p) { return { path: p, start: clipStart(S.exp.audio) }; })) : Promise.resolve(null)).then(function (audio) {
                 return host("studioBuild", {
                     name: stamp(), width: S.size.w, height: S.size.h, fps: S.exp.mp4fps, duration: duration(),
                     bg: rgb(S.bg).map(function (v) { return v / 255; }), radius: S.radius, cells: cells.filter(Boolean), audio: audio
@@ -1549,33 +1636,31 @@
     var otlBar = $("#otl-bar");
     function coverTime() { return Math.min(S.exp.cover || 0, Math.max(0, duration() - 1 / S.exp.mp4fps)); }
     var otlKey = "";
+    var otlDur = $("#otl-dur");
     function renderOtl() {
         var D = duration(), c = coverTime();
         $("#otl-ph").style.left = (S.t / D * 100) + "%";
         $("#otl-fill").style.width = (S.t / D * 100) + "%";
         $("#otl-cover").style.left = (c / D * 100) + "%";
-        var key = [fmt(D), fmt(c), S.exp.dur].join("|");
+        var key = [fmt(D), fmt(c)].join("|");
         if (key === otlKey) return;
         otlKey = key;
-        var info = $("#otl-info");
-        info.innerHTML = "成片 " + fmt(D) + "s" + (S.exp.dur > 0 ? "（固定）" : "（取最长的格子）") + " · 封面 " + fmt(c) + "s";
-        if (S.exp.dur > 0) {
-            var auto = el("button", "otl-link", "改回自动");
-            auto.addEventListener("click", function () { setDur(0); });
-            info.appendChild(auto);
-        } else if (D > 3.05) {
-            info.appendChild(el("span", "otl-warn", " · 实况照片建议 3 秒以内"));
-            var three = el("button", "otl-link", "改为 3 秒");
-            three.addEventListener("click", function () { setDur(3); });
-            info.appendChild(three);
-        }
+        if (document.activeElement !== otlDur) otlDur.value = fmt(D);
+        $$(".otl-chip").forEach(function (b) { b.classList.toggle("on", Math.abs(+b.dataset.d - D) < 0.001); });
+        $("#otl-info").innerHTML = "封面 " + fmt(c) + "s" + (D > 3.05 ? ' · <span class="otl-warn">实况照片建议 3 秒以内</span>' : "");
     }
-    function setDur(v) {
-        S.exp.dur = v; local.set("exp", S.exp);
+    function setDur(v, quiet) {
+        S.exp.dur = clamp(Math.round(v * 100) / 100, 0.5, 60);
+        local.set("exp", S.exp);
         if (S.t > duration()) S.t = 0;
-        renderExportPanel(); renderTrim(); draw();
-        toast({ ok: true, msg: v ? "成片固定为 " + v + " 秒，格子里的素材从各自的入点开始播放" : "成片长度改回自动：取裁切后最长的那个格子" });
+        if (!quiet) renderExportPanel();
+        renderTrim(); draw();
+        seekAll(S.t).then(draw);
+        if (!quiet) toast({ ok: true, msg: "成片 " + fmt(S.exp.dur) + " 秒：每个格子从自己的入点取这么长一段，左侧裁切框的长度跟着变了" });
     }
+    $$(".otl-chip").forEach(function (b) { b.addEventListener("click", function () { setDur(+b.dataset.d); }); });
+    otlDur.addEventListener("change", function () { setDur(parseFloat(otlDur.value) || duration()); });
+    hint(otlDur, "成片时长", "最后输出的实况照片 / GIF / MP4 有多长。每个格子都从自己的入点取这么长一段");
     function seekOutput(t) {
         if (S.playing) setPlaying(false);
         S.t = clamp(t, 0, duration());

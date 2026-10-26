@@ -13,13 +13,13 @@ body.studio { min-width: 0; overflow: hidden; }
 .studio .top-acts { min-width: 0; flex: 0 1 auto; align-items: center; }
 .size-label { font-size: 10.5px; color: var(--muted); letter-spacing: .08em; margin-right: 6px; align-self: center; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.studio-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(170px, 230px) minmax(0, 1fr) minmax(250px, 300px); }
+.studio-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(220px, 290px) minmax(0, 1fr) minmax(250px, 300px); }
 .col { min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: 10px 12px 16px; }
 .col::-webkit-scrollbar { width: 6px; }
 .col::-webkit-scrollbar-thumb { background: var(--line-2); }
 .col.left { border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .col.right { border-left: 1px solid var(--line); padding: 0 0 16px; }
-.col.center { display: grid; grid-template-rows: 1fr auto auto auto; gap: 8px; padding: 10px 14px 12px; overflow: hidden; }
+.col.center { display: grid; grid-template-rows: 1fr auto auto; gap: 8px; padding: 10px 14px 12px; overflow: hidden; }
 .col .sec-head:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
 .btn.wide { width: 100%; }
 
@@ -63,7 +63,12 @@ body.studio { min-width: 0; overflow: hidden; }
 .trim-head .num { color: var(--accent); font-size: 9.5px; letter-spacing: .12em; }
 .track { position: relative; height: 44px; background: var(--field); border-radius: 3px; overflow: hidden; }
 .track canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 3px; background: none; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .55); cursor: grab; }
+.range { position: absolute; top: 0; bottom: 0; border: 2px solid var(--accent); border-radius: 3px; background: none; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .6); cursor: grab; }
+.range::before, .range::after { content: ""; position: absolute; top: 50%; width: 3px; height: 14px; margin-top: -7px; border-radius: 2px; background: var(--accent); }
+.range::before { left: 3px; }
+.range::after { right: 3px; }
+.range.dragging { cursor: grabbing; }
+.range.fixed { cursor: default; }
 .range .h { position: absolute; top: -2px; bottom: -2px; width: 10px; background: var(--accent); cursor: ew-resize; }
 .range .h.in { left: -6px; border-radius: 3px 0 0 3px; }
 .range .h.out { right: -6px; border-radius: 0 3px 3px 0; }
@@ -126,7 +131,7 @@ input[type=range].tint-b::-webkit-slider-runnable-track { background: linear-gra
 
 /* 窄窗口：先收素材栏，再把右栏的副标签藏掉；再窄就把素材栏放到预览上方 */
 @media (max-width: 980px) {
-    .studio-body { grid-template-columns: 170px minmax(0, 1fr) 250px; }
+    .studio-body { grid-template-columns: 210px minmax(0, 1fr) 250px; }
     .clip { grid-template-columns: 48px 1fr; position: relative; }
     .clip .act { position: absolute; right: 4px; top: 4px; background: var(--raise); }
     .clip canvas { width: 48px; height: 30px; }
@@ -135,15 +140,16 @@ input[type=range].tint-b::-webkit-slider-runnable-track { background: linear-gra
 }
 @media (max-width: 720px) {
     .studio-body { grid-template-columns: minmax(0, 1fr) 240px; grid-template-rows: auto minmax(0, 1fr); }
-    .col.left { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; max-height: 150px; border-right: 0; border-bottom: 1px solid var(--line); }
+    .col.left { grid-column: 1 / -1; flex-direction: row; flex-wrap: wrap; max-height: 46vh; border-right: 0; border-bottom: 1px solid var(--line); }
     .col.left .sec-head, .col.left .clip-list { flex: 1 1 100%; }
     .col.left .btn.wide { width: auto; flex: 1 1 140px; }
     .col.left .drop-tip { display: none; }
+    .col.left .trim { flex: 1 1 100%; }
 }
 
 /* 成片时间线：播放位置 + 封面标记 */
+.otl .trim-head { align-items: center; gap: 8px; }
 .otl { background: var(--raise); border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px 10px; }
-.otl .trim-head .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; margin-left: 8px; }
 .otl-warn { color: var(--accent); }
 .otl-link { background: none; border: 0; padding: 0; margin-left: 6px; color: var(--accent); text-decoration: underline; cursor: pointer; font: inherit; }
 .otl-bar { position: relative; height: 18px; background: var(--field); border-radius: 3px; cursor: pointer; margin-top: 10px; }
@@ -152,3 +158,20 @@ input[type=range].tint-b::-webkit-slider-runnable-track { background: linear-gra
 .otl-cover { position: absolute; top: -9px; width: 14px; height: 14px; margin-left: -7px; background: var(--accent); cursor: ew-resize;
     clip-path: polygon(50% 0, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%); }
 .otl-cover::after { content: ""; position: absolute; left: 6px; top: 14px; width: 2px; height: 16px; background: var(--accent); }
+
+/* 左栏裁切：原视频画面 + 胶片条 + 入点 */
+.col.left .trim { margin-top: 6px; padding: 0; background: none; border: 0; }
+.col.left .trim .sec-head { margin-top: 0; }
+#src-view { display: block; width: 100%; height: 120px; background: var(--field); border: 1px solid var(--line); border-radius: 3px; margin: 6px 0 8px; }
+.trim.off #src-view, .trim.off .track { opacity: .45; }
+.trim-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; min-width: 0; }
+.trim-row .num-in { width: 58px; }
+.trim-row .trim-info { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+
+/* 成片时长 */
+.otl-ctl { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 11px; }
+.otl-ctl .num-in { width: 48px; height: 22px; }
+.otl-chip { height: 22px; padding: 0 7px; border: 1px solid var(--line); border-radius: 3px; background: none; color: var(--muted); font-size: 11px; cursor: pointer; }
+.otl-chip:hover { border-color: var(--line-2); color: var(--text); }
+.otl-chip.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.otl-info { margin-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
