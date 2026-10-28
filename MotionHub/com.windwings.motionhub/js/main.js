@@ -130,6 +130,7 @@
     function tile(o) {
         var b = el("button", "tile" + (o.cls ? " " + o.cls : "") + (o.filled ? " filled" : "") + (o.label && o.left !== false ? " left" : ""));
         b.innerHTML = (o.icon ? svg(o.icon) : "") + (o.label ? '<span class="lbl">' + esc(o.label) + "</span>" : "");
+        if (o.tool) b.dataset.tool = o.tool;
         if (o.hint) bindHint(b, o.hint);
         b.addEventListener("click", function (e) {
             if (editing) return;
@@ -356,7 +357,7 @@
             render: function (cell, item) {
                 cell.appendChild(tile({
                     icon: o.icon, label: (o.w || 1) > 1 ? o.name : "", filled: !!item.color,
-                    hint: o.hint, run: o.run
+                    hint: o.hint, run: o.run, tool: type
                 }));
             }
         });

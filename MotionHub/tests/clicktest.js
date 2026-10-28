@@ -214,8 +214,7 @@ async function runRegressions(browser) {
     // 对话框开着（在等用户输入）时，不显示「处理中」
     await page.click(".tab[data-tab=panel]");
     await page.waitForTimeout(150);
-    const renameTile = await page.evaluateHandle(() => Array.from(document.querySelectorAll("#layout .tile")).find(t => t.innerHTML.indexOf(window.MHIcons.svg("rename")) === 0));
-    await renameTile.asElement().click();
+    await page.click('#layout .tile[data-tool="rename"]');
     await page.waitForTimeout(800);
     const st = await page.evaluate(() => { const f = document.querySelector(".fb"); return { modal: !document.querySelector("#modal").hidden, busyBubble: !!(f && !f.hidden && f.classList.contains("busy")) }; });
     await page.evaluate(() => document.querySelector("#modal").closeWith(null));
