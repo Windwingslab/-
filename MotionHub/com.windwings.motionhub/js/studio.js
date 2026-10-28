@@ -36,18 +36,8 @@
         set: function (k, v) { try { localStorage.setItem("mhs." + k, JSON.stringify(v)); } catch (e) {} }
     };
 
-    function host(name, args) {
-        return new Promise(function (resolve) {
-            var code = "MH.call(" + JSON.stringify(name) + "," + JSON.stringify(args || {}) + ")";
-            var done = function (r) {
-                var o;
-                try { o = JSON.parse(r); } catch (e) { o = { ok: false, msg: r === "EvalScript error." ? "后台脚本没有加载，请关闭面板后重新打开" : "返回数据异常" }; }
-                resolve(o);
-            };
-            if (CEP) CEP.evalScript(code, done);
-            else done(window.MHMock ? window.MHMock(name, args) : JSON.stringify({ ok: false, msg: "预览模式：没有连接 After Effects" }));
-        });
-    }
+    var B = window.MHBridge;
+    var host = B.host;
 
     // =====================================================================
     // 品牌色
@@ -282,7 +272,9 @@
             $("#dlg-title").textContent = title;
             body.innerHTML = ""; btns.innerHTML = "";
             nodes.forEach(function (n) { body.appendChild(n); });
-            function close(v) { m.hidden = true; resolve(v); }
+            function close(v) { m.hidden = true; document.removeEventListener("keydown", onKey, true); resolve(v); }
+            function onKey(e) { if (e.key === "Escape") { e.stopPropagation(); close(null); } }
+            document.addEventListener("keydown", onKey, true);
             buttons.forEach(function (b) {
                 var x = el("button", "btn" + (b.accent ? " accent" : ""), esc(b.label));
                 x.addEventListener("click", function () { close(b.value()); });
@@ -409,11 +401,11 @@
     }
 
     function importComp() {
-        if (!CEP) { toast({ ok: false, msg: "导入 AE 合成需要在 After Effects 里使用" }); return; }
-        host("listComps").then(function (r) {
-            if (!r.ok) return toast(r);
+        if (!CEP) return { ok: false, msg: "导入 AE 合成需要在 After Effects 里使用" };
+        return host("listComps").then(function (r) {
+            if (!r.ok) return r;
             var comps = r.data.comps;
-            if (!comps.length) return toast({ ok: false, msg: "项目里还没有合成" });
+            if (!comps.length) return { ok: false, msg: "项目里还没有合成：先在 AE 里新建或打开一个合成" };
             var pick = null;
             comps.forEach(function (c) { if (!pick && c.selected) pick = c; });
             comps.forEach(function (c) { if (!pick && c.active) pick = c; });
@@ -428,19 +420,19 @@
             });
             var wa = el("label", "check", '<input type="checkbox" checked> 只渲染工作区');
             var half = el("label", "check", '<input type="checkbox"> 半分辨率（更快，适合做 GIF）');
-            dialog("(AE) — IMPORT COMP", [list, wa, half], [
+            return dialog("(AE) — IMPORT COMP", [list, wa, half], [
                 { label: "取消", value: function () { return null; } },
                 { label: "渲染并导入", accent: true, value: function () { return { id: pick.id, workArea: wa.querySelector("input").checked, half: half.querySelector("input").checked }; } }
             ]).then(function (v) {
-                if (!v) return;
+                if (!v) return null;
                 toast({ ok: true, msg: "AE 正在渲染合成…（期间 AE 会暂时不响应）" }, true);
-                setTimeout(function () {
-                    host("renderComp", v).then(function (x) {
-                        if (!x.ok) return toast(x);
-                        addFrameClip(x.data);
-                        toast({ ok: true, msg: x.msg + "，已加入素材" });
-                    });
-                }, 50);
+                return new Promise(function (res) { setTimeout(res, 50); }).then(function () {
+                    return host("renderComp", v);
+                }).then(function (x) {
+                    if (!x.ok) return x;
+                    addFrameClip(x.data);
+                    return { ok: true, msg: x.msg + "，已加入素材" };
+                });
             });
         });
     }
@@ -523,10 +515,12 @@
     }
 
     function pickVideos() {
-        if (!CEP) { $("#file-in").click(); return; }
-        host("pickVideos").then(function (r) {
-            if (!r.ok) return toast(r);
+        if (!CEP) { $("#file-in").click(); return null; }
+        return host("pickVideos").then(function (r) {
+            if (!r.ok) return r;
+            if (!r.data.files.length) return { ok: true, msg: "没有选择视频，素材没有变化" };
             r.data.files.forEach(function (f) { addClip({ name: f.name, path: f.path }); });
+            return { ok: true, msg: "已添加 " + r.data.files.length + " 个视频" };
         });
     }
 
@@ -640,7 +634,7 @@
                 g.fillStyle = i === S.sel ? getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() : "rgba(23,24,25,.7)";
                 g.fillRect(r.x + 6, r.y + 6, 18, 16);
                 g.fillStyle = i === S.sel ? getComputedStyle(document.documentElement).getPropertyValue("--on-accent").trim() : "#F4F4F2";
-                g.font = "600 10px Geist Mono, monospace";
+                g.font = "500 10px Geist Mono, monospace";
                 g.textAlign = "center";
                 g.fillText(String(i + 1), r.x + 15, r.y + 18);
             }
@@ -709,8 +703,11 @@
     $("#btn-play").addEventListener("click", function () { setPlaying(!S.playing); });
     hint($("#btn-play"), "播放 / 暂停", "循环预览排版效果（空格键也可以）");
     document.addEventListener("keydown", function (e) {
-        if (e.key === " " && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) { e.preventDefault(); setPlaying(!S.playing); }
+        if (e.key === " " && !/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) && $("#modal").hidden) { e.preventDefault(); setPlaying(!S.playing); }
+        if (e.key === "Escape" && !pop.hidden) pop.hidden = true;
     });
+    // Studio 获得焦点时，空格和 Esc 交给面板（不然 AE 会拿去播放 / 取消）
+    B.registerKeys(["space", "esc"]);
 
     // 跳到某个时间：每个格子的素材按自己的裁切范围循环
     function seekAll(t) {
@@ -1256,7 +1253,7 @@
         slider(p, "封面 s", 0, maxCover, 0.01, Math.min(E.cover || 0, maxCover), function (v) { setCover(v, true); }, "s");
         var liveBar = el("div", "progress", "<i></i>");
         var liveBtn = el("button", "btn accent live-main", svg("star") + "<span>导出实况照片</span><small>.pvt 实况包</small>");
-        liveBtn.addEventListener("click", function () { if (!busy) exportLive(liveBar.firstChild); });
+        liveBtn.addEventListener("click", function () { studioAct(liveBtn, function () { return exportLive(liveBar.firstChild); }); });
         hint(liveBtn, "导出实况照片", "生成一个 .pvt 实况照片包：照片和视频带同一个配对标识，视频里有封面时间轨道。Mac 上它就是一个文件，双击或拖进「照片」就是一张实况照片");
         p.appendChild(liveBtn);
         p.appendChild(liveBar);
@@ -1326,7 +1323,7 @@
         var btns = el("div", "exp-btns");
         function expBtn(icon, label, sub, accent, fn, tip) {
             var b = el("button", "btn" + (accent ? " accent" : ""), svg(icon) + esc(label) + "<small>" + esc(sub) + "</small>");
-            b.addEventListener("click", function () { if (!busy) fn(bar.firstChild); });
+            b.addEventListener("click", function () { studioAct(b, function () { return fn(bar.firstChild); }); });
             hint(b, label, tip);
             btns.appendChild(b);
         }
@@ -1340,8 +1337,7 @@
     }
 
     function ready0() {
-        if (!usedClips().length) { toast({ ok: false, msg: "先添加视频并放进格子里" }); return false; }
-        return true;
+        return usedClips().length ? null : { ok: false, msg: "先添加视频，并在画面里点格子把它放进去" };
     }
 
     // 逐帧渲染：k = 输出缩放
@@ -1386,10 +1382,11 @@
     function stamp() { var d = new Date(); return "MotionHub_" + d.getFullYear() + ("0" + (d.getMonth() + 1)).slice(-2) + ("0" + d.getDate()).slice(-2) + "_" + ("0" + d.getHours()).slice(-2) + ("0" + d.getMinutes()).slice(-2); }
 
     function exportGif(bar) {
-        if (!ready0()) return;
+        var notReady = ready0();
+        if (notReady) return notReady;
         busy = true;
         var E = S.exp, k = E.width ? Math.min(1, E.width / S.size.w) : 1, enc = null;
-        renderFrames(E.fps, k, function (g, cv) {
+        return renderFrames(E.fps, k, function (g, cv) {
             if (!enc) enc = new MHGif.Encoder(cv.width, cv.height, { delayCs: 100 / E.fps, dither: E.dither });
             enc.addFrame(g.getImageData(0, 0, cv.width, cv.height).data);
         }, bar).then(function () {
@@ -1400,19 +1397,20 @@
                 if (r.ok) r.msg += "（" + (bytes.length / 1024 / 1024).toFixed(1) + " MB）";
                 return r;
             });
-        }).then(function (r) { busy = false; toast(r); }).catch(function (e) { busy = false; toast({ ok: false, msg: "导出失败：" + (e.message || e) }); });
+        }).then(function (r) { busy = false; return r; }, function (e) { busy = false; return { ok: false, msg: "导出失败：" + (e.message || e) }; });
     }
 
     function exportPng(bar) {
-        if (!ready0()) return;
+        var notReady = ready0();
+        if (notReady) return notReady;
         var cv = document.createElement("canvas");
         cv.width = S.size.w; cv.height = S.size.h;
         compose(cv.getContext("2d"), 1, false);
-        cv.toBlob(function (b) {
-            b.arrayBuffer().then(function (buf) {
-                return saveBytes(new Uint8Array(buf), "保存封面", stamp() + "_cover", "png");
-            }).then(toast);
-        }, "image/png");
+        return new Promise(function (res) { cv.toBlob(res, "image/png"); }).then(function (b) {
+            return b.arrayBuffer();
+        }).then(function (buf) {
+            return saveBytes(new Uint8Array(buf), "保存封面", stamp() + "_cover", "png");
+        });
     }
 
     // 需要真实文件路径的场合（发送到 AE、声音）：拖进来的文件没有路径时，先存一份到临时文件夹
@@ -1430,13 +1428,14 @@
     }
 
     function exportMp4(bar) {
-        if (!ready0()) return;
-        if (!NODE || !CEP) { toast({ ok: false, msg: "导出 MP4 需要在 After Effects 里使用" }); return; }
+        var notReady = ready0();
+        if (notReady) return notReady;
+        if (!NODE || !CEP) return { ok: false, msg: "导出 MP4 需要在 After Effects 里使用" };
         busy = true;
         var E = S.exp, name = stamp();
         var dir = nodePath.join(os.tmpdir(), "motionhub_studio", name);
         fs.mkdirSync(dir, { recursive: true });
-        host("saveFile", { title: "导出 MP4", name: name, ext: "mp4" }).then(function (r) {
+        return host("saveFile", { title: "导出 MP4", name: name, ext: "mp4" }).then(function (r) {
             if (!r.ok || !r.data.path) throw new Error("已取消");
             var out = r.data.path;
             return renderFrames(E.mp4fps, 1, function (g, cv, i) {
@@ -1453,7 +1452,7 @@
                     duration: duration(), name: name, out: out, render: E.render, audio: audio
                 });
             });
-        }).then(function (r) { busy = false; toast(r); }).catch(function (e) { busy = false; toast({ ok: false, msg: e.message === "已取消" ? "已取消" : "导出失败：" + (e.message || e) }); });
+        }).then(function (r) { busy = false; return r; }, function (e) { busy = false; return e.message === "已取消" ? null : { ok: false, msg: "导出失败：" + (e.message || e) }; });
     }
 
     function sh(cmd, args, timeout) {
@@ -1523,15 +1522,16 @@
     }
 
     function exportLive(bar) {
-        if (!ready0()) return;
-        if (!NODE || !CEP) { toast({ ok: false, msg: "导出实况照片需要在 After Effects 里使用" }); return; }
+        var notReady = ready0();
+        if (notReady) return notReady;
+        if (!NODE || !CEP) return { ok: false, msg: "导出实况照片需要在 After Effects 里使用" };
         busy = true;
         var E = S.exp, name = "IMG_" + stamp().replace(/\D/g, "").slice(-8);
         var dir = nodePath.join(os.tmpdir(), "motionhub_studio", name + "_" + Date.now());
         fs.mkdirSync(dir, { recursive: true });
         var outDir = null, cover = clamp(E.cover || 0, 0, Math.max(0, duration() - 1 / E.mp4fps));
         var pvt, jpgPath, movPath, id;
-        host("chooseFolder", { title: "选择实况照片的保存位置" }).then(function (r) {
+        return host("chooseFolder", { title: "选择实况照片的保存位置" }).then(function (r) {
             if (!r.ok || !r.data.path) throw new Error("已取消");
             outDir = r.data.path;
             return renderFrames(E.mp4fps, 1, function (g, cv, i) {
@@ -1582,7 +1582,7 @@
                 else msg += IS_WIN ? "。把整个 .pvt 文件夹传到 Mac，拖进「照片」即可" : "。双击它或拖进「照片」就是一张实况照片";
                 return { ok: true, msg: msg };
             });
-        }).then(function (r) { busy = false; if (bar) bar.style.width = "0"; toast(r); }).catch(function (e) { busy = false; if (bar) bar.style.width = "0"; toast({ ok: false, msg: e.message === "已取消" ? "已取消" : "导出失败：" + (e.message || e) }); });
+        }).then(function (r) { busy = false; if (bar) bar.style.width = "0"; return r; }, function (e) { busy = false; if (bar) bar.style.width = "0"; return e.message === "已取消" ? null : { ok: false, msg: "导出失败：" + (e.message || e) }; });
     }
 
     function setCover(t, preview) {
@@ -1597,12 +1597,19 @@
         }
     }
 
+    // 一次点击：按钮旁出气泡，结果记进底部提示栏；另一个导出还在进行时直接说明
+    function studioAct(btn, fn) {
+        if (busy) { B.show(btn, "busy", "另一个导出还在进行，完成后再点"); return Promise.resolve(null); }
+        return B.run(btn, fn, { toast: toast, busyText: "正在处理…" });
+    }
+
     function sendToAE() {
-        if (!ready0()) return;
-        if (!CEP) { toast({ ok: false, msg: "发送到 AE 需要在 After Effects 里使用" }); return; }
+        var notReady = ready0();
+        if (notReady) return notReady;
+        if (!CEP) return { ok: false, msg: "发送到 AE 需要在 After Effects 里使用" };
         busy = true;
         var rects = cellRects(S.size.w, S.size.h);
-        Promise.all(S.cells.map(function (cell, i) {
+        return Promise.all(S.cells.map(function (cell, i) {
             var c = S.clips[cell.clip];
             if (!c || !c.ok) return Promise.resolve(null);
             return (c.compId ? Promise.resolve(null) : ensurePath(c)).then(function (path) {
@@ -1621,13 +1628,13 @@
                     bg: rgb(S.bg).map(function (v) { return v / 255; }), radius: S.radius, cells: cells.filter(Boolean), audio: audio
                 });
             });
-        }).then(function (r) { busy = false; toast(r); }).catch(function (e) { busy = false; toast({ ok: false, msg: "发送失败：" + (e.message || e) }); });
+        }).then(function (r) { busy = false; return r; }, function (e) { busy = false; return { ok: false, msg: "发送失败：" + (e.message || e) }; });
     }
 
     // =====================================================================
     // 启动
     // =====================================================================
-    $("#btn-live").addEventListener("click", function () { if (!busy) exportLive($("#top-prog i")); });
+    $("#btn-live").addEventListener("click", function () { studioAct(this, function () { return exportLive($("#top-prog i")); }); });
     hint($("#btn-live"), "导出实况照片", "随时一键导出：按当前排版和封面生成 .pvt 实况照片包" + (IS_WIN ? "" : "，并存入「照片」App（可在「导出」页关闭）"));
     $("#btn-cover").addEventListener("click", function () { setCover(S.t, false); renderExportPanel(); toast({ ok: true, msg: "封面设为 " + fmt(S.exp.cover) + "s 这一帧" }); });
     hint($("#btn-cover"), "设为封面", "把当前画面这一帧设为实况照片的封面：不按住时显示的那张静态图");
@@ -1693,8 +1700,8 @@
         });
     });
     $$("[data-icon]").forEach(function (n) { n.innerHTML = svg(n.dataset.icon); });
-    $("#add-clips").addEventListener("click", pickVideos);
-    $("#add-comp").addEventListener("click", importComp);
+    $("#add-clips").addEventListener("click", function () { studioAct(this, pickVideos); });
+    $("#add-comp").addEventListener("click", function () { studioAct(this, importComp); });
     hint($("#add-comp"), "导入 AE 合成", "选一个合成，AE 自动把它渲染成帧序列放进素材，不用先手动导出视频");
     hint($("#add-clips"), "添加视频", "支持 MP4 / MOV / WebM（H.264、VP9 等可以在面板里预览的编码）");
     $("#btn-accent").addEventListener("click", function () {

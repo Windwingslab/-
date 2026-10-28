@@ -2,6 +2,12 @@
    画布 #171819 / 默认强调色 #FF5900 / 橙的暗部 #26110A / 白
    强调色上的文字自动选近黑或白；分隔只用 1px 线，不用阴影 */
 
+/* 字体随插件打包（fonts/，SIL OFL 1.1），不依赖网络 */
+@font-face { font-family: "Geist"; src: url("../fonts/Geist-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Geist"; src: url("../fonts/Geist-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("../fonts/GeistMono-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("../fonts/GeistMono-Medium.woff2") format("woff2"); font-weight: 500; font-style: normal; font-display: swap; }
+
 :root {
     --ink: #171819;
     --raise: #1D1E1F;
@@ -42,7 +48,7 @@ svg { display: block; }
 
 /* —— 顶栏 —— */
 .top { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px 12px; }
-.brand { display: flex; align-items: center; gap: 7px; font: 600 12px var(--mono); letter-spacing: .08em; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 7px; font: 500 12px var(--mono); letter-spacing: .08em; min-width: 0; }
 .brand em { font: 400 11px var(--sans); letter-spacing: 0; color: var(--muted); font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand em:not(:empty)::before { content: "/"; margin-right: 6px; color: var(--line-2); }
 .mark { width: 9px; height: 9px; background: var(--accent); display: inline-block; flex: none; }
@@ -58,7 +64,7 @@ svg { display: block; }
 
 /* —— 标签栏 —— */
 .tabs { display: flex; gap: 2px; padding: 0 6px; border-bottom: 1px solid var(--line); }
-.tab { background: none; border: 0; padding: 7px 10px 8px; cursor: pointer; color: var(--muted); font-weight: 600; position: relative; }
+.tab { background: none; border: 0; padding: 7px 10px 8px; cursor: pointer; color: var(--muted); font-weight: 500; position: relative; }
 .tab:hover, .tab.on { color: var(--text); }
 .tab.on::after { content: ""; position: absolute; left: 10px; right: 10px; bottom: -1px; height: 2px; background: var(--accent); }
 
@@ -199,7 +205,7 @@ input[type=range]:hover::-webkit-slider-thumb { background: var(--c, var(--accen
 }
 body.editing .edit-bar { display: flex; }
 .eb-tip { flex: 1; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.eb-tip b { color: var(--accent); font-weight: 600; }
+.eb-tip b { color: var(--accent); font-weight: 500; }
 
 body.editing .cell { cursor: grab; }
 body.editing .cell > *:not(.cell-ctl) { pointer-events: none; }
@@ -310,7 +316,7 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 .btn svg { width: 14px; height: 14px; }
 .btn:hover { border-color: var(--line-2); color: var(--accent); }
 .btn:active { transform: scale(.96); }
-.btn.accent { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.accent { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 500; }
 .btn.accent:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
 .btn.sm { height: 26px; padding: 0 9px; font-size: 11px; }
 .btn.sm svg { width: 12px; height: 12px; }
@@ -354,7 +360,7 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 .cat-list { display: grid; gap: 4px; }
 
 @media (prefers-reduced-motion: reduce) {
-    * { transition: none !important; }
+    * { transition: none !important; animation: none !important; }
 }
 
 /* =====================================================================
@@ -372,3 +378,39 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 .cat-item.sel { border-color: var(--accent); background: var(--raise); }
 .fav-list, .pal-list { max-height: 300px; overflow-y: auto; }
 .pal-input, .dlg-body input.pal-input { height: 32px; font-size: 13px; }
+
+/* =====================================================================
+   3.5.1：点击反馈 · 启动横幅 · 组件失败
+   ===================================================================== */
+/* 按钮旁的气泡：进行中（细环）/ 成功（橙色方点）/ 失败（橙色描边 + !） */
+.fb {
+    position: fixed; z-index: 60; max-width: min(280px, calc(100vw - 12px)); padding: 6px 9px; border-radius: 4px;
+    background: var(--raise-2); border: 1px solid var(--line-2); color: var(--text); font-size: 11px; line-height: 1.45;
+    display: flex; align-items: flex-start; gap: 7px; pointer-events: none;
+}
+.fb[hidden] { display: none; }
+.fb .fb-dot { flex: none; width: 6px; height: 6px; margin-top: 5px; background: var(--accent); }
+.fb.err { border-color: var(--accent); }
+.fb.err .fb-dot { width: 12px; height: 12px; margin-top: 1px; background: var(--accent); border-radius: 50%; position: relative; }
+.fb.err .fb-dot::after { content: "!"; position: absolute; inset: 0; text-align: center; font: 500 9px/12px var(--mono); color: var(--on-accent); }
+.fb.busy .fb-dot { width: 10px; height: 10px; margin-top: 2px; background: none; border: 1.5px solid var(--line-2); border-top-color: var(--accent); border-radius: 50%; animation: mh-spin .7s linear infinite; }
+.fb.fb-in { animation: mh-pop .16s ease-out; }
+@keyframes mh-pop { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@keyframes mh-spin { to { transform: rotate(360deg); } }
+
+/* 按钮本身：按下立刻有描边（< 150ms），完成后短暂显示结果 */
+.pending { outline: 1px dashed var(--accent); outline-offset: -1px; }
+.busy { cursor: progress; }
+.st-ok { outline: 1px solid var(--text); outline-offset: -1px; }
+.st-err { outline: 1px solid var(--accent); outline-offset: -1px; animation: mh-nudge .22s ease-out; }
+@keyframes mh-nudge { 25% { transform: translateX(-2px); } 75% { transform: translateX(2px); } }
+
+/* 顶部横幅：后台没连上 / 没有写入权限 */
+.banner { display: flex; align-items: center; gap: 8px; margin: 0 10px 6px; padding: 7px 9px; border: 1px solid var(--accent); border-radius: 4px; background: var(--deep, #26110A); font-size: 11px; line-height: 1.5; color: var(--text); }
+.banner[hidden] { display: none; }
+.banner span { flex: 1; min-width: 0; }
+.banner .btn { flex: none; }
+
+/* 组件渲染失败：只影响这一格 */
+.cell.broken { border: 1px dashed var(--line-2); border-radius: 4px; padding: 8px; }
+.broken-msg { font-size: 11px; color: var(--muted); line-height: 1.5; }

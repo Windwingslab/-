@@ -1,0 +1,12 @@
+{
+  "name": "motionhub-tests",
+  "private": true,
+  "description": "MotionHub 验收测试：点击测试、ES3 检查、网络测试",
+  "scripts": {
+    "test": "node es3check.js && node clicktest.js"
+  },
+  "devDependencies": {
+    "acorn": "8.12.1",
+    "acorn-walk": "8.3.4"
+  }
+}

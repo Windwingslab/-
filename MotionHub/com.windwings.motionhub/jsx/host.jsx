@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.5.0";
+    var VERSION = "3.5.1";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -21,10 +21,25 @@ var MH = (function () {
     // =====================================================================
     // JSON（ExtendScript 没有内置 JSON）
     // =====================================================================
+    var HEX = "0123456789abcdef";
+    function u4(c) { return "\\u00" + HEX.charAt((c >> 4) & 15) + HEX.charAt(c & 15); }
     function q(s) {
-        return '"' + String(s)
-            .replace(/\\/g, "\\\\").replace(/"/g, '\\"')
-            .replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t") + '"';
+        s = String(s);
+        var out = "", i, c, ch;
+        for (i = 0; i < s.length; i++) {
+            ch = s.charAt(i);
+            c = s.charCodeAt(i);
+            if (ch === "\\") out += "\\\\";
+            else if (ch === '"') out += '\\"';
+            else if (c === 10) out += "\\n";
+            else if (c === 13) out += "\\r";
+            else if (c === 9) out += "\\t";
+            else if (c < 32) out += u4(c);
+            else if (c === 0x2028) out += "\\u2028";
+            else if (c === 0x2029) out += "\\u2029";
+            else out += ch;
+        }
+        return '"' + out + '"';
     }
 
     function stringify(v) {
@@ -1568,27 +1583,46 @@ var MH = (function () {
     // =====================================================================
     // 脚本库
     // =====================================================================
+    // 建不了文件夹时返回 null，不抛异常；需要文件夹的地方用 needFolder() 给出明确提示
     function ensureFolder(f) {
-        if (!f.exists) {
-            if (f.parent && !f.parent.exists) ensureFolder(f.parent);
-            f.create();
-        }
-        return f;
+        try {
+            if (!f.exists) {
+                if (f.parent && !f.parent.exists && !ensureFolder(f.parent)) return null;
+                f.create();
+            }
+        } catch (e) { return null; }
+        return f.exists ? f : null;
+    }
+    function needFolder(f, what) {
+        var r = ensureFolder(f);
+        if (!r) fail("没法创建" + (what || "文件夹") + "：" + f.fsName + "。" + (canWriteFiles()
+            ? "检查这个位置是否可写，或在设置页「更换文件夹」换一个位置"
+            : "先在 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」"));
+        return r;
+    }
+    function listFiles(folder, mask) {
+        var r = null;
+        try { r = mask ? folder.getFiles(mask) : folder.getFiles(); } catch (e) {}
+        return r || [];
     }
 
     function libRoot() {
         var p = state.libPath || (Folder.myDocuments.fsName + "/MotionHub/Library");
-        return ensureFolder(new Folder(p));
+        return needFolder(new Folder(p), "脚本库文件夹");
     }
 
-    function copyFolder(src, dst) {
-        ensureFolder(dst);
-        var items = src.getFiles();
+    // 返回 {copied, existing}：真正复制了几个文件、几个已经存在被跳过
+    function copyFolder(src, dst, count) {
+        count = count || { copied: 0, existing: 0 };
+        needFolder(dst);
+        var items = listFiles(src);
         for (var i = 0; i < items.length; i++) {
             var target = dst.fsName + "/" + File.decode(items[i].name);
-            if (items[i] instanceof Folder) copyFolder(items[i], new Folder(target));
-            else if (!new File(target).exists) items[i].copy(target);
+            if (items[i] instanceof Folder) copyFolder(items[i], new Folder(target), count);
+            else if (new File(target).exists) count.existing++;
+            else if (items[i].copy(target)) count.copied++;
         }
+        return count;
     }
 
     function readMeta(file, cat, root) {
@@ -1619,7 +1653,7 @@ var MH = (function () {
     }
 
     function scanDir(dir, cat, out, depth, root) {
-        var items = dir.getFiles();
+        var items = listFiles(dir);
         for (var i = 0; i < items.length; i++) {
             var f = items[i], nm = File.decode(f.name);
             if (f instanceof Folder) {
@@ -1631,7 +1665,7 @@ var MH = (function () {
     }
 
     function categories() {
-        var list = [], dirs = libRoot().getFiles();
+        var list = [], dirs = listFiles(libRoot());
         for (var i = 0; i < dirs.length; i++) {
             var nm = File.decode(dirs[i].name);
             if (dirs[i] instanceof Folder && nm.charAt(0) !== "_" && nm.charAt(0) !== ".") list.push(nm);
@@ -1676,8 +1710,11 @@ var MH = (function () {
         if (!EXT_ROOT) fail("找不到插件目录");
         var src = new Folder(EXT_ROOT.fsName + "/library_seed");
         if (!src.exists) fail("没有找到示例脚本文件夹");
-        copyFolder(src, libRoot());
-        return "示例脚本已导入";
+        var n = copyFolder(src, libRoot());
+        return {
+            copied: n.copied, existing: n.existing,
+            msg: n.copied ? "已导入 " + n.copied + " 个示例脚本" : (n.existing ? "示例脚本已经在脚本库里了" : "没有导入任何示例脚本：检查脚本库文件夹是否可写")
+        };
     };
 
     LIB.pickFiles = function () {
@@ -1696,7 +1733,7 @@ var MH = (function () {
         if (!canWriteFiles()) fail("请先在 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」");
         var root = libRoot(), target = root;
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
-        if (cat && cat !== "未分类") target = ensureFolder(new Folder(root.fsName + "/" + cat));
+        if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
         var keys = [], panels = 0;
         for (var i = 0; i < a.paths.length; i++) {
             var f = new File(a.paths[i]);
@@ -1708,7 +1745,7 @@ var MH = (function () {
             }
             keys.push(dest.fsName.substring(root.fsName.length).replace(/\\/g, "/"));
             if (a.toPanels && /\.(jsx|jsxbin)$/i.test(f.name)) {
-                var pf = ensureFolder(userPanelsFolder());
+                var pf = needFolder(userPanelsFolder(), "ScriptUI Panels 文件夹");
                 if (f.copy(pf.fsName + "/" + File.decode(f.name))) panels++;
             }
         }
@@ -1741,7 +1778,7 @@ var MH = (function () {
     LIB.remove = function (a) {
         var f = new File(a.path);
         if (!f.exists) fail("文件不存在");
-        var trash = ensureFolder(new Folder(libRoot().fsName + "/_已移除"));
+        var trash = needFolder(new Folder(libRoot().fsName + "/_已移除"), "「_已移除」文件夹");
         var dest = new File(trash.fsName + "/" + File.decode(f.name));
         if (dest.exists) dest.remove();
         if (!(f.copy(dest.fsName) && f.remove())) fail("移除失败：" + f.error);
@@ -1766,7 +1803,7 @@ var MH = (function () {
 
     // 面板布局等配置：存在用户数据目录，4 个面板共用
     function configFile(name) {
-        var dir = ensureFolder(new Folder(Folder.userData.fsName + "/MotionHub"));
+        var dir = needFolder(new Folder(Folder.userData.fsName + "/MotionHub"), "配置文件夹");
         return new File(dir.fsName + "/" + String(name).replace(/[^\w.\-]/g, "_") + ".json");
     }
 
@@ -1811,7 +1848,7 @@ var MH = (function () {
         if (!EXT_RE.test(a.name)) fail("只支持 .jsx / .jsxbin / .ffx 文件");
         var root = libRoot(), target = root;
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
-        if (cat && cat !== "未分类") target = ensureFolder(new Folder(root.fsName + "/" + cat));
+        if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
         var f = new File(target.fsName + "/" + a.name.replace(/[\\\/:*?"<>|]/g, "_"));
         f.encoding = "BINARY";
         if (!f.open("w")) fail("无法写入：" + f.fsName);
@@ -2144,13 +2181,13 @@ var MH = (function () {
             try { if (item) item.remove(); } catch (e2) {}
             for (i = 0; i < keep.length && i < rq.numItems; i++) { try { rq.item(i + 1).render = keep[i]; } catch (e3) {} }
         }
-        if (!viaQueue || !dir.getFiles("*.png").length) {
-            var old = dir.getFiles("*"), saved = false;
+        if (!viaQueue || !listFiles(dir, "*.png").length) {
+            var old = listFiles(dir, "*"), saved = false;
             for (i = 0; i < old.length; i++) { try { old[i].remove(); } catch (e4) {} }
             try { saved = saveFramesPng(comp, dir, start, dur); } catch (e5) { why = why || (e5.message || String(e5)); }
             if (!saved) fail("渲染合成失败" + (why ? "：" + why : "：这个 AE 版本既没有 PNG 序列输出，也不支持逐帧存图"));
         }
-        var files = dir.getFiles("*.png"), names = [];
+        var files = listFiles(dir, "*.png"), names = [];
         for (i = 0; i < files.length; i++) names.push(File.decode(files[i].name));
         names.sort();
         if (!names.length) fail("没有渲染出画面，请检查合成的工作区");
@@ -2182,14 +2219,17 @@ var MH = (function () {
         stylePaste: "粘贴样式", applyEffect: "添加效果", wireframe: "线框叠加", wireClear: "清除线框", wireStyle: "线框颜色"
     };
 
+    // 只读：不改工程，不开撤销组（否则会在「编辑 → 撤销」里留下空记录）
+    var READ_ONLY = { bezierRead: true, copyKeys: true, styleCopy: true };
+
     function call(name, args) {
         args = args || {};
         if (!args.mods) args.mods = {};
         try {
             if (T[name]) {
-                app.beginUndoGroup("MotionHub：" + (UNDO_NAMES[name] || name));
-                var res;
-                try { res = T[name](args); } finally { app.endUndoGroup(); }
+                var res, undo = !READ_ONLY[name];
+                if (undo) app.beginUndoGroup("MotionHub：" + (UNDO_NAMES[name] || name));
+                try { res = T[name](args); } finally { if (undo) app.endUndoGroup(); }
                 if (res && typeof res === "object") return stringify({ ok: true, msg: res.msg || "", data: res });
                 return stringify({ ok: true, msg: res || "" });
             }

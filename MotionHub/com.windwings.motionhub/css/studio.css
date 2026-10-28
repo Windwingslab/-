@@ -39,7 +39,7 @@ body.studio { min-width: 0; overflow: hidden; }
 .clip .ds.bad { color: var(--accent); font-family: var(--sans); }
 .clip .act { opacity: 0; }
 .clip:hover .act { opacity: 1; }
-.clip .badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 8px; background: var(--accent); color: var(--on-accent); font: 600 9.5px var(--mono); margin-right: 4px; }
+.clip .badge { display: inline-block; min-width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 8px; background: var(--accent); color: var(--on-accent); font: 500 9.5px var(--mono); margin-right: 4px; }
 
 /* 预览舞台 */
 .stage {

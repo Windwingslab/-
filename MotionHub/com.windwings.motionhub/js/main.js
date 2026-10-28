@@ -38,20 +38,8 @@
         set: function (k, v) { try { localStorage.setItem("mh." + k, JSON.stringify(v)); } catch (e) {} }
     };
 
-    function host(name, args) {
-        return new Promise(function (resolve) {
-            var code = "MH.call(" + JSON.stringify(name) + "," + JSON.stringify(args || {}) + ")";
-            var done = function (r) {
-                var o;
-                try { o = JSON.parse(r); } catch (e) {
-                    o = { ok: false, msg: r === "EvalScript error." ? "后台脚本没有加载，请关闭面板后重新打开" : "返回数据异常：" + String(r).slice(0, 80) };
-                }
-                resolve(o);
-            };
-            if (CEP) CEP.evalScript(code, done);
-            else done(window.MHMock ? window.MHMock(name, args) : JSON.stringify({ ok: true, msg: "（预览）" + name }));
-        });
-    }
+    var B = window.MHBridge;
+    var host = B.host;
 
     // =====================================================================
     // 颜色
@@ -147,11 +135,13 @@
             if (editing) return;
             b.classList.add("flash");
             setTimeout(function () { b.classList.remove("flash"); }, 140);
-            var p = o.run(mods(e));
-            if (p && p.then) p.then(toast);
+            var m = mods(e);
+            act0(b, function () { return o.run(m); });
         });
         return b;
     }
+    // 一次点击：按钮旁出气泡（进行中 / 成功 / 失败），结果同时记在底部提示栏；执行期间忽略重复点击
+    function act0(btn, fn) { return B.run(btn, fn, { toast: toast }); }
 
     function numInput(value, onChange, cls) {
         var n = el("input", "num-in" + (cls ? " " + cls : ""));
@@ -257,7 +247,7 @@
     // =====================================================================
     // 面板配置（布局 + 主题色），存在 AE 用户数据目录，4 个面板各一份
     // =====================================================================
-    var cfg = null, saveTimer = null, editing = false;
+    var cfg = null, saveTimer = null, editing = false, cfgSynced = false;
 
     function uid() { return "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
     function H(en, zh) { return { type: "heading", en: en, zh: zh }; }
@@ -319,14 +309,15 @@
         saveTimer = setTimeout(function () {
             var text = JSON.stringify(cfg);
             local.set("panel" + PANEL, cfg);
-            host("saveConfig", { name: "panel" + PANEL, text: text });
+            if (cfgSynced) host("saveConfig", { name: "panel" + PANEL, text: text });
         }, 250);
     }
 
     function loadConfig() {
         return host("loadConfig", { name: "panel" + PANEL }).then(function (r) {
-            var c = null;
-            try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) {}
+            var c = null, bad = false;
+            try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) { bad = true; }
+            cfgSynced = r.ok && !bad;
             if (!c) c = local.get("panel" + PANEL, null);
             if (!c || !c.items) {
                 c = fromPreset(PANEL_PRESET[PANEL] || "blank");
@@ -431,7 +422,7 @@
     toolType("adjust", { name: "调整图层", cat: "图层", icon: "adjust", hint: { title: "调整图层", click: "在选中图层上方新建调整图层" }, run: call("addLayer", { kind: "adjust" }) });
     toolType("solid", { name: "纯色层", cat: "图层", icon: "solid", hint: { title: "纯色层", click: "新建合成大小的纯色层" }, run: call("addLayer", { kind: "solid" }) });
     toolType("camera", { name: "摄像机", cat: "图层", icon: "camera", hint: { title: "摄像机", click: "新建摄像机" }, run: call("addLayer", { kind: "camera" }) });
-    toolType("trim", { name: "剪到工作区", cat: "图层", icon: "trim", hint: { title: "剪到工作区", click: "把选中图层的入点和出点剪到工作区" }, run: call("trim") });
+    toolType("trim", { name: "剪到工作区", cat: "图层", icon: "trim", hint: { title: "剪到工作区", click: "把选中图层的入点和出点剪到工作区", alt: "只把入点剪到播放头" }, run: call("trim") });
     toolType("split", { name: "在播放头拆分", cat: "图层", icon: "split", hint: { title: "在播放头拆分", click: "把选中图层在播放头位置拆成两段" }, run: call("splitLayer") });
     toolType("toPlayhead", { name: "移到播放头", cat: "图层", icon: "toPlayhead", hint: { title: "移到播放头", click: "把选中图层的入点对齐到播放头", alt: "把出点对齐到播放头" }, run: call("toPlayhead") });
     toolType("reverseLayers", { name: "反转顺序", cat: "图层", icon: "reverse", hint: { title: "反转图层顺序", click: "反转选中图层的上下顺序" }, run: call("reverse") });
@@ -473,8 +464,11 @@
         name: "打开 Studio", cat: "新建", icon: "widgets", w: 3,
         hint: { title: "MotionHub Studio · 剪辑排版", click: "打开剪辑排版窗口：多视频拼图、社交媒体尺寸、调色、导出 GIF / MP4" },
         run: function () {
-            if (CEP && CEP.requestOpenExtension) { CEP.requestOpenExtension("com.windwings.motionhub.studio", ""); return null; }
-            return Promise.resolve({ ok: false, msg: "请从 窗口 → 扩展 → MotionHub Studio 打开" });
+            if (CEP && CEP.requestOpenExtension) {
+                CEP.requestOpenExtension("com.windwings.motionhub.studio", "");
+                return { ok: true, msg: "已打开 Studio：在单独的窗口里，没看到就从「窗口 → 扩展 → MotionHub Studio」切过去" };
+            }
+            return { ok: false, msg: "打不开 Studio：从「窗口 → 扩展 → MotionHub Studio · 剪辑排版」打开" };
         }
     });
 
@@ -1080,7 +1074,7 @@
                     showPop(anchor || cell, [el("div", "p-title", "线框颜色"), swatches(null, function (hex) {
                         hidePop();
                         var c = rgb(hex).map(function (v) { return v / 255; });
-                        host("wireStyle", { color: [c[0], c[1], c[2], 1] }).then(toast);
+                        act0(anchor || cell, function () { return host("wireStyle", { color: [c[0], c[1], c[2], 1] }); });
                     }, false)]);
                     return null;
                 }
@@ -1105,7 +1099,7 @@
             favs.forEach(function (f) {
                 var c = el("button", "chip", svg("fx") + esc(f[1]));
                 bindHint(c, { title: f[1], click: "添加到选中图层", alt: "新建调整图层并添加" });
-                c.addEventListener("click", function (e) { if (editing) return; host("applyEffect", { match: f[0], name: f[1], mods: mods(e) }).then(toast); });
+                c.addEventListener("click", function (e) { if (editing) return; var m = mods(e); act0(c, function () { return host("applyEffect", { match: f[0], name: f[1], mods: m }); }); });
                 chips.appendChild(c);
             });
             var add = el("button", "chip", svg("pencil") + "管理");
@@ -1215,7 +1209,12 @@
                 if (def.size[1] > 1) cell.style.gridRow = "span " + def.size[1];
             }
             paintCell(cell, item.color);
-            def.render(cell, item);
+            try { def.render(cell, item); } catch (err) {
+                cell.innerHTML = "";
+                cell.classList.add("broken");
+                cell.appendChild(el("div", "broken-msg", "这个组件加载失败：" + esc((def.name || item.type) + " · " + (err && err.message ? err.message : err))));
+                if (window.console) console.error("MotionHub 组件加载失败", item.type, err);
+            }
             if (editing) decorateEditable(cell, item, def);
             layoutEl.appendChild(cell);
         });
@@ -1350,7 +1349,7 @@
 
     function refreshLibrary() {
         return host("scan").then(function (r) {
-            if (!r.ok) { toast(r); return; }
+            if (!r.ok) throw new Error(r.msg);
             lib.items = r.data.items;
             lib.categories = r.data.categories;
             lib.libPath = r.data.libPath;
@@ -1466,7 +1465,7 @@
     function act(parent, icon, cls, h, fn) {
         var b = el("button", "act " + (cls || ""), svg(icon));
         bindHint(b, h);
-        b.addEventListener("click", function (e) { e.stopPropagation(); var p = fn(mods(e)); if (p && p.then) p.then(toast); });
+        b.addEventListener("click", function (e) { e.stopPropagation(); var m = mods(e); act0(b, function () { return fn(m); }); });
         parent.appendChild(b);
         return b;
     }
@@ -1504,16 +1503,16 @@
             act(acts, "play", "run", { title: "运行 " + it.name, click: it.ext === "ffx" ? "应用到选中图层" : "运行脚本" }, function () { return host("run", { path: it.path }); });
             li.appendChild(acts);
             bindHint(li, { title: it.name + " · " + it.cat + " · " + it.type, click: "双击运行", note: it.desc || it.file });
-            li.addEventListener("dblclick", function () { host("run", { path: it.path }).then(toast); });
+            li.addEventListener("dblclick", function () { act0(li, function () { return host("run", { path: it.path }); }); });
             listEl.appendChild(li);
         });
     }
 
     catSel.addEventListener("change", renderLibrary);
     qInput.addEventListener("input", renderLibrary);
-    $("#lib-add").addEventListener("click", function () { addScripts().then(toast); });
-    $("#lib-refresh").addEventListener("click", function () { refreshLibrary().then(function () { toast({ ok: true, msg: "已刷新：" + lib.items.length + " 个脚本" }); }); });
-    $("#lib-open").addEventListener("click", function () { host("reveal", {}).then(toast); });
+    $("#lib-add").addEventListener("click", function () { act0(this, addScripts); });
+    $("#lib-refresh").addEventListener("click", function () { act0(this, function () { return refreshLibrary().then(function () { return { ok: true, msg: "已刷新：" + lib.items.length + " 个脚本" }; }); }); });
+    $("#lib-open").addEventListener("click", function () { act0(this, function () { return host("reveal", {}); }); });
     bindHint($("#lib-add"), { title: "添加脚本", click: "选择文件加入脚本库，可以同时放到当前面板" });
     bindHint($("#lib-refresh"), { title: "刷新", click: "重新扫描脚本库文件夹" });
     bindHint($("#lib-open"), { title: "打开脚本库文件夹", click: "每个子文件夹就是一个分类" });
@@ -1540,12 +1539,19 @@
     ];
 
     function snippetById(id) { for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return snippets[i]; return null; }
-    function saveSnippets() { local.set("snippets", snippets); return host("saveSnippets", { text: JSON.stringify(snippets, null, 2) }); }
+    // 没从磁盘读到片段时（后台没连上 / 文件损坏）只存本机缓存，不覆盖磁盘上的文件
+    function saveSnippets() {
+        local.set("snippets", snippets);
+        return snippetsSynced ? host("saveSnippets", { text: JSON.stringify(snippets, null, 2) }) : Promise.resolve({ ok: true });
+    }
+    var snippetsSynced = false;
     function loadSnippets() {
         return host("loadSnippets").then(function (r) {
-            var s = null;
-            try { if (r.ok && r.data && r.data.text) s = JSON.parse(r.data.text); } catch (e) {}
+            var s = null, bad = false;
+            try { if (r.ok && r.data && r.data.text) s = JSON.parse(r.data.text); } catch (e) { bad = true; }
+            snippetsSynced = r.ok && !bad;
             if (!s) s = local.get("snippets", null);
+            if (!s && !snippetsSynced) { snippets = []; renderSnippets(); throw new Error(r.ok ? "代码片段文件损坏，已保留原文件没有改动" : r.msg); }
             if (!s) {
                 s = DEFAULT_SNIPPETS.map(function (d) { return { id: uid(), kind: d.kind, name: d.name, code: d.code }; });
                 snippets = s;
@@ -1622,7 +1628,7 @@
                 });
                 act(acts, "play", "run", s.kind === "expr" ? { title: "应用表达式", click: "应用到选中属性", alt: "追加到已有表达式后面" } : { title: "执行脚本" }, function (m) { return runSnippet(s, m); });
                 li.appendChild(acts);
-                li.addEventListener("dblclick", function () { runSnippet(s, {}).then(toast); });
+                li.addEventListener("dblclick", function () { act0(li, function () { return runSnippet(s, {}); }); });
                 ul.appendChild(li);
             });
             box.appendChild(ul);
@@ -1662,6 +1668,7 @@
             cfg = fromPreset(key);
             cfg.name = keepName; cfg.accent = keepAccent;
             saveConfig(); renderLayout(); selectTab("panel");
+            B.show(null, "ok", "已载入预设布局");
             toast({ ok: true, msg: "已载入预设布局" });
         });
     });
@@ -1672,15 +1679,19 @@
         p.textContent = canWrite ? "已允许脚本写入文件，可以正常添加脚本。" : "未允许脚本写入文件：请到 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」。";
     }
     $("#set-change").addEventListener("click", function () {
-        host("chooseLibrary").then(function (r) {
-            if (!r.ok || !r.data.libPath) return toast(r);
-            Promise.all([refreshLibrary(), loadSnippets()]).then(function () { toast({ ok: true, msg: "已切换脚本库（所有面板共用）" }); });
+        act0(this, function () {
+            return host("chooseLibrary").then(function (r) {
+                if (!r.ok || !r.data || !r.data.libPath) return r.ok ? null : r;
+                return Promise.all([refreshLibrary(), loadSnippets()]).then(function () { return { ok: true, msg: "已切换脚本库（所有面板共用）" }; });
+            });
         });
     });
-    $("#set-open").addEventListener("click", function () { host("reveal", {}).then(toast); });
-    $("#set-samples").addEventListener("click", function () { host("importSamples").then(function (r) { toast(r); refreshLibrary(); }); });
-    $("#set-recheck").addEventListener("click", function () { host("status").then(function (r) { if (r.ok) updatePerm(r.data.canWrite); toast({ ok: true, msg: "已重新检查" }); }); });
-    $("#set-panels").addEventListener("click", function () { host("openPanelsFolder").then(toast); });
+    $("#set-open").addEventListener("click", function () { act0(this, function () { return host("reveal", {}); }); });
+    $("#set-samples").addEventListener("click", function () {
+        act0(this, function () { return host("importSamples").then(function (r) { return refreshLibrary().then(function () { return r; }); }); });
+    });
+    $("#set-recheck").addEventListener("click", function () { act0(this, recheck); });
+    $("#set-panels").addEventListener("click", function () { act0(this, function () { return host("openPanelsFolder"); }); });
 
     // =====================================================================
     // 命令搜索：Cmd / Ctrl + K，搜索全部工具、脚本和代码片段
@@ -1724,8 +1735,8 @@
         }
         function go(c, m) {
             $("#modal").closeWith(null);
-            var p = c.run(m || {});
-            if (p && p.then) p.then(toast);
+            // 面板已经关掉，气泡出现在面板顶部
+            act0(null, function () { return c.run(m || {}); });
         }
         q.addEventListener("input", function () { sel = 0; draw(); });
         q.addEventListener("keydown", function (e) {
@@ -1758,19 +1769,100 @@
     hintEl.innerHTML = IDLE;
     selectTab(local.get("tab" + PANEL, "panel"));
 
-    loadConfig().then(function () {
-        applyAccent(cfg.accent || "#FF5900");
-        $("#panel-name").textContent = cfg.name;
-        renderLayout();
-        renderSettings();
-        return host("init", {});
-    }).then(function (r) {
-        if (!r || !r.ok) { toast(r); return; }
-        var d = r.data;
-        OS = d.os || OS;
-        $("#set-about").textContent = "MOTIONHUB v" + d.version + " · 面板 " + PANEL + " · AE " + d.ae;
-        updatePerm(d.canWrite);
-        var seed = local.get("seeded", false) ? Promise.resolve() : host("importSamples").then(function () { local.set("seeded", true); });
-        return seed.then(function () { return Promise.all([loadSnippets(), refreshLibrary(), loadCurves().then(renderLayout)]); });
+    // =====================================================================
+    // 顶部横幅：后台没连上 / 没有写入权限，第一屏就告诉用户怎么解决
+    // =====================================================================
+    var bannerState = { down: false, perm: false };
+    function renderBanner() {
+        var bn = $("#banner");
+        if (bannerState.down) {
+            bn.hidden = false;
+            $("#banner-msg").textContent = "后台没有连上 AE，面板里的工具暂时用不了。";
+            $("#banner-btn").textContent = "重新连接";
+            $("#banner-btn").dataset.act = "reconnect";
+        } else if (bannerState.perm) {
+            bn.hidden = false;
+            $("#banner-msg").textContent = "AE 还没允许脚本写入文件：打开「首选项 → 脚本和表达式」，勾选「允许脚本写入文件和访问网络」。";
+            $("#banner-btn").textContent = "重新检查";
+            $("#banner-btn").dataset.act = "recheck";
+        } else bn.hidden = true;
+    }
+    B.onBackend(function (down) { bannerState.down = down; renderBanner(); });
+    $("#banner-btn").addEventListener("click", function () {
+        var btn = this;
+        if (btn.dataset.act === "reconnect") {
+            act0(btn, function () {
+                return B.reconnect().then(function (ok) {
+                    if (!ok) return { ok: false, msg: "还是没有连上：关闭这个面板再从「窗口 → 扩展」打开；仍不行就重启 AE" };
+                    return boot().then(function () { return { ok: true, msg: "已重新连接" }; });
+                });
+            });
+        } else act0(btn, recheck);
     });
+    function recheck() {
+        return host("status").then(function (r) {
+            if (!r.ok) return r;
+            updatePerm(r.data.canWrite);
+            bannerState.perm = !r.data.canWrite;
+            renderBanner();
+            return r.data.canWrite ? { ok: true, msg: "已允许脚本写入文件" } : { ok: false, msg: "仍未允许：在「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」，然后再点一次" };
+        });
+    }
+
+    // =====================================================================
+    // 启动：每一步互相独立，任何一步失败都不影响其他步骤
+    // =====================================================================
+    function step(name, fn) {
+        var p;
+        try { p = Promise.resolve(fn()); } catch (e) { p = Promise.reject(e); }
+        return p.then(null, function (e) {
+            var msg = name + "失败：" + (e && e.message ? e.message : e);
+            if (window.console) console.warn("MotionHub 启动 · " + msg);
+            return { ok: false, msg: msg, step: name };
+        });
+    }
+
+    function boot() {
+        return step("读取面板布局", loadConfig).then(function () {
+            if (!cfg) cfg = local.get("panel" + PANEL, null) || fromPreset(PANEL_PRESET[PANEL] || "blank");
+            applyAccent(cfg.accent || "#FF5900");
+            $("#panel-name").textContent = cfg.name;
+            renderLayout();
+            renderSettings();
+            return step("连接后台", function () {
+                return host("init", {}).then(function (r) {
+                    if (!r || !r.ok) throw new Error(r ? r.msg : "没有返回");
+                    var d = r.data;
+                    OS = d.os || OS;
+                    $("#set-about").textContent = "MOTIONHUB v" + d.version + " · 面板 " + PANEL + " · AE " + d.ae;
+                    updatePerm(d.canWrite);
+                    bannerState.perm = !d.canWrite;
+                    renderBanner();
+                    return d;
+                });
+            });
+        }).then(function (initRes) {
+            var failed = initRes && initRes.ok === false;
+            // 示例脚本：真正复制了文件才记下「已导入」，下次还会再试
+            var seed = (failed || local.get("seeded", false)) ? Promise.resolve() : step("导入示例脚本", function () {
+                return host("importSamples").then(function (r) {
+                    if (r.ok && r.data && r.data.copied > 0) local.set("seeded", true);
+                    if (r.ok && r.data && r.data.copied === 0 && r.data.existing > 0) local.set("seeded", true);
+                    if (!r.ok) throw new Error(r.msg);
+                });
+            });
+            return Promise.all([
+                seed.then(function () { return step("读取脚本库", refreshLibrary); }),
+                step("读取代码片段", loadSnippets),
+                step("读取曲线预设", function () { return loadCurves().then(renderLayout); })
+            ]).then(function (rs) {
+                var bad = [initRes].concat(rs).filter(function (r) { return r && r.ok === false; });
+                if (bad.length) toast({ ok: false, msg: bad.map(function (r) { return r.msg; }).join("；") });
+                return bad;
+            });
+        });
+    }
+
+    B.registerKeys(["cmdK", "esc"]);
+    boot();
 })();
