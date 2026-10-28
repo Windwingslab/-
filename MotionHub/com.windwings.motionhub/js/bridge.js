@@ -120,9 +120,9 @@
         return bubble;
     }
 
-    function place(anchor) {
+    function place(anchor, saved) {
         var b = ensureBubble();
-        var r = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : null;
+        var r = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : (saved || null);
         var W = window.innerWidth, H = window.innerHeight;
         if (!r || (!r.width && !r.height)) r = { left: W / 2, right: W / 2, top: 40, bottom: 40, width: 0, height: 0 };
         // 先放回左上角再量：固定定位元素的宽度会受当前位置限制，停在旧位置量会偏窄
@@ -142,13 +142,13 @@
     }
 
     // state：busy / ok / err
-    function show(anchor, state, msg) {
+    function show(anchor, state, msg, saved) {
         var b = ensureBubble();
         clearTimeout(bubbleTimer);
         b.className = "fb " + state;
         b.innerHTML = '<i class="fb-dot"></i><span>' + esc(msg) + "</span>";
         b.hidden = false;
-        place(anchor);
+        place(anchor, saved);
         // 同一句提示重复出现也要重播动画
         b.classList.remove("fb-in");
         void b.offsetWidth;
@@ -175,6 +175,9 @@
             return Promise.resolve(null);
         }
         hideBubble();   // 新的一次点击，先收起上一个按钮的气泡，免得看起来像这个按钮的结果
+        // 记下点击时按钮的位置：操作里重绘了列表、按钮被换掉时，结果仍显示在这里
+        var rect = null;
+        if (btn && btn.getBoundingClientRect) { var br = btn.getBoundingClientRect(); rect = { left: br.left, right: br.right, top: br.top, bottom: br.bottom, width: br.width, height: br.height }; }
         var p;
         try { p = fn(); } catch (err) {
             p = { ok: false, msg: "出错了：" + (err && err.message ? err.message : err) };
@@ -182,10 +185,15 @@
         if (!p) return Promise.resolve(null);
         if (!p.then) p = Promise.resolve(p);
         if (btn) { btn._mhBusy = true; btn.classList.add("pending"); }
-        var slow = setTimeout(function () {
-            if (btn) btn.classList.add("busy");
-            show(btn, "busy", opts.busyText || "处理中…");
-        }, 300);
+        var slow = 0;
+        (function wait(delay) {
+            slow = setTimeout(function () {
+                var modal = document.getElementById("modal");
+                if (modal && !modal.hidden) return wait(300);   // 对话框开着：是在等用户输入，不是在处理
+                if (btn) btn.classList.add("busy");
+                show(btn, "busy", opts.busyText || "处理中…", rect);
+            }, delay);
+        })(300);
         return p.then(null, function (err) {
             return { ok: false, msg: "出错了：" + (err && err.message ? err.message : err) };
         }).then(function (r) {
@@ -193,7 +201,7 @@
             if (btn) { btn._mhBusy = false; btn.classList.remove("busy", "pending"); }
             if (!r) { hideBubble(); return r; }
             var ok = r.ok !== false;
-            show(btn, ok ? "ok" : "err", r.msg || (ok ? (opts.doneText || "完成") : "没有完成"));
+            show(btn, ok ? "ok" : "err", r.msg || (ok ? (opts.doneText || "完成") : "没有完成"), rect);
             mark(btn, ok ? "ok" : "err");
             if (opts.toast) opts.toast(r);
             return r;

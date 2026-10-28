@@ -247,7 +247,8 @@
     // =====================================================================
     // 面板配置（布局 + 主题色），存在 AE 用户数据目录，4 个面板各一份
     // =====================================================================
-    var cfg = null, saveTimer = null, editing = false, cfgSynced = false;
+    // cfgSynced：已经和磁盘上的 panelN.json 对上；cfgBad：磁盘文件损坏（只读不写，保留原文件）；cfgDirty：没对上期间改过
+    var cfg = null, saveTimer = null, editing = false, cfgSynced = false, cfgBad = false, cfgDirty = false;
 
     function uid() { return "w" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
     function H(en, zh) { return { type: "heading", en: en, zh: zh }; }
@@ -310,6 +311,7 @@
             var text = JSON.stringify(cfg);
             local.set("panel" + PANEL, cfg);
             if (cfgSynced) host("saveConfig", { name: "panel" + PANEL, text: text });
+            else cfgDirty = true;   // 没连上磁盘时的改动，恢复连接后推到磁盘
         }, 250);
     }
 
@@ -318,6 +320,7 @@
             var c = null, bad = false;
             try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) { bad = true; }
             cfgSynced = r.ok && !bad;
+            cfgBad = bad;
             if (!c) c = local.get("panel" + PANEL, null);
             if (!c || !c.items) {
                 c = fromPreset(PANEL_PRESET[PANEL] || "blank");
@@ -1104,7 +1107,7 @@
             });
             var add = el("button", "chip", svg("pencil") + "管理");
             bindHint(add, { title: "管理收藏", click: "从已安装的全部效果里挑选收藏" });
-            add.addEventListener("click", function () { if (!editing) manageFavs(item); });
+            add.addEventListener("click", function () { if (!editing) act0(add, function () { return manageFavs(item); }); });
             chips.appendChild(add);
             w.appendChild(chips);
         }
@@ -1112,8 +1115,13 @@
 
     function manageFavs(item) {
         var favs = (item.favs || DEFAULT_FAVS).slice();
-        var load = allEffects ? Promise.resolve(allEffects) : host("listEffects").then(function (r) { allEffects = r.ok ? r.data.effects : []; return allEffects; });
-        load.then(function (list) {
+        var loadErr = null;
+        var load = allEffects ? Promise.resolve(allEffects) : host("listEffects").then(function (r) {
+            if (!r.ok) { loadErr = r.msg; return []; }
+            allEffects = r.data.effects;
+            return allEffects;
+        });
+        return load.then(function (list) {
             var q = el("input");
             q.type = "text";
             q.placeholder = "搜索效果名称…";
@@ -1139,13 +1147,16 @@
             }
             q.addEventListener("input", draw);
             draw();
-            dialog("(★) — FAVORITE EFFECTS", [q, box], [
+            var nodes = [q, box];
+            if (loadErr) nodes.unshift(el("div", "status bad", esc("读不到已安装的效果（" + loadErr + "），下面先列出默认收藏")));
+            return dialog("(★) — FAVORITE EFFECTS", nodes, [
                 { label: "取消", value: function () { return null; } },
                 { label: "保存", accent: true, value: function () { return favs; } }
             ]).then(function (v) {
-                if (!v) return;
+                if (!v) return null;
                 item.favs = v;
                 saveConfig(); renderLayout();
+                return { ok: true, msg: "已保存效果收藏（" + v.length + " 个）" };
             });
         });
     }
@@ -1445,7 +1456,11 @@
                 var bad = rs.filter(function (r) { return !r.ok; });
                 if (bad.length) { toast(bad[0]); return; }
                 afterInstall(rs.map(function (r) { return r.data.key; }), v).then(function () {
-                    toast({ ok: true, msg: "已添加 " + rs.length + " 个文件" + (v.pin ? "，并放到了当前面板" : "") });
+                    var r = { ok: true, msg: "已添加 " + rs.length + " 个文件" + (v.pin ? "，并放到了当前面板" : "") };
+                    B.show(null, "ok", r.msg); toast(r);
+                }, function (e) {
+                    var r = { ok: false, msg: "文件已经加进脚本库，但刷新列表失败：" + (e && e.message ? e.message : e) + "。点脚本库页的「刷新」再试" };
+                    B.show(null, "err", r.msg); toast(r);
                 });
             });
         });
@@ -1462,10 +1477,15 @@
         catSel.value = cats.indexOf(keep) !== -1 ? keep : "全部";
     }
 
+    // 行内按钮可能在点击后立刻重绘列表，双击的第二下会落到新的行上：记下时间，行的双击据此忽略
+    var lastActClick = 0;
+    function rowDblclick(e) { return !(e.target.closest && e.target.closest(".acts")) && Date.now() - lastActClick > 600; }
     function act(parent, icon, cls, h, fn) {
         var b = el("button", "act " + (cls || ""), svg(icon));
         bindHint(b, h);
-        b.addEventListener("click", function (e) { e.stopPropagation(); var m = mods(e); act0(b, function () { return fn(m); }); });
+        b.addEventListener("click", function (e) { e.stopPropagation(); lastActClick = Date.now(); var m = mods(e); act0(b, function () { return fn(m); }); });
+        // 双击按钮时，不能顺带触发整行的「双击运行」
+        b.addEventListener("dblclick", function (e) { e.stopPropagation(); });
         parent.appendChild(b);
         return b;
     }
@@ -1503,7 +1523,7 @@
             act(acts, "play", "run", { title: "运行 " + it.name, click: it.ext === "ffx" ? "应用到选中图层" : "运行脚本" }, function () { return host("run", { path: it.path }); });
             li.appendChild(acts);
             bindHint(li, { title: it.name + " · " + it.cat + " · " + it.type, click: "双击运行", note: it.desc || it.file });
-            li.addEventListener("dblclick", function () { act0(li, function () { return host("run", { path: it.path }); }); });
+            li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return host("run", { path: it.path }); }); });
             listEl.appendChild(li);
         });
     }
@@ -1542,14 +1562,17 @@
     // 没从磁盘读到片段时（后台没连上 / 文件损坏）只存本机缓存，不覆盖磁盘上的文件
     function saveSnippets() {
         local.set("snippets", snippets);
-        return snippetsSynced ? host("saveSnippets", { text: JSON.stringify(snippets, null, 2) }) : Promise.resolve({ ok: true });
+        if (snippetsSynced) return host("saveSnippets", { text: JSON.stringify(snippets, null, 2) });
+        snippetsDirty = true;
+        return Promise.resolve({ ok: true });
     }
-    var snippetsSynced = false;
+    var snippetsSynced = false, snippetsBad = false, snippetsDirty = false;
     function loadSnippets() {
         return host("loadSnippets").then(function (r) {
             var s = null, bad = false;
             try { if (r.ok && r.data && r.data.text) s = JSON.parse(r.data.text); } catch (e) { bad = true; }
             snippetsSynced = r.ok && !bad;
+            snippetsBad = bad;
             if (!s) s = local.get("snippets", null);
             if (!s && !snippetsSynced) { snippets = []; renderSnippets(); throw new Error(r.ok ? "代码片段文件损坏，已保留原文件没有改动" : r.msg); }
             if (!s) {
@@ -1628,7 +1651,7 @@
                 });
                 act(acts, "play", "run", s.kind === "expr" ? { title: "应用表达式", click: "应用到选中属性", alt: "追加到已有表达式后面" } : { title: "执行脚本" }, function (m) { return runSnippet(s, m); });
                 li.appendChild(acts);
-                li.addEventListener("dblclick", function () { act0(li, function () { return runSnippet(s, {}); }); });
+                li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return runSnippet(s, {}); }); });
                 ul.appendChild(li);
             });
             box.appendChild(ul);
@@ -1787,14 +1810,58 @@
             $("#banner-btn").dataset.act = "recheck";
         } else bn.hidden = true;
     }
-    B.onBackend(function (down) { bannerState.down = down; renderBanner(); });
+    var resyncing = null;
+    function resync() {
+        if (resyncing) return resyncing;
+        var jobs = [];
+        if (!cfgSynced && !cfgBad) {
+            jobs.push(step("同步面板布局", function () {
+                if (cfgDirty) {
+                    return host("saveConfig", { name: "panel" + PANEL, text: JSON.stringify(cfg) }).then(function (r) {
+                        if (!r.ok) throw new Error(r.msg);
+                        cfgSynced = true; cfgDirty = false;
+                    });
+                }
+                return loadConfig().then(function () { applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name; renderLayout(); renderSettings(); });
+            }));
+        }
+        if (!snippetsSynced && !snippetsBad) {
+            jobs.push(step("同步代码片段", function () {
+                if (snippetsDirty) {
+                    snippetsSynced = true;
+                    return host("saveSnippets", { text: JSON.stringify(snippets, null, 2) }).then(function (r) {
+                        if (!r.ok) { snippetsSynced = false; throw new Error(r.msg); }
+                        snippetsDirty = false;
+                    });
+                }
+                return loadSnippets().then(renderLayout);
+            }));
+        }
+        jobs.push(step("连接后台", initInfo));
+        jobs.push(step("读取脚本库", refreshLibrary));
+        jobs.push(step("读取曲线预设", function () { return loadCurves().then(renderLayout); }));
+        resyncing = Promise.all(jobs).then(function (rs) {
+            resyncing = null;
+            var bad = rs.filter(function (r) { return r && r.ok === false; });
+            if (bad.length) toast({ ok: false, msg: bad.map(function (r) { return r.msg; }).join("；") });
+            return bad;
+        });
+        return resyncing;
+    }
+    B.onBackend(function (down) {
+        bannerState.down = down;
+        renderBanner();
+        if (!down) resync();   // 自动恢复或点「重新连接」后，把离线期间的改动同步到磁盘
+    });
     $("#banner-btn").addEventListener("click", function () {
         var btn = this;
         if (btn.dataset.act === "reconnect") {
             act0(btn, function () {
                 return B.reconnect().then(function (ok) {
                     if (!ok) return { ok: false, msg: "还是没有连上：关闭这个面板再从「窗口 → 扩展」打开；仍不行就重启 AE" };
-                    return boot().then(function () { return { ok: true, msg: "已重新连接" }; });
+                    return (resyncing || resync()).then(function (bad) {
+                        return bad.length ? { ok: false, msg: "已重新连接，但" + bad.map(function (r) { return r.msg; }).join("；") } : { ok: true, msg: "已重新连接，离线时的改动已同步" };
+                    });
                 });
             });
         } else act0(btn, recheck);
@@ -1803,8 +1870,10 @@
         return host("status").then(function (r) {
             if (!r.ok) return r;
             updatePerm(r.data.canWrite);
+            var was = bannerState.perm;
             bannerState.perm = !r.data.canWrite;
             renderBanner();
+            if (r.data.canWrite && was) return resync().then(function () { return { ok: true, msg: "已允许脚本写入文件，脚本库和设置已重新读取" }; });
             return r.data.canWrite ? { ok: true, msg: "已允许脚本写入文件" } : { ok: false, msg: "仍未允许：在「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」，然后再点一次" };
         });
     }
@@ -1812,6 +1881,20 @@
     // =====================================================================
     // 启动：每一步互相独立，任何一步失败都不影响其他步骤
     // =====================================================================
+    function initInfo() {
+        return host("init", {}).then(function (r) {
+            if (!r || !r.ok) throw new Error(r ? r.msg : "没有返回");
+            var d = r.data;
+            OS = d.os || OS;
+            $("#set-about").textContent = "MOTIONHUB v" + d.version + " · 面板 " + PANEL + " · AE " + d.ae;
+            updatePerm(d.canWrite);
+            bannerState.perm = !d.canWrite;
+            renderBanner();
+            if (d.libReady === false) toast({ ok: false, msg: "没法创建脚本库文件夹：" + d.libPath + (d.canWrite ? "。在设置页「更换文件夹」换一个位置" : "。先允许脚本写入文件") });
+            return d;
+        });
+    }
+
     function step(name, fn) {
         var p;
         try { p = Promise.resolve(fn()); } catch (e) { p = Promise.reject(e); }
@@ -1829,18 +1912,7 @@
             $("#panel-name").textContent = cfg.name;
             renderLayout();
             renderSettings();
-            return step("连接后台", function () {
-                return host("init", {}).then(function (r) {
-                    if (!r || !r.ok) throw new Error(r ? r.msg : "没有返回");
-                    var d = r.data;
-                    OS = d.os || OS;
-                    $("#set-about").textContent = "MOTIONHUB v" + d.version + " · 面板 " + PANEL + " · AE " + d.ae;
-                    updatePerm(d.canWrite);
-                    bannerState.perm = !d.canWrite;
-                    renderBanner();
-                    return d;
-                });
-            });
+            return step("连接后台", initInfo);
         }).then(function (initRes) {
             var failed = initRes && initRes.ok === false;
             // 示例脚本：真正复制了文件才记下「已导入」，下次还会再试

@@ -141,6 +141,92 @@ async function runPanel(browser, n, opts) {
     return { panel: n, mainStart, keys, banner, evalFile, requests, errors, total, results };
 }
 
+// 审查发现的回归场景
+async function runRegressions(browser) {
+    const page = await browser.newPage({ viewport: { width: 320, height: 1200 } });
+    const errors = [], out = [];
+    page.on("pageerror", e => errors.push(e.message));
+    await page.exposeFunction("__mhHost", (name, argsJSON) => JSON.stringify(fakeHost(name, JSON.parse(argsJSON || "{}"), { canWrite: true })));
+    await page.addInitScript(() => {
+        try { localStorage.clear(); } catch (e) {}
+        window.__calls = []; window.__saves = [];
+        let alive = false;   // 启动时后台连不上，之后「修好」
+        window.__revive = () => { alive = true; };
+        window.__adobe_cep__ = {
+            getExtensionId: () => "com.windwings.motionhub.panel3",
+            getSystemPath: () => "file:///ext",
+            registerKeyEventsInterest() {},
+            evalScript(code, cb) {
+                if (code === "typeof MH") return setTimeout(() => cb(alive ? "object" : "undefined"), 2);
+                if (code.indexOf("$.evalFile(") === 0) return setTimeout(() => cb(alive ? "undefined" : "EvalScript error."), 2);
+                const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
+                if (!alive) return setTimeout(() => cb("EvalScript error."), 2);
+                window.__calls.push(m[1]);
+                if (m[1] === "saveConfig") window.__saves.push(JSON.parse(m[2]));
+                window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 2));
+            }
+        };
+    });
+    await page.goto("file://" + EXT + "/index.html");
+    await page.waitForTimeout(500);
+    const before = await page.evaluate(() => document.querySelectorAll("#layout .cell").length);
+    // 后台不在时编辑布局：删掉第一个组件
+    await page.click("#btn-edit");
+    await page.click("#layout .cell .cell-ctl button[title='从面板删除']");
+    await page.click("#btn-edit");
+    await page.waitForTimeout(400);
+    const after = await page.evaluate(() => document.querySelectorAll("#layout .cell").length);
+    // 后台恢复，点「重新连接」
+    await page.evaluate(() => window.__revive());
+    await page.click("#banner-btn");
+    await page.waitForTimeout(800);
+    const r1 = await page.evaluate(() => ({
+        saves: window.__saves.map(s => JSON.parse(s.text).items.length),
+        banner: document.querySelector("#banner").hidden,
+        cells: document.querySelectorAll("#layout .cell").length,
+        bubble: document.querySelector(".fb") && !document.querySelector(".fb").hidden ? document.querySelector(".fb").textContent : ""
+    }));
+    out.push({ name: "离线时删掉的组件，重新连接后写回磁盘（不被旧布局覆盖）", ok: after === before - 1 && r1.cells === after && r1.saves.length > 0 && r1.saves[r1.saves.length - 1] === after - 1 /* 末尾的「＋」不算组件 */ && r1.banner, detail: JSON.stringify({ before, after, r1 }) });
+
+    // 双击脚本行里的「打开文件夹」按钮：不能顺带运行脚本
+    await page.click(".tab[data-tab=library]");
+    await page.waitForTimeout(200);
+    await page.evaluate(() => { window.__calls = []; });
+    await page.hover("#lib-list .lib-item");
+    const folderBtn = await page.$("#lib-list .lib-item .acts .act");
+    await folderBtn.dblclick();
+    await page.waitForTimeout(300);
+    const calls = await page.evaluate(() => window.__calls.slice());
+    out.push({ name: "双击行内按钮不会触发整行的「双击运行」", ok: calls.indexOf("run") === -1 && calls.length > 0, detail: JSON.stringify(calls) });
+
+    // 按钮被自己的操作重绘：气泡仍在按钮原来的位置旁边
+    await page.evaluate(() => { const seg = document.querySelectorAll("#lib-seg button"); if (seg[1]) seg[1].click(); });
+    await page.waitForTimeout(200);
+    await page.hover("#lib-snippets .lib-item");
+    const pin = await page.$("#lib-snippets .lib-item .acts .act");
+    const pr = await pin.boundingBox();
+    await pin.click();
+    await page.waitForTimeout(150);
+    const fb = await page.evaluate(() => { const f = document.querySelector(".fb"); const r = f.getBoundingClientRect(); return { hidden: f.hidden, top: r.top, bottom: r.bottom, text: f.textContent }; });
+    const near = !fb.hidden && (Math.abs(fb.top - (pr.y + pr.height)) < 30 || Math.abs(fb.bottom - pr.y) < 30);
+    out.push({ name: "列表重绘后，气泡仍出现在被点按钮旁边", ok: near, detail: JSON.stringify({ btn: pr, fb }) });
+
+    // 对话框开着（在等用户输入）时，不显示「处理中」
+    await page.click(".tab[data-tab=panel]");
+    await page.waitForTimeout(150);
+    const renameTile = await page.evaluateHandle(() => Array.from(document.querySelectorAll("#layout .tile")).find(t => t.innerHTML.indexOf(window.MHIcons.svg("rename")) === 0));
+    await renameTile.asElement().click();
+    await page.waitForTimeout(800);
+    const st = await page.evaluate(() => { const f = document.querySelector(".fb"); return { modal: !document.querySelector("#modal").hidden, busyBubble: !!(f && !f.hidden && f.classList.contains("busy")) }; });
+    await page.evaluate(() => document.querySelector("#modal").closeWith(null));
+    await page.waitForTimeout(100);
+    out.push({ name: "对话框开着时不显示「处理中」气泡", ok: st.modal && !st.busyBubble, detail: JSON.stringify(st) });
+
+    out.push({ name: "回归场景里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
+    await page.close();
+    return out;
+}
+
 async function runStudio(browser, opts) {
     const page = await browser.newPage({ viewport: { width: 1180, height: 780 } });
     const errors = [], requests = [];
@@ -205,6 +291,7 @@ async function runStudio(browser, opts) {
     const panels = [];
     for (let n = 1; n <= 4; n++) panels.push(await runPanel(browser, n, opts));
     const studio = await runStudio(browser, opts);
+    const regress = await runRegressions(browser);
     await browser.close();
 
     let fail = 0;
@@ -229,7 +316,9 @@ async function runStudio(browser, opts) {
     lines.push("Studio：按钮 " + studio.results.length + " 个 · 外部请求 " + studio.requests.length + " 个 · JS 错误 " + studio.errors.length + " 个 · 按键登记 " + studio.keys);
     studio.results.forEach(r => lines.push("  " + r.id + " → " + (r.bubble || r.modal || "（没有反馈）")));
     if (studio.errors.length || studio.requests.length || studio.results.some(r => !r.bubble && !r.modal)) { fail++; lines.push("  ✗ Studio 有按钮没有反馈，或者有错误 / 外部请求"); }
-    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio }, null, 2));
+    lines.push("回归场景：");
+    regress.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
+    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress }, null, 2));
     console.log(lines.join("\n"));
     console.log(fail ? "✗ 点击测试：" + fail + " 项没通过（详情见 tests/out/clicktest.json）" : "✓ 点击测试通过（详情见 tests/out/clicktest.json）");
     process.exit(fail ? 1 : 0);

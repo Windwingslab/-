@@ -1606,10 +1606,8 @@ var MH = (function () {
         return r || [];
     }
 
-    function libRoot() {
-        var p = state.libPath || (Folder.myDocuments.fsName + "/MotionHub/Library");
-        return needFolder(new Folder(p), "脚本库文件夹");
-    }
+    function libPath() { return state.libPath || (Folder.myDocuments.fsName + "/MotionHub/Library"); }
+    function libRoot() { return needFolder(new Folder(libPath()), "脚本库文件夹"); }
 
     // 返回 {copied, existing}：真正复制了几个文件、几个已经存在被跳过
     function copyFolder(src, dst, count) {
@@ -1693,7 +1691,8 @@ var MH = (function () {
 
     LIB.init = function (a) {
         if (a.libPath && !state.libPath) state.libPath = a.libPath;
-        return { libPath: libRoot().fsName, version: VERSION, ae: app.version, canWrite: canWriteFiles(), os: IS_WIN ? "win" : "mac" };
+        var root = ensureFolder(new Folder(libPath()));
+        return { libPath: root ? root.fsName : libPath(), libReady: !!root, version: VERSION, ae: app.version, canWrite: canWriteFiles(), os: IS_WIN ? "win" : "mac" };
     };
 
     LIB.scan = function () {
@@ -1802,8 +1801,9 @@ var MH = (function () {
     };
 
     // 面板布局等配置：存在用户数据目录，4 个面板共用
-    function configFile(name) {
-        var dir = needFolder(new Folder(Folder.userData.fsName + "/MotionHub"), "配置文件夹");
+    function configDir() { return new Folder(Folder.userData.fsName + "/MotionHub"); }
+    function configFile(name, forWrite) {
+        var dir = forWrite ? needFolder(configDir(), "配置文件夹") : configDir();
         return new File(dir.fsName + "/" + String(name).replace(/[^\w.\-]/g, "_") + ".json");
     }
 
@@ -1824,10 +1824,10 @@ var MH = (function () {
     }
 
     LIB.loadConfig = function (a) { return { text: readText(configFile(a.name)) }; };
-    LIB.saveConfig = function (a) { writeText(configFile(a.name), a.text); return { saved: true }; };
+    LIB.saveConfig = function (a) { writeText(configFile(a.name, true), a.text); return { saved: true }; };
 
     // 代码片段存在脚本库根目录，跟着脚本库一起同步
-    LIB.loadSnippets = function () { return { text: readText(new File(libRoot().fsName + "/_snippets.json")) }; };
+    LIB.loadSnippets = function () { return { text: readText(new File(libPath() + "/_snippets.json")) }; };
     LIB.saveSnippets = function (a) { writeText(new File(libRoot().fsName + "/_snippets.json"), a.text); return { saved: true }; };
 
     var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
