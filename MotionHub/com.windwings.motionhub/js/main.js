@@ -104,6 +104,7 @@
             if (h[k]) html += '<div><span class="k">' + KEYS[k] + "</span> — " + esc(h[k]) + "</div>";
         });
         if (h.note) html += '<div class="muted">' + esc(h.note) + "</div>";
+        if (h.na) html += '<div class="na-line">现在不可用：' + esc(h.na) + "（仍然可以点，AE 会再检查一次）</div>";
         return html;
     }
     function showHint(h) {
@@ -121,8 +122,15 @@
         return r;
     }
     function bindHint(node, h) {
-        node.addEventListener("mouseenter", function () { if (!editing) showHint(typeof h === "function" ? h() : h); });
+        node.addEventListener("mouseenter", function () { if (!editing) showHint(withNa(node, typeof h === "function" ? h() : h)); });
         node.addEventListener("mouseleave", function () { showHint(null); });
+    }
+    function withNa(node, h) {
+        if (!h || !node.dataset || !node.dataset.na) return h;
+        var o = {};
+        for (var k in h) o[k] = h[k];
+        o.na = node.dataset.na;
+        return o;
     }
     function mods(e) { return { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }; }
 
@@ -131,6 +139,8 @@
         var b = el("button", "tile" + (o.cls ? " " + o.cls : "") + (o.filled ? " filled" : "") + (o.label && o.left !== false ? " left" : ""));
         b.innerHTML = (o.icon ? svg(o.icon) : "") + (o.label ? '<span class="lbl">' + esc(o.label) + "</span>" : "");
         if (o.tool) b.dataset.tool = o.tool;
+        var needs = o.needs !== undefined ? o.needs : (o.run && o.run.needs) || "";
+        if (needs) b.dataset.needs = needs;
         if (o.hint) bindHint(b, o.hint);
         b.addEventListener("click", function (e) {
             if (editing) return;
@@ -142,7 +152,9 @@
         return b;
     }
     // 一次点击：按钮旁出气泡（进行中 / 成功 / 失败），结果同时记在底部提示栏；执行期间忽略重复点击
-    function act0(btn, fn) { return B.run(btn, fn, { toast: toast }); }
+    function act0(btn, fn) {
+        return B.run(btn, fn, { toast: toast }).then(function (r) { refreshCtx(true); return r; });
+    }
 
     function numInput(value, onChange, cls) {
         var n = el("input", "num-in" + (cls ? " " + cls : ""));
@@ -357,18 +369,39 @@
             render: function (cell, item) {
                 cell.appendChild(tile({
                     icon: o.icon, label: (o.w || 1) > 1 ? o.name : "", filled: !!item.color,
-                    hint: o.hint, run: o.run, tool: type
+                    hint: o.hint, run: o.run, tool: type, needs: o.needs
                 }));
             }
         });
     }
 
+    // 每个后台工具需要什么选区（和 host.jsx 里的检查一致）。修饰键会放宽条件的工具按最宽松的写，宁可少变暗也不误判
+    var NEEDS = {
+        anchor: "layer", centerComp: "layer", nullLayer: "comp", addLayer: "comp", align: "layer", distribute: "layers3",
+        sequence: "layers2", trim: "layer", precompEach: "layer", reverse: "layers2", rename: "layer",
+        ease: "keys", cloneKeys: "keys", copyKeys: "keys", pasteKeys: "layer", keyTime: "keys", bezier: "keys", bezierRead: "keys",
+        quickAnim: "layer", splitLayer: "layer", toPlayhead: "layer", motionBlur: "layer",
+        beatMarkers: "comp", clearMarkers: "comp", beatLayers: "layer", audioInfo: "layer",
+        decompose: "precomp", dupPrecomp: "precomp", smartRename: "layer", chain: "layers2",
+        styleCopy: "layer", stylePaste: "layer", applyEffect: "comp", wireframe: "layer", wireClear: "comp", wireStyle: "comp",
+        applyExpr: "props", wiggle: "props", loop: "props", bounce: "props", clearExpr: "props",
+        dupComp: "compOrProj", collectColors: "layer"
+    };
+    var NEED_TEXT = {
+        comp: "先打开一个合成", layer: "先选中图层", layers2: "先选中至少 2 个图层", layers3: "先选中至少 3 个图层",
+        keys: "先选中关键帧", props: "先在时间轴选中属性（如位置、旋转）", precomp: "先选中预合成图层",
+        compOrProj: "先打开合成，或在项目面板选中合成"
+    };
+
+    function need(n, fn) { fn.needs = n || ""; return fn; }
     function call(name, extra) {
-        return function (m) {
+        var fn = function (m) {
             var a = { mods: m };
             for (var k in extra || {}) a[k] = extra[k];
             return host(name, a);
         };
+        fn.needs = NEEDS[name] || "";
+        return fn;
     }
 
     // —— 结构：章节标题 ——
@@ -432,15 +465,15 @@
     toolType("reverseLayers", { name: "反转顺序", cat: "图层", icon: "reverse", hint: { title: "反转图层顺序", click: "反转选中图层的上下顺序" }, run: call("reverse") });
     toolType("motionBlur", { name: "运动模糊", cat: "图层", icon: "motionBlur", hint: { title: "运动模糊", click: "开 / 关选中图层的运动模糊（同时打开合成开关）" }, run: call("motionBlur") });
     toolType("rename", {
-        name: "批量重命名", cat: "图层", icon: "rename", hint: { title: "批量重命名", click: "输入名称后，按 名称_01、名称_02 … 重命名" },
+        name: "批量重命名", cat: "图层", icon: "rename", needs: "layer", hint: { title: "批量重命名", click: "输入名称后，按 名称_01、名称_02 … 重命名" },
         run: function () {
             return ask("(R) — RENAME", "新名称（会自动加编号）", "Layer").then(function (base) { return base ? host("rename", { base: base }) : null; });
         }
     });
 
-    toolType("easeBoth", { name: "缓入缓出", cat: "关键帧", icon: "easeBoth", hint: { title: "缓入缓出", click: "等同 F9（影响 33%）", alt: "只缓入", shift: "只缓出" }, run: function (m) { return host("ease", { mode: "both", inInfl: 33, outInfl: 33, mods: m }); } });
-    toolType("linear", { name: "线性", cat: "关键帧", icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, run: function (m) { return host("ease", { mode: "linear", mods: m }); } });
-    toolType("hold", { name: "定格", cat: "关键帧", icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, run: function (m) { return host("ease", { mode: "hold", mods: m }); } });
+    toolType("easeBoth", { name: "缓入缓出", cat: "关键帧", icon: "easeBoth", hint: { title: "缓入缓出", click: "等同 F9（影响 33%）", alt: "只缓入", shift: "只缓出" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "both", inInfl: 33, outInfl: 33, mods: m }); } });
+    toolType("linear", { name: "线性", cat: "关键帧", icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "linear", mods: m }); } });
+    toolType("hold", { name: "定格", cat: "关键帧", icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "hold", mods: m }); } });
     toolType("cloneKeys", { name: "克隆关键帧", cat: "关键帧", icon: "cloneKeys", hint: { title: "克隆关键帧", click: "从播放头克隆选中关键帧", alt: "克隆后选中新关键帧", shift: "反向克隆" }, run: call("cloneKeys") });
     toolType("reverseKeys", { name: "反转关键帧", cat: "关键帧", icon: "reverseKeys", hint: { title: "反转关键帧", click: "把选中关键帧的时间顺序倒过来" }, run: call("keyTime", { op: "reverse" }) });
 
@@ -513,9 +546,9 @@
             sliderRow(w, "OUT", item, "outInfl", 33, h);
             var r = row(w);
             var args = function (mode, m) { return { mode: mode, inInfl: item.inInfl || 33, outInfl: item.outInfl || 33, mods: m }; };
-            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的影响值应用（相当于 F9）", alt: "只缓入", shift: "只缓出" }, run: function (m) { return host("ease", args("both", m)); } }));
-            r.appendChild(tile({ icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, run: function (m) { return host("ease", args("linear", m)); } }));
-            r.appendChild(tile({ icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, run: function (m) { return host("ease", args("hold", m)); } }));
+            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的影响值应用（相当于 F9）", alt: "只缓入", shift: "只缓出" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("both", m)); } }));
+            r.appendChild(tile({ icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("linear", m)); } }));
+            r.appendChild(tile({ icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("hold", m)); } }));
         }
     });
 
@@ -619,7 +652,7 @@
             w.appendChild(wrap);
             var r = row(w);
             r.appendChild(tile({
-                icon: "read", hint: { title: "从关键帧读取", click: "选中两个关键帧，把它们之间的速度曲线读成 cubic-bezier" },
+                icon: "read", needs: "keys", hint: { title: "从关键帧读取", click: "选中两个关键帧，把它们之间的速度曲线读成 cubic-bezier" },
                 run: function () {
                     return host("bezierRead").then(function (x) {
                         if (x.ok) { b = x.data.bezier; item.bz = b.slice(); draw(); saveConfig(); }
@@ -641,7 +674,7 @@
             r.appendChild(tile({
                 icon: "play", label: "应用", left: false, cls: "grow", filled: true,
                 hint: { title: "应用曲线", click: "把曲线应用到选中的关键帧（每两个相邻关键帧之间算一段）", alt: "镜像应用（进出对调）", note: "只选一个关键帧时，应用到它和下一个关键帧之间" },
-                run: function (m) { return host("bezier", { bezier: b, mods: m }); }
+                needs: NEEDS.bezier, run: function (m) { return host("bezier", { bezier: b, mods: m }); }
             }));
             bindHint(g, { title: "缓动曲线", click: "拖动两个手柄调整曲线，横轴是时间，纵轴是数值", note: "纵向可以拖出 0–1 以外，做回弹和预备动作" });
             draw();
@@ -660,7 +693,7 @@
             counter.style.flex = "1";
             r1.appendChild(counter);
             r1.appendChild(tile({
-                icon: "copyKeys", hint: { title: "复制关键帧", click: "复制选中的关键帧（可以跨多个属性）" },
+                icon: "copyKeys", needs: "keys", hint: { title: "复制关键帧", click: "复制选中的关键帧（可以跨多个属性）" },
                 run: function (m) {
                     return host("copyKeys", { mods: m }).then(function (r) {
                         if (r.ok && r.data) { clipCount = r.data.count; local.set("clipCount", clipCount); counter.innerHTML = "<b>" + clipCount + "</b>个已复制"; }
@@ -679,11 +712,11 @@
             bindHint(factor, { title: "拉伸倍数", click: "拉伸 / 压缩关键帧时用的倍数" });
             r2.appendChild(el("span", "unit", "×"));
             r2.appendChild(factor);
-            r2.appendChild(tile({ icon: "stretchKeys", hint: { title: "拉伸关键帧", click: "以第一个选中关键帧为起点，按倍数拉长间隔", alt: "按倍数压缩" }, run: function (m) { return host("keyTime", { op: "stretch", factor: item.factor || 1.5, mods: m }); } }));
+            r2.appendChild(tile({ icon: "stretchKeys", hint: { title: "拉伸关键帧", click: "以第一个选中关键帧为起点，按倍数拉长间隔", alt: "按倍数压缩" }, needs: NEEDS.keyTime, run: function (m) { return host("keyTime", { op: "stretch", factor: item.factor || 1.5, mods: m }); } }));
 
             var r3 = row(w);
             var frames = numInput(item.frames || 1, function (n) { item.frames = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.frames; saveConfig(); });
-            var nudge = function (dir) { return function (m) { return host("keyTime", { op: "nudge", dir: dir, frames: item.frames || 1, mods: m }); }; };
+            var nudge = function (dir) { return need(NEEDS.keyTime, function (m) { return host("keyTime", { op: "nudge", dir: dir, frames: item.frames || 1, mods: m }); }); };
             r3.appendChild(tile({ icon: "nudgeLeft", hint: { title: "左移关键帧", click: "选中关键帧向前移动 N 帧", shift: "移动 10 倍" }, run: nudge(-1) }));
             r3.appendChild(frames);
             r3.appendChild(el("span", "unit", "帧"));
@@ -735,7 +768,7 @@
             r.appendChild(frames);
             r.appendChild(el("span", "unit", "帧"));
             var run = function (out) {
-                return function () { return host("quickAnim", { kind: item.kind || "fade", dir: item.dir || "left", frames: item.frames || 12, mods: { alt: out } }); };
+                return need(NEEDS.quickAnim, function () { return host("quickAnim", { kind: item.kind || "fade", dir: item.dir || "left", frames: item.frames || 12, mods: { alt: out } }); });
             };
             r.appendChild(tile({ icon: "arrowRight", label: "入场", left: false, cls: "grow", filled: true, hint: { title: "入场动画", click: "从播放头开始，给选中图层做入场动画" }, run: run(false) }));
             r.appendChild(tile({ icon: "arrowLeft", label: "出场", left: false, cls: "grow", hint: { title: "出场动画", click: "在播放头结束，给选中图层做出场动画" }, run: run(true) }));
@@ -761,7 +794,7 @@
             [["forward", "seqForward", "正序"], ["reverse", "seqReverse", "倒序"], ["center", "seqCenter", "从中间向两边"], ["random", "seqRandom", "随机"]].forEach(function (o, i) {
                 var t = tile({
                     icon: o[1], filled: i === 0, hint: { title: "依次排列 · " + o[2], click: "按" + o[2] + "错开选中图层", note: "顺序以你选择图层的先后为准" },
-                    run: function (m) { return host("sequence", { order: o[0], num: item.num || 1, step: item.step === undefined ? 2 : item.step, mods: m }); }
+                    needs: NEEDS.sequence, run: function (m) { return host("sequence", { order: o[0], num: item.num || 1, step: item.step === undefined ? 2 : item.step, mods: m }); }
                 });
                 t.classList.add("grow");
                 r2.appendChild(t);
@@ -871,7 +904,7 @@
             if (!beat.info) {
                 var r0 = row(w);
                 var load = tile({
-                    icon: "beat", label: "载入选中的音频图层", left: false, cls: "grow", filled: true,
+                    icon: "beat", label: "载入选中的音频图层", left: false, cls: "grow", filled: true, needs: "layer",
                     hint: { title: "载入音频", click: "先在时间轴选中一个音频（或带声音的视频）图层，再点这里", note: "视频里的声音会先由 AE 渲染成临时 WAV，第一次会慢一点" },
                     run: function () { return loadBeat(item); }
                 });
@@ -903,15 +936,15 @@
 
             var r2 = row(w);
             var times = function () { return beat.times.map(fileToComp); };
-            r2.appendChild(tile({ icon: "marker", filled: true, hint: { title: "节拍标记", click: "在音频图层上加节拍标记", alt: "加到合成标记上", shift: "标记带编号" }, run: function (m) { return host("beatMarkers", { index: beat.info.index, times: times(), target: m.alt ? "comp" : "layer", numbered: m.shift }); } }));
-            r2.appendChild(tile({ icon: "trash", hint: { title: "清除标记", click: "清除音频图层上的全部标记", alt: "清除合成上的全部标记" }, run: function (m) { return host("clearMarkers", { index: beat.info.index, target: m.alt ? "comp" : "layer" }); } }));
-            r2.appendChild(tile({ icon: "snap", hint: { title: "吸附到节拍", click: "把选中图层的入点吸附到最近的节拍" }, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "snap", mods: m }); } }));
+            r2.appendChild(tile({ icon: "marker", filled: true, hint: { title: "节拍标记", click: "在音频图层上加节拍标记", alt: "加到合成标记上", shift: "标记带编号" }, needs: NEEDS.beatMarkers, run: function (m) { return host("beatMarkers", { index: beat.info.index, times: times(), target: m.alt ? "comp" : "layer", numbered: m.shift }); } }));
+            r2.appendChild(tile({ icon: "trash", hint: { title: "清除标记", click: "清除音频图层上的全部标记", alt: "清除合成上的全部标记" }, needs: NEEDS.clearMarkers, run: function (m) { return host("clearMarkers", { index: beat.info.index, target: m.alt ? "comp" : "layer" }); } }));
+            r2.appendChild(tile({ icon: "snap", hint: { title: "吸附到节拍", click: "把选中图层的入点吸附到最近的节拍" }, needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "snap", mods: m }); } }));
             r2.appendChild(el("span", "sp"));
             var every = numInput(item.every || 1, function (n) { item.every = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.every; saveConfig(); });
             bindHint(every, { title: "每几拍", click: "按节拍排列时，每个图层占几拍" });
             r2.appendChild(every);
             r2.appendChild(el("span", "unit", "拍"));
-            r2.appendChild(tile({ icon: "seqForward", hint: { title: "按节拍排列", click: "按选择顺序，从播放头后的第一拍开始，每隔 N 拍放一个图层", alt: "同时把每个图层的出点剪到下一个位置（卡点剪辑）" }, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "sequence", every: item.every || 1, mods: m }); } }));
+            r2.appendChild(tile({ icon: "seqForward", hint: { title: "按节拍排列", click: "按选择顺序，从播放头后的第一拍开始，每隔 N 拍放一个图层", alt: "同时把每个图层的出点剪到下一个位置（卡点剪辑）" }, needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "sequence", every: item.every || 1, mods: m }); } }));
             r2.appendChild(tile({ icon: "close", hint: { title: "卸载音频", click: "换用另一个音频图层" }, run: function () { stopPlay(); beat.info = null; beat.times = []; renderLayout(); return null; } }));
         }
     });
@@ -1021,7 +1054,7 @@
             w.appendChild(chips);
             var r = row(w);
             r.appendChild(tile({
-                icon: "styleCopy", label: "复制", left: false, cls: "grow",
+                icon: "styleCopy", label: "复制", left: false, cls: "grow", needs: "layer",
                 hint: { title: "复制样式", click: "复制选中图层（第一个）的效果、关键帧、变换和混合模式" },
                 run: function () {
                     return host("styleCopy").then(function (x) {
@@ -1031,7 +1064,7 @@
                 }
             }));
             r.appendChild(tile({
-                icon: "stylePaste", label: "粘贴到选中图层", left: false, cls: "grow", filled: true,
+                icon: "stylePaste", label: "粘贴到选中图层", left: false, cls: "grow", filled: true, needs: "layer",
                 hint: { title: "粘贴样式", click: "按上面勾选的内容粘贴到所有选中图层" },
                 run: function () {
                     var on = function (k, d) { return item[k] === undefined ? d : item[k]; };
@@ -1069,10 +1102,10 @@
             r.appendChild(tile({
                 icon: "widgets", label: "生成线框", left: false, cls: "grow", filled: true,
                 hint: { title: "生成线框", click: "给选中图层生成线框图层", alt: "给合成里所有显示中的图层生成", note: "颜色、线宽、不透明度在「MH 线框控制」空对象的效果控件里调，所有线框一起变" },
-                run: function (m) { return host("wireframe", { opts: opts(), mods: m }); }
+                needs: NEEDS.wireframe, run: function (m) { return host("wireframe", { opts: opts(), mods: m }); }
             }));
             r.appendChild(tile({
-                icon: "colors", hint: { title: "线框颜色", click: "换成品牌色板里的颜色" },
+                icon: "colors", needs: "comp", hint: { title: "线框颜色", click: "换成品牌色板里的颜色" },
                 run: function () {
                     var anchor = cell.querySelector(".w-row:last-child .tile:nth-child(2)");
                     showPop(anchor || cell, [el("div", "p-title", "线框颜色"), swatches(null, function (hex) {
@@ -1102,6 +1135,7 @@
             var chips = el("div", "chips");
             favs.forEach(function (f) {
                 var c = el("button", "chip", svg("fx") + esc(f[1]));
+                c.dataset.needs = NEEDS.applyEffect;
                 bindHint(c, { title: f[1], click: "添加到选中图层", alt: "新建调整图层并添加" });
                 c.addEventListener("click", function (e) { if (editing) return; var m = mods(e); act0(c, function () { return host("applyEffect", { match: f[0], name: f[1], mods: m }); }); });
                 chips.appendChild(c);
@@ -1190,6 +1224,7 @@
             var name = s ? s.name : "（已删除的片段）";
             cell.appendChild(tile({
                 icon: s && s.kind === "expr" ? "exprSnippet" : "codeSnippet", label: name, cls: "script", filled: !!item.color,
+                needs: s && s.kind === "expr" ? NEEDS.applyExpr : "",
                 hint: function () {
                     if (!s) return { title: name };
                     return s.kind === "expr"
@@ -1235,6 +1270,7 @@
             add.appendChild(tile({ icon: "plus", cls: "add", hint: { title: "添加", click: "往这个面板添加组件、工具、脚本或代码片段" }, run: function () { openCatalog(); return null; } }));
             layoutEl.appendChild(add);
         }
+        applyNeeds();
     }
 
     function decorateEditable(cell, item, def) {
@@ -1714,7 +1750,55 @@
     $("#set-samples").addEventListener("click", function () {
         act0(this, function () { return host("importSamples").then(function (r) { return refreshLibrary().then(function () { return r; }); }); });
     });
-    $("#set-recheck").addEventListener("click", function () { act0(this, recheck); });
+    $("#set-recheck").addEventListener("click", function () { act0(this, selfCheck); });
+    bindHint($("#set-recheck"), { title: "自检", click: "逐项检查：后台连接、前后端版本、AE 版本、写入权限、脚本库文件夹、Node、本地字体" });
+
+    // 自检：每一项独立判断，失败的写明怎么解决
+    function fontLoaded(spec) {
+        if (!document.fonts || !document.fonts.load) return Promise.resolve(false);
+        return document.fonts.load(spec).then(function (list) { return list.length > 0; }, function () { return false; });
+    }
+    function selfCheck() {
+        var rows = [];
+        function add(ok, name, detail, fix) { rows.push({ ok: ok, name: name, detail: detail, fix: ok ? "" : fix }); }
+        return Promise.all([
+            host("selfCheck"),
+            Promise.all(['400 12px "Geist"', '500 12px "Geist"', '400 12px "Geist Mono"', '500 12px "Geist Mono"'].map(fontLoaded))
+        ]).then(function (res) {
+            var r = res[0], fonts = res[1];
+            add(r.ok, "后台连接", r.ok ? "已连上 AE" : r.msg, "点面板顶部的「重新连接」；还不行就关闭面板再打开");
+            if (r.ok) {
+                var d = r.data, major = parseInt(d.ae, 10);
+                add(d.version === B.version, "前后端版本", "面板 " + B.version + " · 后台 " + d.version, "重新运行安装脚本，完全退出 AE 后再打开");
+                add(major >= 22, "AE 版本", d.ae, "需要 After Effects 2022（22.0）及以上");
+                add(d.canWrite, "写入权限", d.canWrite ? "已允许脚本写入文件" : "还没允许脚本写入文件", "打开「首选项 → 脚本和表达式」，勾选「允许脚本写入文件和访问网络」");
+                add(d.libExists && d.libWritable, "脚本库文件夹",
+                    d.libPath + (d.libExists ? (d.libWritable ? "（存在，可写）" : "（存在，但写不进去" + (d.libError ? "：" + d.libError : "") + "）") : "（不存在）"),
+                    d.canWrite ? "在上面「(02) 脚本库文件夹」点「更换」换一个可写的位置" : "先打开写入权限，再点一次自检");
+                updatePerm(d.canWrite);
+                bannerState.perm = !d.canWrite;
+                renderBanner();
+            }
+            var nodeOk = false;
+            try { nodeOk = typeof require === "function" && typeof require("fs").existsSync === "function"; } catch (e) {}
+            add(nodeOk, "Node.js", nodeOk ? "可用（节拍分析、拖入文件会用到）" : "不可用", "重新运行安装脚本（manifest 需要 --enable-nodejs）");
+            var fontsOk = fonts.every(Boolean);
+            add(fontsOk, "本地字体", fontsOk ? "Geist / Geist Mono 已加载" : "有 " + fonts.filter(function (x) { return !x; }).length + " 个字重没加载上，暂时用系统字体代替", "检查插件目录下的 fonts/ 是否完整，重新运行安装脚本");
+
+            var ul = $("#set-check");
+            ul.innerHTML = "";
+            rows.forEach(function (x) {
+                var li = el("li", x.ok ? "ok" : "bad",
+                    '<span class="mk">' + (x.ok ? "✓" : "!") + '</span><span class="nm">' + esc(x.name) + '</span><span class="dt">' + esc(x.detail) + "</span>" +
+                    (x.fix ? '<span class="fx">' + esc(x.fix) + "</span>" : ""));
+                ul.appendChild(li);
+            });
+            var bad = rows.filter(function (x) { return !x.ok; });
+            return bad.length
+                ? { ok: false, msg: "自检发现 " + bad.length + " 项问题：" + bad.map(function (x) { return x.name; }).join("、") + "，解决办法写在设置页 (03)" }
+                : { ok: true, msg: "自检通过：" + rows.length + " 项都正常" };
+        });
+    }
     $("#set-panels").addEventListener("click", function () { act0(this, function () { return host("openPanelsFolder"); }); });
 
     // =====================================================================
@@ -1792,6 +1876,45 @@
 
     hintEl.innerHTML = IDLE;
     selectTab(local.get("tab" + PANEL, "panel"));
+
+    // =====================================================================
+    // 选区状态：条件不满足的按钮变暗（仍可点），悬停写明缺什么
+    // 只在三种时机查询：鼠标在面板里移动（节流 900ms）、面板获得焦点、每次操作完成后
+    // =====================================================================
+    var ctx = null, ctxBusy = false, ctxAt = 0;
+    function missing(needs, c) {
+        if (!needs || !c) return "";
+        if (needs === "compOrProj") return c.comp || c.projComps > 0 ? "" : NEED_TEXT.compOrProj;
+        if (!c.comp) return NEED_TEXT.comp;
+        if (needs === "layer" && c.layers < 1) return NEED_TEXT.layer;
+        if (needs === "layers2" && c.layers < 2) return NEED_TEXT.layers2;
+        if (needs === "layers3" && c.layers < 3) return NEED_TEXT.layers3;
+        if (needs === "keys" && c.keys < 1) return NEED_TEXT.keys;
+        if (needs === "props" && c.exprProps < 1) return NEED_TEXT.props;
+        if (needs === "precomp" && c.precomps < 1) return NEED_TEXT.precomp;
+        return "";
+    }
+    function applyNeeds() {
+        $$("[data-needs]").forEach(function (n) {
+            var m = missing(n.dataset.needs, ctx);
+            n.classList.toggle("na", !!m);
+            if (m) { n.dataset.na = m; n.setAttribute("aria-description", m); }
+            else { delete n.dataset.na; n.removeAttribute("aria-description"); }
+        });
+    }
+    function refreshCtx(force) {
+        if (ctxBusy || B.isBackendDown()) return;
+        var now = Date.now();
+        if (!force && now - ctxAt < 900) return;
+        ctxBusy = true; ctxAt = now;
+        host("ctx").then(function (r) {
+            ctxBusy = false;
+            if (r && r.ok) { ctx = r.data; applyNeeds(); }
+        });
+    }
+    // mousemove 只在鼠标位于面板里时才会触发，所以鼠标在面板外时不会查询
+    document.addEventListener("mousemove", function () { refreshCtx(false); });
+    window.addEventListener("focus", function () { refreshCtx(true); });
 
     // =====================================================================
     // 顶部横幅：后台没连上 / 没有写入权限，第一屏就告诉用户怎么解决
@@ -1929,6 +2052,7 @@
                 step("读取代码片段", loadSnippets),
                 step("读取曲线预设", function () { return loadCurves().then(renderLayout); })
             ]).then(function (rs) {
+                refreshCtx(true);
                 var bad = [initRes].concat(rs).filter(function (r) { return r && r.ok === false; });
                 if (bad.length) toast({ ok: false, msg: bad.map(function (r) { return r.msg; }).join("；") });
                 return bad;

@@ -209,6 +209,7 @@
     }
 
     window.MHBridge = {
+        version: "3.6.0",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
         host: host,
         reconnect: reconnect,
         isBackendDown: function () { return backendDown; },

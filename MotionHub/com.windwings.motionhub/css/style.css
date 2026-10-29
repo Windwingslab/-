@@ -414,3 +414,20 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 /* 组件渲染失败：只影响这一格 */
 .cell.broken { border: 1px dashed var(--line-2); border-radius: 4px; padding: 8px; }
 .broken-msg { font-size: 11px; color: var(--muted); line-height: 1.5; }
+
+/* =====================================================================
+   3.6.0：选区不满足时变暗（仍可点）
+   ===================================================================== */
+.na > svg, .na > .lbl { opacity: .38; }
+.chip.na { color: var(--muted); }
+.tile.filled.na { background: var(--raise); border-color: var(--line); color: var(--text); }
+.hint .na-line { color: var(--accent); }
+
+/* 自检列表 */
+.checks { list-style: none; margin: 0 0 8px; padding: 0; border-top: 1px solid var(--line); }
+.checks li { display: grid; grid-template-columns: 16px 78px 1fr; gap: 2px 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 11px; line-height: 1.5; }
+.checks li.muted { display: block; }
+.checks .mk { font: 500 11px var(--mono); color: var(--text); }
+.checks li.bad .mk, .checks li.bad .nm { color: var(--accent); }
+.checks .dt { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.checks .fx { grid-column: 3; color: var(--text); }

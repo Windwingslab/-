@@ -52,9 +52,20 @@ function loadHost(opts) {
             settings: { haveSetting: () => false, getSetting: () => "", saveSetting: () => {} },
             preferences: { getPrefAsLong: () => (opts.canWrite === false ? 0 : 1) },
             beginUndoGroup: (n) => undo.push("begin:" + n), endUndoGroup: () => undo.push("end"),
-            project: { activeItem: null }
-        }
+            project: { activeItem: null, selection: [] }
+        },
+        PropertyType: { PROPERTY: 6212, INDEXED_GROUP: 6213, NAMED_GROUP: 6214 }
     };
+    // 假合成：图层 / 属性 / 关键帧按 opts.comp 生成
+    if (opts.comp) {
+        const C = g.CompItem;
+        const mk = (o) => Object.assign(Object.create(C.prototype), o);
+        const comp = mk({ name: "主合成", selectedLayers: [], selectedProperties: [] });
+        for (let i = 0; i < opts.comp.layers; i++) comp.selectedLayers.push({ index: i + 1, source: i < (opts.comp.precomps || 0) ? mk({ name: "pre" + i }) : { name: "footage" } });
+        (opts.comp.props || []).forEach(p => comp.selectedProperties.push({ propertyType: p.group ? 6214 : 6212, canSetExpression: !p.group, selectedKeys: p.group ? undefined : new Array(p.keys || 0).fill(1) }));
+        g.app.project.activeItem = comp;
+        g.app.project.selection = [comp, mk({ name: "另一个" }), { name: "素材" }];
+    }
     g.$.global = g;
     // 示例脚本：ext/library_seed/动画/a.jsx、工具/b.jsx
     const seed = path.join(root, "ext/library_seed");
@@ -129,6 +140,34 @@ function loadHost(opts) {
     fs.rmSync(path.join(h.root, "Documents"), { recursive: true, force: true });
     const s = h.call("scan", {});
     check("脚本库文件夹被删后 scan 会重新建好并返回空列表", s.ok && s.data.items.length === 0, JSON.stringify(s));
+}
+
+// 6. LIB.ctx：选区快照准确、只读、不开撤销组
+{
+    const h0 = loadHost({});
+    const e = h0.call("ctx", {});
+    check("ctx：没有合成时全为 0", e.ok && e.data.comp === "" && e.data.layers === 0 && e.data.keys === 0 && e.data.projComps === 0, JSON.stringify(e.data));
+    const h = loadHost({ comp: { layers: 3, precomps: 1, props: [{ keys: 2 }, { keys: 3 }, { group: true }] } });
+    const r = h.call("ctx", {});
+    check("ctx：图层 3、预合成 1、关键帧 5、可加表达式属性 2、项目里选中合成 2", r.ok && r.data.comp === "主合成" && r.data.layers === 3 && r.data.precomps === 1 && r.data.keys === 5 && r.data.exprProps === 2 && r.data.projComps === 2, JSON.stringify(r.data));
+    check("ctx：不开撤销组", h.undo.length === 0, h.undo.join(","));
+    const t0 = Date.now();
+    for (let i = 0; i < 200; i++) h.MH.call("ctx", {});
+    const per = (Date.now() - t0) / 200;
+    check("ctx：单次调用很快（Node 模拟里 < 2ms，AE 里主要开销是 evalScript 往返）", per < 2, per.toFixed(3) + "ms");
+}
+
+// 7. LIB.selfCheck：版本、写入权限、脚本库文件夹可写；测试文件写完会删掉
+{
+    const h = loadHost({});
+    h.call("init", {});
+    const r = h.call("selfCheck", {});
+    const lib = path.join(h.root, "Documents/MotionHub/Library");
+    check("selfCheck：版本和 VERSION 一致、可写、文件夹存在且可写", r.ok && /^\d+\.\d+\.\d+$/.test(r.data.version) && r.data.canWrite && r.data.libExists && r.data.libWritable, JSON.stringify(r.data));
+    check("selfCheck：没有留下测试文件", !fs.existsSync(path.join(lib, "_motionhub_write_test.tmp")));
+    const ro = loadHost({ readonly: true, canWrite: false });
+    const r2 = ro.call("selfCheck", {});
+    check("selfCheck：只读环境如实报告（canWrite=false、文件夹不存在）", r2.ok && r2.data.canWrite === false && r2.data.libExists === false && r2.data.libWritable === false, JSON.stringify(r2.data));
 }
 
 console.log(failures ? "✗ host 测试：" + failures + " 项没通过" : "✓ host 测试全部通过");

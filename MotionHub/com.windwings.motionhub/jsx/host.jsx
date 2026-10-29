@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.5.1";
+    var VERSION = "3.6.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -2201,6 +2201,48 @@ var MH = (function () {
 
     LIB.status = function () {
         return { canWrite: canWriteFiles() };
+    };
+
+    // 选区快照：面板据此把条件不满足的按钮变暗。只读、不开撤销组、任何一项出错都不影响其他项
+    LIB.ctx = function () {
+        var out = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }, i;
+        try {
+            var sel = app.project.selection;
+            for (i = 0; i < sel.length; i++) if (sel[i] instanceof CompItem) out.projComps++;
+        } catch (e0) {}
+        var c = null;
+        try { c = app.project.activeItem; } catch (e1) {}
+        if (!(c && c instanceof CompItem)) return out;
+        out.comp = c.name;
+        try {
+            var L = c.selectedLayers;
+            out.layers = L.length;
+            for (i = 0; i < L.length; i++) { try { if (L[i].source && L[i].source instanceof CompItem) out.precomps++; } catch (e2) {} }
+        } catch (e3) {}
+        try {
+            var P = c.selectedProperties;
+            for (i = 0; i < P.length; i++) {
+                var p = P[i];
+                if (p.propertyType !== PropertyType.PROPERTY) continue;
+                if (p.canSetExpression) out.exprProps++;
+                if (p.selectedKeys) out.keys += p.selectedKeys.length;
+            }
+        } catch (e4) {}
+        return out;
+    };
+
+    // 自检：后台能回答的几项（版本、AE、写入权限、脚本库文件夹）
+    LIB.selfCheck = function () {
+        var canWrite = canWriteFiles(), dir = new Folder(libPath()), exists = false, writable = false, why = "";
+        try { exists = dir.exists; } catch (e0) {}
+        if (exists && canWrite) {
+            var f = new File(dir.fsName + "/_motionhub_write_test.tmp");
+            try {
+                if (f.open("w")) { f.write("ok"); f.close(); writable = f.remove(); }
+                else why = f.error || "打不开文件";
+            } catch (e1) { why = String(e1); }
+        }
+        return { version: VERSION, ae: app.version, canWrite: canWrite, libPath: dir.fsName, libExists: exists, libWritable: writable, libError: why };
     };
 
     // =====================================================================

@@ -10,14 +10,22 @@ const fs = require("fs");
 const { chromium } = require("playwright");
 
 const EXT = path.join(__dirname, "../com.windwings.motionhub");
+// main.js 里声明了 needs 的后台工具名：点了会调用这些工具的按钮，必须带 data-needs
+const NEED_TOOLS = (function () {
+    const src = fs.readFileSync(path.join(EXT, "js/main.js"), "utf8");
+    const m = /var NEEDS = \{([\s\S]*?)\};/.exec(src);
+    return new Set((m[1].match(/(\w+):/g) || []).map(x => x.slice(0, -1)));
+})();
 const OUT = path.join(__dirname, "out");
 
 // 后台假数据
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.5.1", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.6.0", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
+        case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
+        case "selfCheck": return ok({ version: "3.6.0", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
         case "scan": return ok({
             items: [
                 { path: "/lib/动画/弹跳.jsx", key: "/动画/弹跳.jsx", name: "弹跳", file: "弹跳.jsx", cat: "动画", ext: "jsx", desc: "测试脚本", author: "", type: "脚本" },
@@ -104,7 +112,8 @@ async function runPanel(browser, n, opts) {
             return {
                 cls: el.className, text: (el.textContent || "").trim().slice(0, 24),
                 widget: cell ? (cell.querySelector(".w-head") ? cell.querySelector(".w-head").textContent.trim().slice(0, 30) : "") : "",
-                isTool: el.classList.contains("tile") && !el.classList.contains("add")
+                isTool: el.classList.contains("tile") && !el.classList.contains("add"),
+                needs: el.dataset.needs || ""
             };
         }, sel);
         if (!info) { results.push({ i, skipped: "已不在页面上（之前的点击重绘了组件）" }); continue; }
@@ -226,6 +235,105 @@ async function runRegressions(browser) {
     return out;
 }
 
+// 阶段 2：选区状态（变暗 / 恢复 / 节流 / 鼠标不在面板时不查 / 变暗仍可点）和自检
+async function runNeeds(browser) {
+    const page = await browser.newPage({ viewport: { width: 320, height: 1600 } });
+    const errors = [], out = [];
+    page.on("pageerror", e => errors.push(e.message));
+    const state = { canWrite: true, ctx: null };
+    await page.exposeFunction("__mhHost", (name, argsJSON) => JSON.stringify(fakeHost(name, JSON.parse(argsJSON || "{}"), state)));
+    await page.exposeFunction("__setCtx", (c) => { state.ctx = c; });
+    await page.addInitScript(() => {
+        try { localStorage.clear(); } catch (e) {}
+        window.__calls = [];
+        window.__adobe_cep__ = {
+            getExtensionId: () => "com.windwings.motionhub.panel1",
+            getSystemPath: () => "file:///ext",
+            registerKeyEventsInterest() {},
+            evalScript(code, cb) {
+                if (code === "typeof MH") return setTimeout(() => cb("object"), 2);
+                const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
+                window.__calls.push(m[1]);
+                window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 2));
+            }
+        };
+    });
+    await page.goto("file://" + EXT + "/index.html");
+    await page.waitForTimeout(700);
+    const counts = () => page.evaluate(() => ({
+        needs: document.querySelectorAll("#layout [data-needs]").length,
+        na: document.querySelectorAll("#layout .na").length,
+        ctxCalls: window.__calls.filter(c => c === "ctx").length
+    }));
+    const c0 = await counts();
+    out.push({ name: "没有打开合成时，所有声明了 needs 的按钮都变暗", ok: c0.needs > 30 && c0.na === c0.needs, detail: JSON.stringify(c0) });
+
+    // 悬停提示写明缺什么
+    await page.hover('#layout .tile.na[data-needs="keys"]');
+    const hintKeys = await page.textContent("#hint");
+    out.push({ name: "悬停变暗的按钮，提示栏写明缺什么", ok: /现在不可用：先打开一个合成/.test(hintKeys), detail: hintKeys });
+
+    // 变暗的按钮仍然可以点，以后台判断为准
+    await page.evaluate(() => { window.__calls = []; });
+    await page.click('#layout .tile.na[data-tool="centerComp"]');
+    await page.waitForTimeout(200);
+    const clicked = await page.evaluate(() => window.__calls.slice());
+    out.push({ name: "变暗的按钮仍然可以点，调用了后台", ok: clicked.indexOf("centerComp") !== -1, detail: JSON.stringify(clicked) });
+
+    // 鼠标不动 2 秒：不查询
+    await page.waitForTimeout(400);
+    await page.evaluate(() => { window.__calls = []; });
+    await page.waitForTimeout(2000);
+    const idle = await page.evaluate(() => window.__calls.filter(c => c === "ctx").length);
+    out.push({ name: "鼠标不在面板里移动时，2 秒内不查询选区", ok: idle === 0, detail: "ctx 调用 " + idle + " 次" });
+
+    // 打开合成、选中 1 个图层：图层类按钮恢复，关键帧类仍然暗
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => { window.__calls = []; });
+    for (let i = 0; i < 20; i++) { await page.mouse.move(40 + i * 5, 300 + (i % 3) * 7); await page.waitForTimeout(50); }   // 约 1 秒内移动 20 次
+    await page.waitForTimeout(300);
+    const moved = await page.evaluate(() => window.__calls.filter(c => c === "ctx").length);
+    out.push({ name: "鼠标在面板里连续移动 1 秒，选区查询被节流到 ≤ 2 次", ok: moved >= 1 && moved <= 2, detail: "ctx 调用 " + moved + " 次" });
+    const st1 = await page.evaluate(() => ({
+        layerNa: document.querySelectorAll('#layout [data-needs="layer"].na').length,
+        layer: document.querySelectorAll('#layout [data-needs="layer"]').length,
+        keysNa: document.querySelectorAll('#layout [data-needs="keys"].na').length,
+        keys: document.querySelectorAll('#layout [data-needs="keys"]').length,
+        l2Na: document.querySelectorAll('#layout [data-needs="layers2"].na').length
+    }));
+    out.push({ name: "选中 1 个图层后：图层类按钮恢复，关键帧类和「至少 2 个图层」类仍然变暗", ok: st1.layerNa === 0 && st1.layer > 0 && st1.keysNa === st1.keys && st1.keys > 0 && st1.l2Na > 0, detail: JSON.stringify(st1) });
+
+    // 全部满足：一个都不暗
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 3, keys: 4, exprProps: 2, precomps: 1, projComps: 1 }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(300);
+    const c2 = await counts();
+    out.push({ name: "窗口获得焦点时重新查询；条件都满足后没有变暗的按钮", ok: c2.na === 0, detail: JSON.stringify(c2) });
+
+    // 操作完成后查询一次
+    await page.evaluate(() => { window.__calls = []; });
+    await page.click('#layout .tile[data-tool="centerComp"]');
+    await page.waitForTimeout(300);
+    const after = await page.evaluate(() => window.__calls.slice());
+    out.push({ name: "每次操作完成后查询一次选区", ok: after.indexOf("centerComp") !== -1 && after.lastIndexOf("ctx") > after.indexOf("centerComp"), detail: JSON.stringify(after) });
+
+    // 自检
+    await page.click(".tab[data-tab=settings]");
+    await page.click("#set-recheck");
+    await page.waitForTimeout(600);
+    const chk = await page.evaluate(() => Array.from(document.querySelectorAll("#set-check li")).map(li => li.className + "|" + li.textContent));
+    const names = ["后台连接", "前后端版本", "AE 版本", "写入权限", "脚本库文件夹", "Node.js", "本地字体"];
+    const allThere = names.every(n => chk.some(c => c.indexOf(n) !== -1));
+    const fontOk = chk.some(c => /^ok\|✓本地字体/.test(c));
+    const verOk = chk.some(c => /^ok\|✓前后端版本/.test(c));
+    const nodeBad = chk.some(c => /^bad\|!Node\.js/.test(c));   // 浏览器里没有 Node，应当如实报 !
+    out.push({ name: "自检列出 7 项；字体和版本 ✓，浏览器里 Node 如实显示 !", ok: allThere && chk.length === 7 && fontOk && verOk && nodeBad, detail: JSON.stringify(chk) });
+
+    out.push({ name: "阶段 2 场景里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
+    await page.close();
+    return out;
+}
+
 async function runStudio(browser, opts) {
     const page = await browser.newPage({ viewport: { width: 1180, height: 780 } });
     const errors = [], requests = [];
@@ -291,6 +399,7 @@ async function runStudio(browser, opts) {
     for (let n = 1; n <= 4; n++) panels.push(await runPanel(browser, n, opts));
     const studio = await runStudio(browser, opts);
     const regress = await runRegressions(browser);
+    const needs = await runNeeds(browser);
     await browser.close();
 
     let fail = 0;
@@ -310,14 +419,20 @@ async function runStudio(browser, opts) {
         if (!(p.mainStart < 300)) { fail++; lines.push("  ✗ main.js 没有在 300ms 内开始执行"); }
         const toolDead = tools.filter(r => !(r.calls && r.calls.length) && !r.bubble && !r.modal && !r.pop);
         if (opts.backendDead && !/重新连接/.test(p.banner)) { fail++; lines.push("  ✗ 后台连不上时没有显示「重新连接」横幅"); }
+        const noNeeds = p.results.filter(r => r.info && r.calls && r.calls.some(c => NEED_TOOLS.has(c)) && !r.info.needs);
+        if (noNeeds.length) { fail++; lines.push("  ✗ 会调用选区类工具、却没有声明 needs 的控件：" + noNeeds.map(r => r.info.widget + "/" + (r.info.text || r.info.cls) + "→" + r.calls.join("+")).join("，")); }
+        const withNeeds = p.results.filter(r => r.info && r.info.needs).length;
+        lines.push("  声明了 needs 的控件 " + withNeeds + " 个");
         if (toolDead.length) { fail++; lines.push("  ✗ 工具按钮既没有调用后台也没有气泡：" + toolDead.map(r => r.info.widget + "/" + (r.info.text || r.info.cls)).join("，")); }
     });
     lines.push("Studio：按钮 " + studio.results.length + " 个 · 外部请求 " + studio.requests.length + " 个 · JS 错误 " + studio.errors.length + " 个 · 按键登记 " + studio.keys);
     studio.results.forEach(r => lines.push("  " + r.id + " → " + (r.bubble || r.modal || "（没有反馈）")));
     if (studio.errors.length || studio.requests.length || studio.results.some(r => !r.bubble && !r.modal)) { fail++; lines.push("  ✗ Studio 有按钮没有反馈，或者有错误 / 外部请求"); }
+    lines.push("阶段 2 · 选区状态与自检：");
+    needs.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
     lines.push("回归场景：");
     regress.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
-    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress }, null, 2));
+    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress, needs }, null, 2));
     console.log(lines.join("\n"));
     console.log(fail ? "✗ 点击测试：" + fail + " 项没通过（详情见 tests/out/clicktest.json）" : "✓ 点击测试通过（详情见 tests/out/clicktest.json）");
     process.exit(fail ? 1 : 0);
