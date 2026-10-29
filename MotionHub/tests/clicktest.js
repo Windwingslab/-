@@ -303,6 +303,41 @@ async function runNeeds(browser) {
     }));
     out.push({ name: "选中 1 个图层后：图层类按钮恢复，关键帧类和「至少 2 个图层」类仍然变暗", ok: st1.layerNa === 0 && st1.layer > 0 && st1.keysNa === st1.keys && st1.keys > 0 && st1.l2Na > 0, detail: JSON.stringify(st1) });
 
+    // 审查回归：⌥ 会放宽条件的工具不该误暗（有合成、没选图层；选了图层、没选属性）
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(250);
+    const lenient = await page.evaluate(() => ({
+        smartRename: document.querySelector('[data-tool="smartRename"]').classList.contains("na"),
+        wireframe: Array.from(document.querySelectorAll('[data-needs]')).filter(n => n.closest(".cell") && /WIREFRAME/.test(n.closest(".cell").textContent) && n.querySelector(".lbl") && /生成|线框/.test(n.textContent)).some(n => n.classList.contains("na"))
+    }));
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(250);
+    const clearNa = await page.evaluate(() => document.querySelector('[data-tool="clearExpr"]').classList.contains("na"));
+    out.push({ name: "⌥ 会放宽条件的工具不误暗：智能重命名 / 生成线框只要合成，清除表达式只要图层", ok: !lenient.smartRename && !lenient.wireframe && !clearNa, detail: JSON.stringify({ lenient, clearNa }) });
+
+    // 审查回归：鼠标停在按钮上时选区变了，提示栏跟着更新
+    await page.evaluate(() => window.__setCtx({ comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(250);
+    await page.hover('#layout [data-tool="centerComp"]');
+    const hint1 = await page.textContent("#hint");
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 2, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await page.waitForTimeout(250);
+    const hint2 = await page.textContent("#hint");
+    out.push({ name: "鼠标停着时选区变化，提示栏的「现在不可用」随之消失", ok: /现在不可用/.test(hint1) && !/现在不可用/.test(hint2), detail: JSON.stringify({ hint1, hint2 }) });
+
+    // 审查回归：节流窗口里的最后一次移动不会被吞掉
+    await page.mouse.move(60, 500);
+    await page.waitForTimeout(80);
+    await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.mouse.move(70, 510);       // 落在节流窗口里，随后鼠标停住
+    await page.waitForTimeout(1300);
+    const trailing = await page.evaluate(() => document.querySelector('[data-tool="centerComp"]').classList.contains("na"));
+    out.push({ name: "节流窗口里最后一次移动也会补查（鼠标停住后状态仍然正确）", ok: trailing, detail: "centerComp 是否变暗：" + trailing });
+
     // 全部满足：一个都不暗
     await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 3, keys: 4, exprProps: 2, precomps: 1, projComps: 1 }));
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -328,6 +363,14 @@ async function runNeeds(browser) {
     const verOk = chk.some(c => /^ok\|✓前后端版本/.test(c));
     const nodeBad = chk.some(c => /^bad\|!Node\.js/.test(c));   // 浏览器里没有 Node，应当如实报 !
     out.push({ name: "自检列出 7 项；字体和版本 ✓，浏览器里 Node 如实显示 !", ok: allThere && chk.length === 7 && fontOk && verOk && nodeBad, detail: JSON.stringify(chk) });
+
+    // 审查回归：后台没连上时，自检仍列出 7 项
+    await page.evaluate(() => { const B = window.MHBridge; B.__h = B.host; });
+    await page.evaluate(() => { window.__adobe_cep__.evalScript = (code, cb) => setTimeout(() => cb("EvalScript error."), 2); });
+    await page.click("#set-recheck");
+    await page.waitForTimeout(800);
+    const down = await page.evaluate(() => Array.from(document.querySelectorAll("#set-check li")).map(li => li.className + "|" + li.textContent));
+    out.push({ name: "后台没连上时，自检仍列出 7 项（依赖后台的标为无法检查）", ok: down.length === 7 && down.filter(x => /无法检查/.test(x)).length === 4, detail: JSON.stringify(down) });
 
     out.push({ name: "阶段 2 场景里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
     await page.close();

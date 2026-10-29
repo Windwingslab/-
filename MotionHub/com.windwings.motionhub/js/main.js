@@ -118,12 +118,19 @@
         clearTimeout(toastTimer);
         hintEl.className = "hint " + (r.ok ? "ok" : "err");
         hintEl.innerHTML = '<div class="h-msg">' + esc(r.msg) + "</div>";
-        toastTimer = setTimeout(function () { toastTimer = null; showHint(hovered); }, r.ok ? 2600 : 4200);
+        toastTimer = setTimeout(function () { toastTimer = null; if (hoverNode) rehint(); else showHint(hovered); }, r.ok ? 2600 : 4200);
         return r;
     }
     function bindHint(node, h) {
-        node.addEventListener("mouseenter", function () { if (!editing) showHint(withNa(node, typeof h === "function" ? h() : h)); });
-        node.addEventListener("mouseleave", function () { showHint(null); });
+        node.addEventListener("mouseenter", function () { hoverNode = node; hoverRaw = h; if (!editing) showHint(withNa(node, typeof h === "function" ? h() : h)); });
+        node.addEventListener("mouseleave", function () { if (hoverNode === node) { hoverNode = null; hoverRaw = null; } showHint(null); });
+    }
+    // 鼠标停着的按钮和它原始的提示：选区变化后重新算「现在不可用」那一行
+    var hoverNode = null, hoverRaw = null;
+    function rehint() {
+        if (!hoverNode || toastTimer || editing) return;
+        if (!hoverNode.isConnected) { hoverNode = null; hoverRaw = null; return; }
+        showHint(withNa(hoverNode, typeof hoverRaw === "function" ? hoverRaw() : hoverRaw));
     }
     function withNa(node, h) {
         if (!h || !node.dataset || !node.dataset.na) return h;
@@ -382,9 +389,9 @@
         ease: "keys", cloneKeys: "keys", copyKeys: "keys", pasteKeys: "layer", keyTime: "keys", bezier: "keys", bezierRead: "keys",
         quickAnim: "layer", splitLayer: "layer", toPlayhead: "layer", motionBlur: "layer",
         beatMarkers: "comp", clearMarkers: "comp", beatLayers: "layer", audioInfo: "layer",
-        decompose: "precomp", dupPrecomp: "precomp", smartRename: "layer", chain: "layers2",
-        styleCopy: "layer", stylePaste: "layer", applyEffect: "comp", wireframe: "layer", wireClear: "comp", wireStyle: "comp",
-        applyExpr: "props", wiggle: "props", loop: "props", bounce: "props", clearExpr: "props",
+        decompose: "precomp", dupPrecomp: "precomp", smartRename: "comp", chain: "layers2",
+        styleCopy: "layer", stylePaste: "layer", applyEffect: "comp", wireframe: "comp", wireClear: "comp", wireStyle: "comp",
+        applyExpr: "props", wiggle: "props", loop: "props", bounce: "props", clearExpr: "layer",
         dupComp: "compOrProj", collectColors: "layer"
     };
     var NEED_TEXT = {
@@ -1767,7 +1774,11 @@
         ]).then(function (res) {
             var r = res[0], fonts = res[1];
             add(r.ok, "后台连接", r.ok ? "已连上 AE" : r.msg, "点面板顶部的「重新连接」；还不行就关闭面板再打开");
-            if (r.ok) {
+            if (!r.ok) {
+                ["前后端版本", "AE 版本", "写入权限", "脚本库文件夹"].forEach(function (n) {
+                    add(false, n, "后台没连上，无法检查", "先点面板顶部的「重新连接」，再点一次自检");
+                });
+            } else {
                 var d = r.data, major = parseInt(d.ae, 10);
                 add(d.version === B.version, "前后端版本", "面板 " + B.version + " · 后台 " + d.version, "重新运行安装脚本，完全退出 AE 后再打开");
                 add(major >= 22, "AE 版本", d.ae, "需要 After Effects 2022（22.0）及以上");
@@ -1881,7 +1892,7 @@
     // 选区状态：条件不满足的按钮变暗（仍可点），悬停写明缺什么
     // 只在三种时机查询：鼠标在面板里移动（节流 900ms）、面板获得焦点、每次操作完成后
     // =====================================================================
-    var ctx = null, ctxBusy = false, ctxAt = 0;
+    var ctx = null, ctxBusy = false, ctxAt = 0, ctxPending = false, ctxTrail = 0;
     function missing(needs, c) {
         if (!needs || !c) return "";
         if (needs === "compOrProj") return c.comp || c.projComps > 0 ? "" : NEED_TEXT.compOrProj;
@@ -1901,16 +1912,23 @@
             if (m) { n.dataset.na = m; n.setAttribute("aria-description", m); }
             else { delete n.dataset.na; n.removeAttribute("aria-description"); }
         });
+        rehint();
     }
     function refreshCtx(force) {
-        if (ctxBusy || B.isBackendDown()) return;
+        if (B.isBackendDown()) return;
+        if (ctxBusy) { ctxPending = true; return; }          // 上一次还没回来：回来后再查一次
         var now = Date.now();
-        if (!force && now - ctxAt < 900) return;
+        if (!force && now - ctxAt < 900) {                     // 节流窗口内：窗口结束时补一次，不丢掉最后一次移动
+            if (!ctxTrail) ctxTrail = setTimeout(function () { ctxTrail = 0; refreshCtx(true); }, 900 - (now - ctxAt));
+            return;
+        }
+        clearTimeout(ctxTrail); ctxTrail = 0;
         ctxBusy = true; ctxAt = now;
         host("ctx").then(function (r) {
             ctxBusy = false;
             if (r && r.ok) { ctx = r.data; applyNeeds(); }
-        });
+            if (ctxPending) { ctxPending = false; refreshCtx(false); }
+        }, function () { ctxBusy = false; });
     }
     // mousemove 只在鼠标位于面板里时才会触发，所以鼠标在面板外时不会查询
     document.addEventListener("mousemove", function () { refreshCtx(false); });
