@@ -22,10 +22,10 @@ const OUT = path.join(__dirname, "out");
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.6.0", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.7.0", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
         case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
-        case "selfCheck": return ok({ version: "3.6.0", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
+        case "selfCheck": return ok({ version: "3.7.0", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
         case "scan": return ok({
             items: [
                 { path: "/lib/动画/弹跳.jsx", key: "/动画/弹跳.jsx", name: "弹跳", file: "弹跳.jsx", cat: "动画", ext: "jsx", desc: "测试脚本", author: "", type: "脚本" },
@@ -314,7 +314,7 @@ async function runNeeds(browser) {
     await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await page.waitForTimeout(250);
-    const clearNa = await page.evaluate(() => document.querySelector('[data-tool="clearExpr"]').classList.contains("na"));
+    const clearNa = await page.evaluate(() => document.querySelector('[data-tool="builtin:clearExpr"]').classList.contains("na"));
     out.push({ name: "⌥ 会放宽条件的工具不误暗：智能重命名 / 生成线框只要合成，清除表达式只要图层", ok: !lenient.smartRename && !lenient.wireframe && !clearNa, detail: JSON.stringify({ lenient, clearNa }) });
 
     // 审查回归：鼠标停在按钮上时选区变了，提示栏跟着更新

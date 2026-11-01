@@ -1,0 +1,607 @@
+{
+ "main": {
+  "name": "主面板",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "old0",
+    "type": "heading",
+    "en": "CREATE",
+    "zh": "新建图层"
+   },
+   {
+    "id": "old1",
+    "type": "create"
+   },
+   {
+    "id": "old2",
+    "type": "studio"
+   },
+   {
+    "id": "old3",
+    "type": "heading",
+    "en": "ANCHOR",
+    "zh": "锚点"
+   },
+   {
+    "id": "old4",
+    "type": "anchor"
+   },
+   {
+    "id": "old5",
+    "type": "centerComp"
+   },
+   {
+    "id": "old6",
+    "type": "nullLayer"
+   },
+   {
+    "id": "old7",
+    "type": "precomp"
+   },
+   {
+    "id": "old8",
+    "type": "heading",
+    "en": "KEYFRAME",
+    "zh": "缓动 · 关键帧"
+   },
+   {
+    "id": "old9",
+    "type": "ease"
+   },
+   {
+    "id": "old10",
+    "type": "keys"
+   },
+   {
+    "id": "old11",
+    "type": "graph"
+   },
+   {
+    "id": "old12",
+    "type": "heading",
+    "en": "ANIMATE",
+    "zh": "快速动画 · 依次排列"
+   },
+   {
+    "id": "old13",
+    "type": "quick"
+   },
+   {
+    "id": "old14",
+    "type": "seq"
+   },
+   {
+    "id": "old15",
+    "type": "heading",
+    "en": "BEAT",
+    "zh": "音乐节拍"
+   },
+   {
+    "id": "old16",
+    "type": "beat"
+   },
+   {
+    "id": "old17",
+    "type": "heading",
+    "en": "STYLE · EFFECTS",
+    "zh": "样式 · 效果"
+   },
+   {
+    "id": "old18",
+    "type": "style"
+   },
+   {
+    "id": "old19",
+    "type": "effects"
+   },
+   {
+    "id": "old20",
+    "type": "heading",
+    "en": "WIREFRAME",
+    "zh": "线框叠加"
+   },
+   {
+    "id": "old21",
+    "type": "wire"
+   },
+   {
+    "id": "old22",
+    "type": "heading",
+    "en": "ALIGN",
+    "zh": "对齐 · 分布"
+   },
+   {
+    "id": "old23",
+    "type": "alignLeft"
+   },
+   {
+    "id": "old24",
+    "type": "alignHCenter"
+   },
+   {
+    "id": "old25",
+    "type": "alignRight"
+   },
+   {
+    "id": "old26",
+    "type": "alignTop"
+   },
+   {
+    "id": "old27",
+    "type": "alignVCenter"
+   },
+   {
+    "id": "old28",
+    "type": "alignBottom"
+   },
+   {
+    "id": "old29",
+    "type": "distH"
+   },
+   {
+    "id": "old30",
+    "type": "distV"
+   },
+   {
+    "id": "old31",
+    "type": "heading",
+    "en": "LAYER",
+    "zh": "图层"
+   },
+   {
+    "id": "old32",
+    "type": "decompose"
+   },
+   {
+    "id": "old33",
+    "type": "dupPrecomp"
+   },
+   {
+    "id": "old34",
+    "type": "smartRename"
+   },
+   {
+    "id": "old35",
+    "type": "chain"
+   },
+   {
+    "id": "old36",
+    "type": "trim"
+   },
+   {
+    "id": "old37",
+    "type": "split"
+   },
+   {
+    "id": "old38",
+    "type": "toPlayhead"
+   },
+   {
+    "id": "old39",
+    "type": "reverseLayers"
+   },
+   {
+    "id": "old40",
+    "type": "motionBlur"
+   },
+   {
+    "id": "old41",
+    "type": "rename"
+   },
+   {
+    "id": "old42",
+    "type": "heading",
+    "en": "EXPRESSION",
+    "zh": "表达式 · 先选属性"
+   },
+   {
+    "id": "old43",
+    "type": "wiggle"
+   },
+   {
+    "id": "old44",
+    "type": "loop"
+   },
+   {
+    "id": "old45",
+    "type": "bounce"
+   },
+   {
+    "id": "old46",
+    "type": "clearExpr"
+   },
+   {
+    "id": "old47",
+    "type": "heading",
+    "en": "COMP · COLOR",
+    "zh": "合成 · 颜色"
+   },
+   {
+    "id": "old48",
+    "type": "dupComp"
+   },
+   {
+    "id": "old49",
+    "type": "colors"
+   },
+   {
+    "id": "old50",
+    "type": "heading",
+    "en": "MY SCRIPTS",
+    "zh": "我的脚本"
+   }
+  ]
+ },
+ "animate": {
+  "name": "动画",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "old51",
+    "type": "heading",
+    "en": "CURVE",
+    "zh": "自定义缓动"
+   },
+   {
+    "id": "old52",
+    "type": "graph"
+   },
+   {
+    "id": "old53",
+    "type": "ease"
+   },
+   {
+    "id": "old54",
+    "type": "heading",
+    "en": "KEYS",
+    "zh": "关键帧"
+   },
+   {
+    "id": "old55",
+    "type": "keys"
+   },
+   {
+    "id": "old56",
+    "type": "heading",
+    "en": "ANIMATE",
+    "zh": "快速动画"
+   },
+   {
+    "id": "old57",
+    "type": "quick"
+   },
+   {
+    "id": "old58",
+    "type": "seq"
+   },
+   {
+    "id": "old59",
+    "type": "heading",
+    "en": "BEAT",
+    "zh": "音乐节拍"
+   },
+   {
+    "id": "old60",
+    "type": "beat"
+   },
+   {
+    "id": "old61",
+    "type": "heading",
+    "en": "WIREFRAME",
+    "zh": "线框叠加"
+   },
+   {
+    "id": "old62",
+    "type": "wire"
+   },
+   {
+    "id": "old63",
+    "type": "heading",
+    "en": "EXPRESSION",
+    "zh": "表达式"
+   },
+   {
+    "id": "old64",
+    "type": "wiggle"
+   },
+   {
+    "id": "old65",
+    "type": "loop"
+   },
+   {
+    "id": "old66",
+    "type": "bounce"
+   },
+   {
+    "id": "old67",
+    "type": "clearExpr"
+   }
+  ]
+ },
+ "organize": {
+  "name": "整理",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "old68",
+    "type": "heading",
+    "en": "ANCHOR",
+    "zh": "锚点"
+   },
+   {
+    "id": "old69",
+    "type": "anchor"
+   },
+   {
+    "id": "old70",
+    "type": "centerComp"
+   },
+   {
+    "id": "old71",
+    "type": "nullLayer"
+   },
+   {
+    "id": "old72",
+    "type": "precomp"
+   },
+   {
+    "id": "old73",
+    "type": "heading",
+    "en": "ALIGN",
+    "zh": "对齐"
+   },
+   {
+    "id": "old74",
+    "type": "alignLeft"
+   },
+   {
+    "id": "old75",
+    "type": "alignHCenter"
+   },
+   {
+    "id": "old76",
+    "type": "alignRight"
+   },
+   {
+    "id": "old77",
+    "type": "alignTop"
+   },
+   {
+    "id": "old78",
+    "type": "alignVCenter"
+   },
+   {
+    "id": "old79",
+    "type": "alignBottom"
+   },
+   {
+    "id": "old80",
+    "type": "distH"
+   },
+   {
+    "id": "old81",
+    "type": "distV"
+   },
+   {
+    "id": "old82",
+    "type": "heading",
+    "en": "CREATE",
+    "zh": "新建图层"
+   },
+   {
+    "id": "old83",
+    "type": "create"
+   },
+   {
+    "id": "old84",
+    "type": "heading",
+    "en": "LAYER",
+    "zh": "图层"
+   },
+   {
+    "id": "old85",
+    "type": "decompose"
+   },
+   {
+    "id": "old86",
+    "type": "dupPrecomp"
+   },
+   {
+    "id": "old87",
+    "type": "smartRename"
+   },
+   {
+    "id": "old88",
+    "type": "chain"
+   },
+   {
+    "id": "old89",
+    "type": "trim"
+   },
+   {
+    "id": "old90",
+    "type": "split"
+   },
+   {
+    "id": "old91",
+    "type": "toPlayhead"
+   },
+   {
+    "id": "old92",
+    "type": "reverseLayers"
+   },
+   {
+    "id": "old93",
+    "type": "rename"
+   },
+   {
+    "id": "old94",
+    "type": "heading",
+    "en": "STYLE · EFFECTS",
+    "zh": "样式 · 效果"
+   },
+   {
+    "id": "old95",
+    "type": "style"
+   },
+   {
+    "id": "old96",
+    "type": "effects"
+   },
+   {
+    "id": "old97",
+    "type": "heading",
+    "en": "COMP · COLOR",
+    "zh": "合成 · 颜色"
+   },
+   {
+    "id": "old98",
+    "type": "dupComp"
+   },
+   {
+    "id": "old99",
+    "type": "colors"
+   }
+  ]
+ },
+ "scripts": {
+  "name": "我的脚本",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "old100",
+    "type": "heading",
+    "en": "MY SCRIPTS",
+    "zh": "我的脚本"
+   },
+   {
+    "id": "old101",
+    "type": "heading",
+    "en": "SNIPPETS",
+    "zh": "代码片段"
+   }
+  ]
+ },
+ "blank": {
+  "name": "",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "old102",
+    "type": "heading",
+    "en": "WORKSPACE",
+    "zh": "我的面板"
+   }
+  ]
+ },
+ "custom": {
+  "name": "我的面板",
+  "accent": "#FF5900",
+  "items": [
+   {
+    "id": "c1",
+    "type": "heading",
+    "en": "MINE",
+    "zh": "常用"
+   },
+   {
+    "id": "c2",
+    "type": "easeBoth",
+    "color": "#A8BBD6"
+   },
+   {
+    "id": "c3",
+    "type": "linear"
+   },
+   {
+    "id": "c4",
+    "type": "hold"
+   },
+   {
+    "id": "c5",
+    "type": "wiggle"
+   },
+   {
+    "id": "c6",
+    "type": "loop"
+   },
+   {
+    "id": "c7",
+    "type": "nullLayer",
+    "color": "#FF5900"
+   },
+   {
+    "id": "c8",
+    "type": "solid"
+   },
+   {
+    "id": "c9",
+    "type": "seq",
+    "num": 2,
+    "step": 4
+   },
+   {
+    "id": "c10",
+    "type": "chain"
+   },
+   {
+    "id": "c11",
+    "type": "trim"
+   },
+   {
+    "id": "c12",
+    "type": "motionBlur"
+   },
+   {
+    "id": "c13",
+    "type": "heading",
+    "en": "EXPR",
+    "zh": "表达式"
+   },
+   {
+    "id": "c14",
+    "type": "bounce"
+   },
+   {
+    "id": "c15",
+    "type": "clearExpr"
+   },
+   {
+    "id": "c16",
+    "type": "wiggle"
+   },
+   {
+    "id": "c17",
+    "type": "heading",
+    "en": "BEAT",
+    "zh": "节拍"
+   },
+   {
+    "id": "c18",
+    "type": "beat",
+    "every": 2,
+    "sens": 1.2
+   },
+   {
+    "id": "c19",
+    "type": "heading",
+    "en": "KEYS",
+    "zh": "关键帧"
+   },
+   {
+    "id": "c20",
+    "type": "cloneKeys"
+   },
+   {
+    "id": "c21",
+    "type": "reverseKeys"
+   },
+   {
+    "id": "c22",
+    "type": "keys",
+    "factor": 2
+   }
+  ]
+ }
+}

@@ -6,6 +6,7 @@ mkdir -p out
 st=0
 node es3check.js | tee out/es3check.txt || st=1
 node hosttest.js | tee out/hosttest.txt || st=1
+node migrationtest.js | tee out/migrationtest.txt || st=1
 for mode in normal backend-down backend-dead no-write; do
     echo "== 点击测试 · $mode =="
     case $mode in

@@ -39,7 +39,30 @@
     };
 
     var B = window.MHBridge;
-    var host = B.host;
+    // 后台工具的使用次数（只存在本机，不上传）：给下一轮删减功能提供依据
+    var USAGE_LABEL = {
+        anchor: "锚点九宫格", centerComp: "居中到合成", nullLayer: "空对象", addLayer: "新建图层", align: "对齐", distribute: "分布",
+        sequence: "错开排列", trim: "剪到工作区", precompEach: "逐个预合成", reverse: "反转图层顺序", rename: "批量重命名",
+        ease: "缓动", cloneKeys: "克隆关键帧", copyKeys: "复制关键帧", pasteKeys: "粘贴关键帧", keyTime: "关键帧均分 / 拉伸 / 微移 / 反转",
+        bezier: "应用缓动曲线", bezierRead: "从关键帧读取曲线", quickAnim: "快速动画", splitLayer: "在播放头拆分", toPlayhead: "移到播放头",
+        motionBlur: "运动模糊", beatMarkers: "节拍标记", clearMarkers: "清除标记", beatLayers: "吸附 / 按节拍排列", decompose: "解散预合成",
+        dupPrecomp: "独立复制预合成", smartRename: "智能重命名", chain: "首尾相接", styleCopy: "复制样式", stylePaste: "粘贴样式",
+        applyEffect: "效果收藏", wireframe: "线框叠加", wireClear: "清除线框", wireStyle: "线框颜色", applyExpr: "表达式片段", runCode: "脚本片段",
+        wiggle: "抖动", loop: "循环", bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色", run: "运行脚本库里的脚本"
+    };
+    var usage = {}, usageTimer = null;
+    function bumpUsage(name) {
+        usage[name] = (usage[name] || 0) + 1;
+        clearTimeout(usageTimer);
+        usageTimer = setTimeout(function () {
+            local.set("usage" + PANEL, usage);
+            B.host("saveConfig", { name: "usage_panel" + PANEL, text: JSON.stringify(usage) });
+        }, 2000);
+    }
+    function host(name, args) {
+        if (USAGE_LABEL[name]) bumpUsage(name);
+        return B.host(name, args);
+    }
 
     // =====================================================================
     // 颜色
@@ -274,51 +297,158 @@
     function H(en, zh) { return { type: "heading", en: en, zh: zh }; }
     function T(type, extra) { var o = { type: type }; for (var k in extra || {}) o[k] = extra[k]; return o; }
 
+    function S(sid) { return { type: "snippet", sid: sid }; }
+    var EXPR_SNIPPETS = [S("builtin:wiggle"), S("builtin:loop"), S("builtin:bounce"), S("builtin:clearExpr")];
+
+    // 3.7：差异化的功能放前面；只是复刻 AE 原生快捷键的小工具不再默认放上来（组件库「更多」和 ⌘K 里都有）
     var PRESETS = {
         main: {
             name: "主面板", items: [
                 H("CREATE", "新建图层"), T("create"), T("studio"),
-                H("ANCHOR", "锚点"), T("anchor"), T("centerComp"), T("nullLayer"), T("precomp"),
-                H("KEYFRAME", "缓动 · 关键帧"), T("ease"), T("keys"), T("graph"),
-                H("ANIMATE", "快速动画 · 依次排列"), T("quick"), T("seq"),
+                H("KEYFRAME", "曲线 · 关键帧"), T("graph"), T("keys"), T("ease"),
+                H("ANIMATE", "快速动画 · 时间排列"), T("quick"), T("arrange"),
                 H("BEAT", "音乐节拍"), T("beat"),
                 H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
+                H("PRECOMP · COMP", "预合成 · 合成"), T("decompose"), T("dupPrecomp"), T("dupComp"), T("colors"),
                 H("WIREFRAME", "线框叠加"), T("wire"),
-                H("ALIGN", "对齐 · 分布"), T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
-                H("LAYER", "图层"), T("decompose"), T("dupPrecomp"), T("smartRename"), T("chain"), T("trim"), T("split"), T("toPlayhead"), T("reverseLayers"), T("motionBlur"), T("rename"),
-                H("EXPRESSION", "表达式 · 先选属性"), T("wiggle"), T("loop"), T("bounce"), T("clearExpr"),
-                H("COMP · COLOR", "合成 · 颜色"), T("dupComp"), T("colors"),
-                H("MY SCRIPTS", "我的脚本")
-            ]
+                H("ANCHOR · ALIGN", "锚点 · 对齐"), T("anchor"), T("centerComp"), T("precomp"),
+                T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
+                H("LAYER", "图层"), T("smartRename"), T("reverseLayers"), T("rename"),
+                H("EXPRESSION", "表达式 · 先选属性")
+            ].concat(EXPR_SNIPPETS, [H("MY SCRIPTS", "我的脚本")])
         },
         animate: {
             name: "动画", items: [
                 H("CURVE", "自定义缓动"), T("graph"), T("ease"),
                 H("KEYS", "关键帧"), T("keys"),
-                H("ANIMATE", "快速动画"), T("quick"), T("seq"),
+                H("ANIMATE", "快速动画 · 时间排列"), T("quick"), T("arrange"),
                 H("BEAT", "音乐节拍"), T("beat"),
                 H("WIREFRAME", "线框叠加"), T("wire"),
-                H("EXPRESSION", "表达式"), T("wiggle"), T("loop"), T("bounce"), T("clearExpr")
-            ]
+                H("EXPRESSION", "表达式")
+            ].concat(EXPR_SNIPPETS)
         },
         organize: {
             name: "整理", items: [
-                H("ANCHOR", "锚点"), T("anchor"), T("centerComp"), T("nullLayer"), T("precomp"),
-                H("ALIGN", "对齐"), T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
                 H("CREATE", "新建图层"), T("create"),
-                H("LAYER", "图层"), T("decompose"), T("dupPrecomp"), T("smartRename"), T("chain"), T("trim"), T("split"), T("toPlayhead"), T("reverseLayers"), T("rename"),
-                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
-                H("COMP · COLOR", "合成 · 颜色"), T("dupComp"), T("colors")
+                H("PRECOMP · COMP", "预合成 · 合成"), T("decompose"), T("dupPrecomp"), T("dupComp"), T("colors"),
+                H("ANCHOR", "锚点"), T("anchor"), T("centerComp"), T("precomp"),
+                H("ALIGN", "对齐"), T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
+                H("LAYER", "图层"), T("smartRename"), T("reverseLayers"), T("rename"),
+                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects")
             ]
         },
         scripts: { name: "我的脚本", items: [H("MY SCRIPTS", "我的脚本"), H("SNIPPETS", "代码片段")] },
         blank: { name: "", items: [H("WORKSPACE", "我的面板")] }
     };
+
+    // =====================================================================
+    // 配置迁移：schema 1（3.6 及以前）→ 2（3.7）
+    // 被合并的按钮换成对应的组件（面板里已经有就去重），表达式按钮换成内置片段；用户的颜色和参数一起带过去
+    // =====================================================================
+    var SCHEMA = 2;
+    var MERGE_TO = {
+        easeBoth: "ease", linear: "ease", hold: "ease", cloneKeys: "keys", reverseKeys: "keys",
+        adjust: "create", solid: "create", camera: "create", textLayer: "create", shapeLayer: "create", light: "create", nullLayer: "create",
+        seq: "arrange", chain: "arrange"
+    };
+    var TO_SNIPPET = { wiggle: "builtin:wiggle", loop: "builtin:loop", bounce: "builtin:bounce", clearExpr: "builtin:clearExpr" };
+    var OLD_NAMES = {
+        easeBoth: "缓入缓出", linear: "线性", hold: "定格", cloneKeys: "克隆关键帧", reverseKeys: "反转关键帧",
+        adjust: "调整图层", solid: "纯色层", camera: "摄像机", textLayer: "文字图层", shapeLayer: "形状图层", light: "灯光", nullLayer: "空对象",
+        seq: "依次排列", chain: "首尾相接", wiggle: "抖动", loop: "循环", bounce: "弹性", clearExpr: "清除表达式", beatSeq: "按节拍排列"
+    };
+    var NEW_PLACES = {
+        ease: "「缓动」组件", keys: "「关键帧工具」组件", create: "「新建图层」组件（空对象的 ⌥ 设为父级也在这里）",
+        arrange: "「时间排列」组件（错开 / 首尾相接 / 跟节拍）", snippet: "内置表达式片段（修饰键用法不变，脚本库 → 代码片段里可以隐藏）"
+    };
+
+    function migrateConfig(c) {
+        var moves = [];
+        if ((c.schema || 1) >= SCHEMA) return moves;
+        var src = c.items, out = [], have = {}, sids = {}, i;
+        // 面板里原本就有的组件 / 片段：被合并的按钮直接去重
+        for (i = 0; i < src.length; i++) {
+            if (!MERGE_TO[src[i].type]) have[src[i].type] = true;
+            if (src[i].type === "snippet") sids[src[i].sid] = true;
+        }
+        for (i = 0; i < src.length; i++) {
+            var it = src[i], t = it.type, target = MERGE_TO[t], sid = TO_SNIPPET[t];
+            if (target) {
+                moves.push({ from: t, to: target });
+                if (have[target]) continue;
+                var n = { id: it.id, type: target };
+                if (it.color) n.color = it.color;
+                if (target === "arrange") {
+                    n.mode = t === "chain" ? "chain" : "stagger";
+                    if (it.num) n.num = it.num;
+                    if (it.step !== undefined) n.step = it.step;
+                }
+                have[target] = true;
+                out.push(n);
+            } else if (sid) {
+                moves.push({ from: t, to: "snippet" });
+                if (sids[sid]) continue;
+                var sn = { id: it.id, type: "snippet", sid: sid };
+                if (it.color) sn.color = it.color;
+                sids[sid] = true;
+                out.push(sn);
+            } else out.push(it);
+        }
+        // 节拍组件里的「按节拍排列」搬到了时间排列：有节拍组件却没有时间排列的面板，紧跟着补一个
+        if (have.beat && !have.arrange) {
+            for (i = 0; i < out.length; i++) if (out[i].type === "beat") {
+                out.splice(i + 1, 0, { id: uid(), type: "arrange", mode: "beat", every: out[i].every || 1 });
+                break;
+            }
+            moves.push({ from: "beatSeq", to: "arrange" });
+        } else if (have.beat) moves.push({ from: "beatSeq", to: "arrange" });
+        // 原来有内容、迁移后变空的分组标题一起去掉（用户自己建的空分组不动）
+        var hadContent = {}, cur = null;
+        for (i = 0; i < src.length; i++) {
+            if (src[i].type === "heading") cur = src[i].id;
+            else if (cur) hadContent[cur] = true;
+        }
+        var cleaned = [];
+        for (i = 0; i < out.length; i++) {
+            if (out[i].type === "heading" && hadContent[out[i].id]) {
+                var j = i + 1;
+                while (j < out.length && out[j].type !== "heading") j++;
+                if (j === i + 1) continue;
+            }
+            cleaned.push(out[i]);
+        }
+        c.items = cleaned;
+        c.schema = SCHEMA;
+        return moves;
+    }
+
+    // 迁移后说明一次：哪些按钮搬到了哪里
+    var migrationNotice = null;
+    function showMigrationNotice() {
+        if (!migrationNotice || !migrationNotice.length) return;
+        var byTo = {}, order = [];
+        migrationNotice.forEach(function (m) {
+            if (!byTo[m.to]) { byTo[m.to] = []; order.push(m.to); }
+            if (byTo[m.to].indexOf(OLD_NAMES[m.from]) === -1) byTo[m.to].push(OLD_NAMES[m.from]);
+        });
+        var ul = el("ul", "mig-list");
+        order.forEach(function (to) {
+            ul.appendChild(el("li", "", "<b>" + esc(byTo[to].join(" / ")) + "</b> → " + esc(NEW_PLACES[to])));
+        });
+        migrationNotice = null;
+        dialog("(3.7) — 按钮搬家了", [
+            el("p", "", "为了少一些重复的入口，下面这些按钮合并进了对应的组件。你的布局、颜色和设置都保留了，面板上没有出现空格子。"),
+            ul,
+            el("p", "muted", "「在播放头拆分」「剪到工作区」「移到播放头」「运动模糊」不再默认放在新面板上；已经放上去的保持不变，组件库「更多」和 ⌘K 里都能找到。")
+        ], [{ label: "知道了", accent: true, value: function () { return true; } }]);
+    }
+
     var PANEL_PRESET = { 1: "main", 2: "animate", 3: "organize", 4: "scripts" };
 
     function fromPreset(key) {
         var p = PRESETS[key];
         return {
+            schema: SCHEMA,
             name: p.name || ("面板 " + PANEL),
             accent: "#FF5900",
             items: p.items.map(function (it) { var o = JSON.parse(JSON.stringify(it)); o.id = uid(); return o; })
@@ -348,7 +478,9 @@
                 if (PANEL === 1) local.get("pins", []).forEach(function (k) { c.items.push({ id: uid(), type: "script", key: k }); });
             }
             c.items.forEach(function (it) { if (!it.id) it.id = uid(); });
+            var moves = migrateConfig(c);
             cfg = c;
+            if (moves.length) { migrationNotice = moves; saveConfig(); }
         });
     }
 
@@ -372,7 +504,7 @@
     // 单个工具方块：size [宽, 高]，宽 > 1 时显示文字
     function toolType(type, o) {
         reg(type, {
-            name: o.name, cat: o.cat, icon: o.icon, desc: o.hint.click, size: [o.w || 1, 1], run: o.run, hint: o.hint,
+            name: o.name, cat: o.cat, icon: o.icon, desc: o.hint.click, size: [o.w || 1, 1], run: o.run, hint: o.hint, more: !!o.more,
             render: function (cell, item) {
                 cell.appendChild(tile({
                     icon: o.icon, label: (o.w || 1) > 1 ? o.name : "", filled: !!item.color,
@@ -453,7 +585,6 @@
     });
 
     toolType("centerComp", { name: "居中到合成", cat: "锚点 · 对齐", icon: "center", w: 3, hint: { title: "居中到合成", click: "锚点居中，并把图层移到合成中心", alt: "不改锚点，按外框居中" }, run: call("centerComp") });
-    toolType("nullLayer", { name: "空对象", cat: "图层", icon: "nullLayer", w: 3, hint: { title: "空对象", click: "在选中图层上方新建空对象", alt: "放到选中图层中心，并设为它们的父级" }, run: call("nullLayer") });
     toolType("precomp", { name: "逐个预合成", cat: "图层", icon: "precomp", w: 3, hint: { title: "逐个预合成", click: "每个选中图层各自预合成，保留属性" }, run: call("precompEach") });
 
     [["alignLeft", "left", "左对齐"], ["alignHCenter", "hcenter", "水平居中"], ["alignRight", "right", "右对齐"],
@@ -463,14 +594,11 @@
     toolType("distH", { name: "水平分布", cat: "锚点 · 对齐", icon: "distH", hint: { title: "水平分布", click: "按中心点水平均匀分布（至少 3 个图层）" }, run: call("distribute", { horizontal: true }) });
     toolType("distV", { name: "垂直分布", cat: "锚点 · 对齐", icon: "distV", hint: { title: "垂直分布", click: "按中心点垂直均匀分布（至少 3 个图层）" }, run: call("distribute", { horizontal: false }) });
 
-    toolType("adjust", { name: "调整图层", cat: "图层", icon: "adjust", hint: { title: "调整图层", click: "在选中图层上方新建调整图层" }, run: call("addLayer", { kind: "adjust" }) });
-    toolType("solid", { name: "纯色层", cat: "图层", icon: "solid", hint: { title: "纯色层", click: "新建合成大小的纯色层" }, run: call("addLayer", { kind: "solid" }) });
-    toolType("camera", { name: "摄像机", cat: "图层", icon: "camera", hint: { title: "摄像机", click: "新建摄像机" }, run: call("addLayer", { kind: "camera" }) });
-    toolType("trim", { name: "剪到工作区", cat: "图层", icon: "trim", hint: { title: "剪到工作区", click: "把选中图层的入点和出点剪到工作区", alt: "只把入点剪到播放头" }, run: call("trim") });
-    toolType("split", { name: "在播放头拆分", cat: "图层", icon: "split", hint: { title: "在播放头拆分", click: "把选中图层在播放头位置拆成两段" }, run: call("splitLayer") });
-    toolType("toPlayhead", { name: "移到播放头", cat: "图层", icon: "toPlayhead", hint: { title: "移到播放头", click: "把选中图层的入点对齐到播放头", alt: "把出点对齐到播放头" }, run: call("toPlayhead") });
+    toolType("trim", { more: true, name: "剪到工作区", cat: "图层", icon: "trim", hint: { title: "剪到工作区", click: "把选中图层的入点和出点剪到工作区", alt: "只把入点剪到播放头" }, run: call("trim") });
+    toolType("split", { more: true, name: "在播放头拆分", cat: "图层", icon: "split", hint: { title: "在播放头拆分", click: "把选中图层在播放头位置拆成两段" }, run: call("splitLayer") });
+    toolType("toPlayhead", { more: true, name: "移到播放头", cat: "图层", icon: "toPlayhead", hint: { title: "移到播放头", click: "把选中图层的入点对齐到播放头", alt: "把出点对齐到播放头" }, run: call("toPlayhead") });
     toolType("reverseLayers", { name: "反转顺序", cat: "图层", icon: "reverse", hint: { title: "反转图层顺序", click: "反转选中图层的上下顺序" }, run: call("reverse") });
-    toolType("motionBlur", { name: "运动模糊", cat: "图层", icon: "motionBlur", hint: { title: "运动模糊", click: "开 / 关选中图层的运动模糊（同时打开合成开关）" }, run: call("motionBlur") });
+    toolType("motionBlur", { more: true, name: "运动模糊", cat: "图层", icon: "motionBlur", hint: { title: "运动模糊", click: "开 / 关选中图层的运动模糊（同时打开合成开关）" }, run: call("motionBlur") });
     toolType("rename", {
         name: "批量重命名", cat: "图层", icon: "rename", needs: "layer", hint: { title: "批量重命名", click: "输入名称后，按 名称_01、名称_02 … 重命名" },
         run: function () {
@@ -478,16 +606,7 @@
         }
     });
 
-    toolType("easeBoth", { name: "缓入缓出", cat: "关键帧", icon: "easeBoth", hint: { title: "缓入缓出", click: "等同 F9（影响 33%）", alt: "只缓入", shift: "只缓出" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "both", inInfl: 33, outInfl: 33, mods: m }); } });
-    toolType("linear", { name: "线性", cat: "关键帧", icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "linear", mods: m }); } });
-    toolType("hold", { name: "定格", cat: "关键帧", icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, needs: NEEDS.ease, run: function (m) { return host("ease", { mode: "hold", mods: m }); } });
-    toolType("cloneKeys", { name: "克隆关键帧", cat: "关键帧", icon: "cloneKeys", hint: { title: "克隆关键帧", click: "从播放头克隆选中关键帧", alt: "克隆后选中新关键帧", shift: "反向克隆" }, run: call("cloneKeys") });
-    toolType("reverseKeys", { name: "反转关键帧", cat: "关键帧", icon: "reverseKeys", hint: { title: "反转关键帧", click: "把选中关键帧的时间顺序倒过来" }, run: call("keyTime", { op: "reverse" }) });
 
-    toolType("wiggle", { name: "抖动", cat: "表达式", icon: "wiggle", hint: { title: "抖动 wiggle", click: "添加 wiggle(3, 30)", alt: "同时在图层上加「抖动频率 / 抖动幅度」滑块并关联" }, run: call("wiggle") });
-    toolType("loop", { name: "循环", cat: "表达式", icon: "loop", hint: { title: "循环 loopOut", click: "Cycle：从头循环", alt: "Ping-Pong：来回往返", shift: "Continue：按最后速度延续", ctrl: "Offset：每次循环累加" }, run: call("loop") });
-    toolType("bounce", { name: "弹性", cat: "表达式", icon: "bounce", hint: { title: "弹性", click: "在关键帧后产生惯性回弹", alt: "更强的回弹" }, run: call("bounce") });
-    toolType("clearExpr", { name: "清除表达式", cat: "表达式", icon: "clear", hint: { title: "清除表达式", click: "清除选中属性上的表达式", alt: "清除选中图层上的全部表达式" }, run: call("clearExpr") });
 
     toolType("dupComp", { name: "复制合成", cat: "合成 · 颜色", icon: "dupComp", hint: { title: "复制合成并更新表达式", click: "复制选中合成，并把表达式里对原合成名的引用改成新名字", alt: "复制后直接打开新合成" }, run: call("dupComp") });
     // 新建图层（单个按钮版，也可以用整行的「新建图层」组件）
@@ -495,14 +614,10 @@
         ["text", "textLayer", "文字"], ["shape", "shapeLayer", "形状"], ["solid", "solid", "纯色"], ["adjust", "adjust", "调整图层"],
         ["null", "nullLayer", "空对象"], ["camera", "camera", "摄像机"], ["light", "light", "灯光"]
     ];
-    toolType("textLayer", { name: "文字图层", cat: "新建", icon: "textLayer", hint: { title: "文字图层", click: "在合成中心新建文字图层" }, run: call("addLayer", { kind: "text" }) });
-    toolType("shapeLayer", { name: "形状图层", cat: "新建", icon: "shapeLayer", hint: { title: "形状图层", click: "新建带矩形和填充的形状图层" }, run: call("addLayer", { kind: "shape" }) });
-    toolType("light", { name: "灯光", cat: "新建", icon: "light", hint: { title: "灯光", click: "新建灯光" }, run: call("addLayer", { kind: "light" }) });
 
     toolType("decompose", { name: "解散预合成", cat: "图层", icon: "decompose", hint: { title: "解散预合成", click: "把预合成里的图层放回当前合成，画面位置保持不变", alt: "同时删除项目里不再使用的原合成", note: "预合成图层自己有变换时，会用一个空对象接住它" }, run: call("decompose") });
     toolType("dupPrecomp", { name: "复制预合成（独立）", cat: "图层", icon: "dupPrecomp", hint: { title: "复制预合成（独立副本）", click: "复制图层，并换成一份独立的合成副本，改副本不会影响原来的", alt: "连里面嵌套的预合成也一起独立复制", shift: "不新建图层，直接把当前图层换成独立副本" }, run: call("dupPrecomp") });
     toolType("smartRename", { name: "智能重命名", cat: "图层", icon: "smartRename", hint: { title: "智能重命名", click: "按图层内容自动起名：文字用文字内容，素材用文件名，调整层用第一个效果名", alt: "重命名合成里的全部图层", shift: "名字前加上类型，例如 [文字] 标题" }, run: call("smartRename") });
-    toolType("chain", { name: "首尾相接", cat: "图层", icon: "chain", hint: { title: "首尾相接", click: "按选择顺序把图层一个接一个排开", alt: "从播放头开始排", shift: "倒序" }, run: call("chain", { gap: 0 }) });
 
     toolType("studio", {
         name: "打开 Studio", cat: "新建", icon: "widgets", w: 3,
@@ -783,29 +898,79 @@
     });
 
     // —— 智能组件：依次排列 Num / Step ——
-    reg("seq", {
-        name: "依次排列", cat: "智能组件", icon: "seqForward", desc: "Num 个一组、Step 帧间隔，四种顺序", size: "full",
+    // —— 智能组件：时间排列（错开 / 首尾相接 / 跟节拍）——
+    var ARRANGE_MODES = [["stagger", "错开"], ["chain", "首尾相接"], ["beat", "跟节拍"]];
+    reg("arrange", {
+        name: "时间排列", cat: "智能组件", icon: "seqForward", desc: "错开（Num / Step、四种顺序）、首尾相接、跟着音乐节拍排列图层", size: "full",
         render: function (cell, item) {
-            var w = widgetBox(cell, "SEQUENCE · 依次排列");
-            var r1 = row(w);
-            r1.appendChild(el("span", "unit", "NUM"));
-            var num = numInput(item.num || 1, function (n) { item.num = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.num; saveConfig(); });
-            r1.appendChild(num);
-            r1.appendChild(el("span", "unit", "STEP"));
-            var step = numInput(item.step === undefined ? 2 : item.step, function (n) { item.step = Math.max(0, parseInt(n.value, 10) || 0); n.value = item.step; saveConfig(); });
-            r1.appendChild(step);
-            r1.appendChild(el("span", "unit", "帧"));
-            bindHint(num, { title: "Num", click: "每组几个图层同时出现" });
-            bindHint(step, { title: "Step", click: "组与组之间错开的帧数" });
-            var r2 = row(w);
-            [["forward", "seqForward", "正序"], ["reverse", "seqReverse", "倒序"], ["center", "seqCenter", "从中间向两边"], ["random", "seqRandom", "随机"]].forEach(function (o, i) {
-                var t = tile({
-                    icon: o[1], filled: i === 0, hint: { title: "依次排列 · " + o[2], click: "按" + o[2] + "错开选中图层", note: "顺序以你选择图层的先后为准" },
-                    needs: NEEDS.sequence, run: function (m) { return host("sequence", { order: o[0], num: item.num || 1, step: item.step === undefined ? 2 : item.step, mods: m }); }
-                });
-                t.classList.add("grow");
-                r2.appendChild(t);
+            var mode = item.mode || "stagger";
+            var w = widgetBox(cell, "ARRANGE · 时间排列", "按选择顺序");
+            var chips = el("div", "chips");
+            ARRANGE_MODES.forEach(function (md) {
+                var c = el("button", "chip" + (md[0] === mode ? " on" : ""), esc(md[1]));
+                c.addEventListener("click", function () { if (editing) return; item.mode = md[0]; saveConfig(); renderLayout(); });
+                bindHint(c, { title: "排列方式 · " + md[1], click: md[0] === "stagger" ? "每组 Num 个图层，组与组之间错开 Step 帧" : md[0] === "chain" ? "一个接一个排开，前一个的出点就是后一个的入点" : "用「音乐节拍」组件分析出的节拍，每隔 N 拍放一个图层" });
+                chips.appendChild(c);
             });
+            w.appendChild(chips);
+            if (mode === "stagger") {
+                var r1 = row(w);
+                r1.appendChild(el("span", "unit", "NUM"));
+                var num = numInput(item.num || 1, function (n) { item.num = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.num; saveConfig(); });
+                r1.appendChild(num);
+                r1.appendChild(el("span", "unit", "STEP"));
+                var step = numInput(item.step === undefined ? 2 : item.step, function (n) { item.step = Math.max(0, parseInt(n.value, 10) || 0); n.value = item.step; saveConfig(); });
+                r1.appendChild(step);
+                r1.appendChild(el("span", "unit", "帧"));
+                bindHint(num, { title: "Num", click: "每组几个图层同时出现" });
+                bindHint(step, { title: "Step", click: "组与组之间错开的帧数" });
+                var r2 = row(w);
+                [["forward", "seqForward", "正序"], ["reverse", "seqReverse", "倒序"], ["center", "seqCenter", "从中间向两边"], ["random", "seqRandom", "随机"]].forEach(function (o, i) {
+                    var t = tile({
+                        icon: o[1], filled: i === 0, tool: "sequence", hint: { title: "错开 · " + o[2], click: "按" + o[2] + "错开选中图层", note: "顺序以你选择图层的先后为准" },
+                        needs: NEEDS.sequence, run: function (m) { return host("sequence", { order: o[0], num: item.num || 1, step: item.step === undefined ? 2 : item.step, mods: m }); }
+                    });
+                    t.classList.add("grow");
+                    r2.appendChild(t);
+                });
+            } else if (mode === "chain") {
+                var rc = row(w);
+                rc.appendChild(el("span", "unit", "间隔"));
+                var gap = numInput(item.gap || 0, function (n) { item.gap = Math.max(0, parseInt(n.value, 10) || 0); n.value = item.gap; saveConfig(); });
+                bindHint(gap, { title: "间隔", click: "相邻两个图层之间空出几帧，0 表示紧挨着" });
+                rc.appendChild(gap);
+                rc.appendChild(el("span", "unit", "帧"));
+                rc.appendChild(tile({
+                    icon: "chain", label: "首尾相接", left: false, cls: "grow", filled: true, tool: "chain",
+                    hint: { title: "首尾相接", click: "按选择顺序把图层一个接一个排开", alt: "从播放头开始排", shift: "倒序" },
+                    needs: NEEDS.chain, run: function (m) { return host("chain", { gap: item.gap || 0, mods: m }); }
+                }));
+            } else {
+                var rb = row(w);
+                if (!beat.info) {
+                    rb.appendChild(tile({
+                        icon: "beat", label: "先在「音乐节拍」里载入音频", left: false, cls: "grow", tool: "beatArrangeHint",
+                        hint: { title: "跟节拍", click: "这个模式用「音乐节拍」组件分析出的节拍。先在那里选中音频图层并载入", note: "面板里没有「音乐节拍」组件时，从组件库添加" },
+                        run: function () {
+                            var beatCell = null;
+                            $$(".cell", layoutEl).forEach(function (c) { if (!beatCell && /BEAT · 音乐节拍/.test(c.textContent)) beatCell = c; });
+                            if (beatCell) { beatCell.scrollIntoView({ block: "center" }); beatCell.classList.add("flash-cell"); setTimeout(function () { beatCell.classList.remove("flash-cell"); }, 900); }
+                            return { ok: false, msg: beatCell ? "先在「音乐节拍」组件里选中音频图层，点「载入」" : "先从组件库添加「音乐节拍」组件并载入音频，再回来按节拍排列" };
+                        }
+                    }));
+                } else {
+                    rb.appendChild(el("span", "unit", "每"));
+                    var every = numInput(item.every || 1, function (n) { item.every = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.every; saveConfig(); });
+                    bindHint(every, { title: "每几拍", click: "每个图层占几拍" });
+                    rb.appendChild(every);
+                    rb.appendChild(el("span", "unit", "拍"));
+                    rb.appendChild(tile({
+                        icon: "seqForward", label: "按节拍排列", left: false, cls: "grow", filled: true, tool: "beatLayers",
+                        hint: { title: "按节拍排列 · " + beat.info.name, click: "按选择顺序，从播放头后的第一拍开始，每隔 N 拍放一个图层", alt: "同时把每个图层的出点剪到下一个位置（卡点剪辑）" },
+                        needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: beat.times.map(fileToComp), mode: "sequence", every: item.every || 1, mods: m }); }
+                    }));
+                }
+            }
         }
     });
 
@@ -815,7 +980,9 @@
         render: function (cell) {
             var r = el("div", "w-row create-row");
             CREATE.forEach(function (c) {
-                var t = tile({ icon: c[1], hint: { title: "新建" + c[2], click: "在选中图层上方新建" + c[2] }, run: call("addLayer", { kind: c[0] }) });
+                var t = c[0] === "null"
+                    ? tile({ icon: c[1], tool: "nullLayer", hint: { title: "新建空对象", click: "在选中图层上方新建空对象", alt: "放到选中图层中心，并设为它们的父级" }, run: call("nullLayer") })
+                    : tile({ icon: c[1], tool: "addLayer:" + c[0], hint: { title: "新建" + c[2], click: "在选中图层上方新建" + c[2] }, run: call("addLayer", { kind: c[0] }) });
                 t.classList.add("grow");
                 r.appendChild(t);
             });
@@ -905,7 +1072,7 @@
     }
 
     reg("beat", {
-        name: "音乐节拍", cat: "智能组件", icon: "beat", desc: "分析音频节拍：加标记、吸附图层、按节拍排列", size: "full",
+        name: "音乐节拍", cat: "智能组件", icon: "beat", desc: "分析音频节拍：加标记、把图层吸附到节拍（按节拍排列在「时间排列」组件里）", size: "full",
         render: function (cell, item) {
             var w = widgetBox(cell, "BEAT · 音乐节拍", beat.times.length ? beat.times.length + " 拍" + (beat.bpm ? " · " + beat.bpm + " BPM" : "") : "");
             if (!beat.info) {
@@ -947,11 +1114,6 @@
             r2.appendChild(tile({ icon: "trash", hint: { title: "清除标记", click: "清除音频图层上的全部标记", alt: "清除合成上的全部标记" }, needs: NEEDS.clearMarkers, run: function (m) { return host("clearMarkers", { index: beat.info.index, target: m.alt ? "comp" : "layer" }); } }));
             r2.appendChild(tile({ icon: "snap", hint: { title: "吸附到节拍", click: "把选中图层的入点吸附到最近的节拍" }, needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "snap", mods: m }); } }));
             r2.appendChild(el("span", "sp"));
-            var every = numInput(item.every || 1, function (n) { item.every = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.every; saveConfig(); });
-            bindHint(every, { title: "每几拍", click: "按节拍排列时，每个图层占几拍" });
-            r2.appendChild(every);
-            r2.appendChild(el("span", "unit", "拍"));
-            r2.appendChild(tile({ icon: "seqForward", hint: { title: "按节拍排列", click: "按选择顺序，从播放头后的第一拍开始，每隔 N 拍放一个图层", alt: "同时把每个图层的出点剪到下一个位置（卡点剪辑）" }, needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: times(), mode: "sequence", every: item.every || 1, mods: m }); } }));
             r2.appendChild(tile({ icon: "close", hint: { title: "卸载音频", click: "换用另一个音频图层" }, run: function () { stopPlay(); beat.info = null; beat.times = []; renderLayout(); return null; } }));
         }
     });
@@ -1231,9 +1393,10 @@
             var name = s ? s.name : "（已删除的片段）";
             cell.appendChild(tile({
                 icon: s && s.kind === "expr" ? "exprSnippet" : "codeSnippet", label: name, cls: "script", filled: !!item.color,
-                needs: s && s.kind === "expr" ? NEEDS.applyExpr : "",
+                needs: snippetNeeds(s), tool: s && s.builtin ? s.id : undefined,
                 hint: function () {
                     if (!s) return { title: name };
+                    if (s.builtin) return { title: name + " · 内置" + (s.kind === "expr" ? "表达式" : "脚本"), click: s.hint.click, alt: s.hint.alt, shift: s.hint.shift, ctrl: s.hint.ctrl, note: "内置片段：可以在「脚本库 → 代码片段」里隐藏" };
                     return s.kind === "expr"
                         ? { title: name + " · 表达式", click: "应用到选中属性", alt: "追加到已有表达式后面", note: s.code.split("\n")[0] }
                         : { title: name + " · 脚本", click: "执行", note: s.code.split("\n")[0] };
@@ -1376,7 +1539,7 @@
             var list = el("div", "cat-list");
             Object.keys(W).forEach(function (type) {
                 var d = W[type];
-                if (d.cat !== cat) return;
+                if (d.cat !== cat || d.more) return;
                 list.appendChild(item(d.icon, d.name, d.desc, sizeLabel(d.size), function () {
                     addItem(type === "heading" ? { type: type, en: "SECTION", zh: "新分组" } : { type: type });
                 }));
@@ -1390,10 +1553,20 @@
         if (!lib.items.length) sl.appendChild(el("div", "muted", "脚本库是空的，可以在「脚本库」页添加"));
         nodes.push(el("div", "cat-title", "我的脚本"), sl);
         var cl = el("div", "cat-list");
-        snippets.forEach(function (s) {
-            cl.appendChild(item(s.kind === "expr" ? "exprSnippet" : "codeSnippet", s.name, s.kind === "expr" ? "表达式" : "脚本", "3×1", function () { addItem({ type: "snippet", sid: s.id }); }));
+        visibleSnippets().forEach(function (s) {
+            cl.appendChild(item(s.kind === "expr" ? "exprSnippet" : "codeSnippet", s.name, (s.builtin ? "内置 · " : "") + (s.kind === "expr" ? "表达式" : "脚本"), "3×1", function () { addItem({ type: "snippet", sid: s.id }); }));
         });
         nodes.push(el("div", "cat-title", "代码片段"), cl);
+        // 更多：复刻 AE 原生快捷键的小工具，默认不放在面板上
+        var more = el("details", "cat-more"), ml = el("div", "cat-list");
+        more.appendChild(el("summary", "cat-title", "更多（AE 自带快捷键能做的小工具）"));
+        Object.keys(W).forEach(function (type) {
+            var d = W[type];
+            if (!d.more) return;
+            ml.appendChild(item(d.icon, d.name, d.desc, sizeLabel(d.size), function () { addItem({ type: type }); }));
+        });
+        more.appendChild(ml);
+        nodes.push(more);
         dialog("(+) — ADD TO PANEL " + PANEL, nodes, [{ label: "关闭", value: function () { return null; } }]);
     }
 
@@ -1602,7 +1775,40 @@
         { kind: "script", name: "切换 3D 图层", code: "var c = app.project.activeItem;\nif (c instanceof CompItem) {\n    var l = c.selectedLayers;\n    for (var i = 0; i < l.length; i++) l[i].threeDLayer = !l[i].threeDLayer;\n}" }
     ];
 
-    function snippetById(id) { for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return snippets[i]; return null; }
+    // 内置片段：原来的抖动 / 循环 / 弹性 / 清除表达式按钮。直接调用后台工具，修饰键行为和以前完全一样；可以隐藏，不能删除
+    var BUILTIN_SNIPPETS = [
+        { id: "builtin:wiggle", kind: "expr", name: "抖动 wiggle", tool: "wiggle", code: "wiggle(3, 30);",
+            hint: { click: "给选中属性加 wiggle(3, 30)", alt: "同时在图层上加「抖动频率 / 抖动幅度」滑块并关联" } },
+        { id: "builtin:loop", kind: "expr", name: "循环 loopOut", tool: "loop", code: "loopOut(\"cycle\");",
+            hint: { click: "Cycle：从头循环", alt: "Ping-Pong：来回往返", shift: "Continue：按最后速度延续", ctrl: "Offset：每次循环累加" } },
+        { id: "builtin:bounce", kind: "expr", name: "弹性回弹", tool: "bounce", code: "// 在最后一个关键帧之后产生惯性回弹",
+            hint: { click: "在关键帧后产生惯性回弹", alt: "更强的回弹" } },
+        { id: "builtin:clearExpr", kind: "expr", name: "清除表达式", tool: "clearExpr", code: "// 清除选中属性上的表达式",
+            hint: { click: "清除选中属性上的表达式", alt: "清除选中图层上的全部表达式" } },
+        { id: "builtin:wiggleSliders", kind: "script", name: "抖动 + 滑块控制", tool: "wiggle", mods: { alt: true }, code: "// 给选中属性加 wiggle，并在图层上加「抖动频率 / 抖动幅度」滑块关联",
+            hint: { click: "给选中属性加 wiggle，并在图层上加两个滑块控制频率和幅度" } }
+    ];
+    var snipPrefs = { hidden: [] };
+    function isHiddenBuiltin(s) { return !!s.builtin && snipPrefs.hidden.indexOf(s.id) !== -1; }
+    BUILTIN_SNIPPETS.forEach(function (b) { b.builtin = true; });
+    // 搜索、组件库里能看到的片段：没隐藏的内置片段 + 自己的片段
+    function visibleSnippets() { return BUILTIN_SNIPPETS.filter(function (b) { return !isHiddenBuiltin(b); }).concat(snippets); }
+    function saveSnipPrefs() { local.set("snipPrefs", snipPrefs); host("saveConfig", { name: "snippet_prefs", text: JSON.stringify(snipPrefs) }); }
+    function loadSnipPrefs() {
+        return host("loadConfig", { name: "snippet_prefs" }).then(function (r) {
+            var p = null;
+            try { if (r.ok && r.data && r.data.text) p = JSON.parse(r.data.text); } catch (e) {}
+            snipPrefs = p || local.get("snipPrefs", null) || { hidden: [] };
+            if (!snipPrefs.hidden) snipPrefs.hidden = [];
+        });
+    }
+    function snippetNeeds(s) { return !s ? "" : s.tool ? (NEEDS[s.tool] || "") : s.kind === "expr" ? NEEDS.applyExpr : ""; }
+
+    function snippetById(id) {
+        for (var b = 0; b < BUILTIN_SNIPPETS.length; b++) if (BUILTIN_SNIPPETS[b].id === id) return BUILTIN_SNIPPETS[b];
+        for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return snippets[i];
+        return null;
+    }
     // 没从磁盘读到片段时（后台没连上 / 文件损坏）只存本机缓存，不覆盖磁盘上的文件
     function saveSnippets() {
         local.set("snippets", snippets);
@@ -1629,6 +1835,12 @@
         });
     }
     function runSnippet(s, m) {
+        if (s.tool) {
+            var mm = {}, k;
+            for (k in m || {}) mm[k] = m[k];
+            for (k in s.mods || {}) mm[k] = s.mods[k];
+            return host(s.tool, { mods: mm });
+        }
         return s.kind === "expr" ? host("applyExpr", { code: s.code, name: s.name, mods: m }) : host("runCode", { code: s.code, name: s.name, mods: m });
     }
 
@@ -1673,12 +1885,33 @@
             box.appendChild(head);
             var ul = el("ul", "lib-list");
             ul.style.borderTop = "0";
-            var list = snippets.filter(function (s) { return s.kind === g[0]; });
-            if (!list.length) ul.appendChild(el("li", "lib-empty", "还没有片段，点右边的 ＋ 新建"));
+            var mine = snippets.filter(function (s) { return s.kind === g[0]; });
+            var list = BUILTIN_SNIPPETS.filter(function (s) { return s.kind === g[0]; }).concat(mine);
             list.forEach(function (s) {
-                var li = el("li", "lib-item");
-                li.innerHTML = '<div style="min-width:0"><div class="nm">' + esc(s.name) + '</div><div class="ds mono">' + esc(s.code.split("\n")[0]) + "</div></div>";
+                var hidden = isHiddenBuiltin(s);
+                var li = el("li", "lib-item" + (hidden ? " is-hidden" : ""));
+                li.innerHTML = '<div style="min-width:0"><div class="nm">' + esc(s.name) + '</div><div class="ds mono">' + esc(s.code.split("\n")[0]) + "</div></div>" +
+                    (s.builtin ? '<span class="tag">' + (hidden ? "已隐藏" : "内置") + "</span>" : "");
                 var acts = el("div", "acts");
+                if (s.builtin) {
+                    act(acts, hidden ? "refresh" : "close", "", { title: hidden ? "恢复显示" : "隐藏这个内置片段", click: hidden ? "重新出现在命令搜索和组件库里" : "不再出现在命令搜索和组件库里（已经放在面板上的不受影响）" }, function () {
+                        var i = snipPrefs.hidden.indexOf(s.id);
+                        if (i === -1) snipPrefs.hidden.push(s.id); else snipPrefs.hidden.splice(i, 1);
+                        saveSnipPrefs(); renderSnippets();
+                        return { ok: true, msg: (i === -1 ? "已隐藏「" : "已恢复「") + s.name + "」" };
+                    });
+                    var hereB = onPanel("snippet", "sid", s.id);
+                    act(acts, hereB ? "close" : "pin", "", { title: hereB ? "从当前面板移除" : "放到当前面板" }, function () {
+                        var added = togglePanel("snippet", "sid", s.id);
+                        renderSnippets();
+                        return { ok: true, msg: added ? "已放到当前面板" : "已从当前面板移除" };
+                    });
+                    act(acts, "play", "run", { title: s.name, click: s.hint.click, alt: s.hint.alt, shift: s.hint.shift, ctrl: s.hint.ctrl }, function (m) { return runSnippet(s, m); });
+                    li.appendChild(acts);
+                    li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return runSnippet(s, {}); }); });
+                    ul.appendChild(li);
+                    return;
+                }
                 var here = onPanel("snippet", "sid", s.id);
                 act(acts, here ? "close" : "pin", "", { title: here ? "从当前面板移除" : "放到当前面板" }, function () {
                     var added = togglePanel("snippet", "sid", s.id);
@@ -1698,6 +1931,7 @@
                 li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return runSnippet(s, {}); }); });
                 ul.appendChild(li);
             });
+            if (!mine.length) ul.appendChild(el("li", "lib-empty", "还没有自己的片段，点右边的 ＋ 新建"));
             box.appendChild(ul);
         });
     }
@@ -1760,6 +1994,51 @@
     $("#set-recheck").addEventListener("click", function () { act0(this, selfCheck); });
     bindHint($("#set-recheck"), { title: "自检", click: "逐项检查：后台连接、前后端版本、AE 版本、写入权限、脚本库文件夹、Node、本地字体" });
 
+    // 使用统计：4 个面板各存一份，这里汇总
+    function loadUsage() {
+        return B.host("loadConfig", { name: "usage_panel" + PANEL }).then(function (r) {
+            var u = null;
+            try { if (r.ok && r.data && r.data.text) u = JSON.parse(r.data.text); } catch (e) {}
+            var mine = u || local.get("usage" + PANEL, {}) || {};
+            for (var k in mine) usage[k] = (usage[k] || 0) + mine[k];   // 启动前已经点过的也算上
+        });
+    }
+    function renderUsage() {
+        var box = $("#set-usage");
+        return Promise.all([1, 2, 3, 4].map(function (n) {
+            if (n === PANEL) return Promise.resolve(usage);
+            return B.host("loadConfig", { name: "usage_panel" + n }).then(function (r) {
+                try { return r.ok && r.data && r.data.text ? JSON.parse(r.data.text) : {}; } catch (e) { return {}; }
+            });
+        })).then(function (all) {
+            var total = {}, sum = 0;
+            all.forEach(function (u) { for (var k in u) if (USAGE_LABEL[k]) { total[k] = (total[k] || 0) + u[k]; sum += u[k]; } });
+            var used = Object.keys(total).sort(function (a, b) { return total[b] - total[a]; });
+            var never = Object.keys(USAGE_LABEL).filter(function (k) { return !total[k]; });
+            box.innerHTML = "";
+            if (!sum) { box.appendChild(el("p", "muted", "还没有记录。用一阵子再来看：最常用的工具会排在前面，从没用过的会列在下面。")); return; }
+            box.appendChild(el("div", "usage-h", "最常用 · 4 个面板合计 " + sum + " 次"));
+            var ol = el("ol", "usage-top");
+            used.slice(0, 8).forEach(function (k) {
+                ol.appendChild(el("li", "", '<span class="nm">' + esc(USAGE_LABEL[k]) + '</span><span class="bar"><i style="width:' + Math.round(total[k] / total[used[0]] * 100) + '%"></i></span><span class="n mono">' + total[k] + "</span>"));
+            });
+            box.appendChild(ol);
+            box.appendChild(el("div", "usage-h", "从没用过 · " + never.length + " 个"));
+            box.appendChild(el("p", "usage-never", never.map(function (k) { return esc(USAGE_LABEL[k]); }).join("、") || "全部都用过"));
+        });
+    }
+    $("#set-usage-reset").addEventListener("click", function () {
+        act0(this, function () {
+            return confirmBox("(−) — RESET USAGE", "清空这个面板的使用统计？其他面板的不受影响。").then(function (ok) {
+                if (!ok) return null;
+                usage = {};
+                local.set("usage" + PANEL, usage);
+                return B.host("saveConfig", { name: "usage_panel" + PANEL, text: "{}" }).then(renderUsage).then(function () { return { ok: true, msg: "已清空这个面板的使用统计" }; });
+            });
+        });
+    });
+    bindHint($("#set-usage-reset"), { title: "清空统计", click: "只清空当前面板的计数" });
+
     // 自检：每一项独立判断，失败的写明怎么解决
     function fontLoaded(spec) {
         if (!document.fonts || !document.fonts.load) return Promise.resolve(false);
@@ -1821,12 +2100,20 @@
             var d = W[type];
             if (d.run) list.push({ icon: d.icon, name: d.name, sub: d.cat, run: d.run });
         });
-        CREATE.forEach(function (c) { list.push({ icon: c[1], name: "新建" + c[2], sub: "新建", run: call("addLayer", { kind: c[0] }) }); });
+        CREATE.forEach(function (c) { if (c[0] !== "null") list.push({ icon: c[1], name: "新建" + c[2], sub: "新建", run: call("addLayer", { kind: c[0] }) }); });
+        [["easeBoth", "缓入缓出", function (m) { return host("ease", { mode: "both", inInfl: 33, outInfl: 33, mods: m }); }],
+         ["linear", "线性关键帧", function (m) { return host("ease", { mode: "linear", mods: m }); }],
+         ["hold", "定格关键帧", function (m) { return host("ease", { mode: "hold", mods: m }); }],
+         ["cloneKeys", "克隆关键帧", call("cloneKeys")], ["reverseKeys", "反转关键帧", call("keyTime", { op: "reverse" })],
+         ["chain", "首尾相接", call("chain", { gap: 0 })], ["seqForward", "错开排列（正序）", call("sequence", { order: "forward", num: 1, step: 2 })],
+         ["nullLayer", "新建空对象", call("nullLayer")]].forEach(function (x) {
+            list.push({ icon: x[0], name: x[1], sub: "关键帧 · 排列", run: x[2] });
+        });
         list.push({ icon: "copyKeys", name: "复制关键帧", sub: "关键帧", run: call("copyKeys") });
         list.push({ icon: "pasteKeys", name: "粘贴关键帧", sub: "关键帧", run: call("pasteKeys") });
         list.push({ icon: "styleCopy", name: "复制样式", sub: "样式", run: call("styleCopy") });
         lib.items.forEach(function (it) { list.push({ icon: it.ext === "ffx" ? "preset" : "script", name: it.name, sub: "脚本 · " + it.cat, run: function () { return host("run", { path: it.path }); } }); });
-        snippets.forEach(function (s) { list.push({ icon: s.kind === "expr" ? "exprSnippet" : "codeSnippet", name: s.name, sub: s.kind === "expr" ? "表达式片段" : "脚本片段", run: function (m) { return runSnippet(s, m); } }); });
+        visibleSnippets().forEach(function (s) { list.push({ icon: s.kind === "expr" ? "exprSnippet" : "codeSnippet", name: s.name, sub: (s.builtin ? "内置" : "") + (s.kind === "expr" ? "表达式片段" : "脚本片段"), run: function (m) { return runSnippet(s, m); } }); });
         list.push({ icon: "pencil", name: "编辑布局", sub: "面板", run: function () { setEditing(true); return null; } });
         list.push({ icon: "plus", name: "添加组件", sub: "面板", run: function () { openCatalog(); return null; } });
         return list;
@@ -1880,6 +2167,7 @@
         $$(".tab").forEach(function (t) { t.classList.toggle("on", t.dataset.tab === name); });
         $$(".page").forEach(function (p) { p.classList.toggle("on", p.id === "page-" + name); });
         local.set("tab" + PANEL, name);
+        if (name === "settings" && typeof renderUsage === "function") renderUsage();
         if (name !== "panel" && editing) setEditing(false);
     }
     $$(".tab").forEach(function (t) { t.addEventListener("click", function () { selectTab(t.dataset.tab); }); });
@@ -2067,16 +2355,20 @@
             });
             return Promise.all([
                 seed.then(function () { return step("读取脚本库", refreshLibrary); }),
-                step("读取代码片段", loadSnippets),
-                step("读取曲线预设", function () { return loadCurves().then(renderLayout); })
+                step("读取代码片段", function () { return loadSnipPrefs().then(loadSnippets); }),
+                step("读取曲线预设", function () { return loadCurves().then(renderLayout); }),
+                step("读取使用统计", loadUsage)
             ]).then(function (rs) {
                 refreshCtx(true);
+                showMigrationNotice();
                 var bad = [initRes].concat(rs).filter(function (r) { return r && r.ok === false; });
                 if (bad.length) toast({ ok: false, msg: bad.map(function (r) { return r.msg; }).join("；") });
                 return bad;
             });
         });
     }
+
+    window.MHDebug = { config: function () { return JSON.parse(JSON.stringify(cfg)); }, types: function () { return Object.keys(W); }, migrate: function (c) { var x = JSON.parse(JSON.stringify(c)); var m = migrateConfig(x); return { cfg: x, moves: m }; } };
 
     B.registerKeys(["cmdK", "esc"]);
     boot();

@@ -1,0 +1,133 @@
+// 迁移测试：把 v3.4.4 的 4 个默认预设（加上 blank 和一个用户自定义布局）当成磁盘上的 panelN.json 载入
+// 断言：没有空格子或「（缺失）」；每个旧按钮都能在新布局里找到位置；颜色和参数保留；只说明一次；第二次载入不再变化
+"use strict";
+const path = require("path");
+const fs = require("fs");
+const { chromium } = require("playwright");
+
+const EXT = path.join(__dirname, "../com.windwings.motionhub");
+const OLD = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/layouts-3.4.4.json"), "utf8"));
+// 和 main.js 里的迁移表一致：旧类型 → 新位置
+const MERGE_TO = {
+    easeBoth: "ease", linear: "ease", hold: "ease", cloneKeys: "keys", reverseKeys: "keys",
+    adjust: "create", solid: "create", camera: "create", textLayer: "create", shapeLayer: "create", light: "create", nullLayer: "create",
+    seq: "arrange", chain: "arrange"
+};
+const TO_SNIPPET = { wiggle: "builtin:wiggle", loop: "builtin:loop", bounce: "builtin:bounce", clearExpr: "builtin:clearExpr" };
+const SINGLE = ["ease", "keys", "create", "arrange"];
+
+let failures = 0;
+function check(name, cond, detail) {
+    console.log((cond ? "  ✓ " : "  ✗ ") + name + (cond ? "" : "：" + (detail || "")));
+    if (!cond) failures++;
+}
+
+async function load(browser, text) {
+    const page = await browser.newPage({ viewport: { width: 320, height: 2400 } });
+    const errors = [];
+    page.on("pageerror", e => errors.push(e.message));
+    const saved = {};
+    await page.exposeFunction("__save", (name, t) => { saved[name] = t; });
+    await page.addInitScript((text) => {
+        try { localStorage.clear(); } catch (e) {}
+        window.__adobe_cep__ = {
+            getExtensionId: () => "com.windwings.motionhub.panel1",
+            getSystemPath: () => "file:///ext",
+            registerKeyEventsInterest() {},
+            evalScript(code, cb) {
+                if (code === "typeof MH") return setTimeout(() => cb("object"), 2);
+                const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
+                const name = m[1], a = JSON.parse(m[2]);
+                let r = { ok: true, msg: "", data: {} };
+                if (name === "init") r.data = { version: "3.7.0", ae: "24.3.0", canWrite: true, os: "mac", libPath: "/lib" };
+                if (name === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
+                if (name === "saveConfig") window.__save(a.name, a.text);
+                if (name === "loadSnippets") r.data = { text: null };
+                if (name === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
+                if (name === "importSamples") r.data = { copied: 0, existing: 2 };
+                if (name === "ctx") r.data = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
+                setTimeout(() => cb(JSON.stringify(r)), 2);
+            }
+        };
+    }, text);
+    await page.goto("file://" + EXT + "/index.html");
+    await page.waitForTimeout(900);
+    const res = await page.evaluate(() => {
+        const modal = document.querySelector("#modal");
+        const dialog = !modal.hidden ? { title: document.querySelector("#dlg-title").textContent, body: document.querySelector("#dlg-body").textContent } : null;
+        const cells = Array.from(document.querySelectorAll("#layout .cell"));
+        return {
+            dialog,
+            cfg: window.MHDebug.config(),
+            types: window.MHDebug.types(),
+            broken: cells.filter(c => c.classList.contains("broken")).length,
+            empty: cells.filter(c => !c.classList.contains("heading") && (!c.children.length || c.offsetHeight < 8)).length,
+            missingText: /（缺失）|（已删除的片段）/.test(document.querySelector("#layout").textContent),
+            cellCount: cells.length
+        };
+    });
+    await page.waitForTimeout(400);   // 等防抖保存
+    await page.close();
+    return Object.assign(res, { errors, saved });
+}
+
+(async () => {
+    const browser = await chromium.launch();
+    for (const key of Object.keys(OLD)) {
+        const old = OLD[key];
+        console.log("布局「" + key + "」：" + old.items.length + " 项");
+        const r = await load(browser, JSON.stringify(old));
+        const items = r.cfg.items;
+        const types = new Set(items.map(i => i.type));
+        const sids = new Set(items.filter(i => i.type === "snippet").map(i => i.sid));
+        const oldTypes = old.items.map(i => i.type);
+        const hadMerged = oldTypes.some(t => MERGE_TO[t] || TO_SNIPPET[t]) || oldTypes.indexOf("beat") !== -1;
+
+        check("迁移后 schema = 2", r.cfg.schema === 2, r.cfg.schema);
+        check("没有页面错误", r.errors.length === 0, r.errors.join(" | "));
+        check("没有空格子、加载失败的组件、「（缺失）」或「（已删除的片段）」", !r.broken && !r.empty && !r.missingText, JSON.stringify({ broken: r.broken, empty: r.empty, missing: r.missingText }));
+        const unknown = items.filter(i => r.types.indexOf(i.type) === -1).map(i => i.type);
+        check("新布局里每个组件类型都已注册", unknown.length === 0, unknown.join(","));
+        // 每个旧按钮都能找到新位置
+        const lost = [];
+        old.items.forEach(it => {
+            const t = it.type;
+            if (MERGE_TO[t]) { if (!types.has(MERGE_TO[t])) lost.push(t + "→" + MERGE_TO[t]); }
+            else if (TO_SNIPPET[t]) { if (!sids.has(TO_SNIPPET[t])) lost.push(t + "→" + TO_SNIPPET[t]); }
+            else if (t === "heading") { /* 迁移后变空的标题会去掉，单独检查 */ }
+            else if (!items.some(n => n.id === it.id && n.type === t)) lost.push(t + "（id " + it.id + "）");
+        });
+        if (oldTypes.indexOf("beat") !== -1 && !types.has("arrange")) lost.push("beat 的「按节拍排列」→ arrange");
+        check("每个旧按钮都能在新布局里找到（" + old.items.filter(i => i.type !== "heading").length + " 个）", lost.length === 0, lost.join("，"));
+        // 合并后的组件不重复
+        const dup = SINGLE.filter(t => items.filter(i => i.type === t).length > Math.max(1, old.items.filter(i => i.type === t).length));
+        check("合并后的组件没有重复", dup.length === 0, dup.join(","));
+        const dupS = Object.values(TO_SNIPPET).filter(s => items.filter(i => i.sid === s).length > 1);
+        check("内置片段没有重复", dupS.length === 0, dupS.join(","));
+        // 标题：不留没有内容的标题（除非用户原来就是空分组）
+        const emptyHeads = items.filter((it, i) => it.type === "heading" && (i === items.length - 1 || items[i + 1].type === "heading"))
+            .filter(h => { const oi = old.items.findIndex(o => o.id === h.id); return oi !== -1 && oi + 1 < old.items.length && old.items[oi + 1].type !== "heading"; });
+        check("迁移没有留下空的分组标题", emptyHeads.length === 0, emptyHeads.map(h => h.en).join(","));
+        // 迁移说明
+        check(hadMerged ? "弹出了一次迁移说明" : "没有需要搬家的按钮，不弹说明", hadMerged ? !!(r.dialog && /按钮搬家/.test(r.dialog.title)) : !r.dialog, JSON.stringify(r.dialog));
+        if (hadMerged) check("迁移结果写回了磁盘", !!r.saved.panel1 && JSON.parse(r.saved.panel1).schema === 2);
+        // 第二次载入：不再迁移、不再说明、内容不变
+        if (r.saved.panel1) {
+            const r2 = await load(browser, r.saved.panel1);
+            check("第二次载入不再弹说明", !r2.dialog, JSON.stringify(r2.dialog));
+            check("第二次载入布局不变", JSON.stringify(r2.cfg.items) === JSON.stringify(JSON.parse(r.saved.panel1).items));
+        }
+        if (key === "custom") {
+            const ease = items.find(i => i.type === "ease"), create = items.find(i => i.type === "create"), arr = items.find(i => i.type === "arrange");
+            check("颜色带到了新组件（缓入缓出 → 缓动，空对象 → 新建图层）", ease && ease.color === "#A8BBD6" && create && create.color === "#FF5900", JSON.stringify({ ease, create }));
+            check("依次排列的 Num / Step 带到了时间排列", arr && arr.mode === "stagger" && arr.num === 2 && arr.step === 4, JSON.stringify(arr));
+            check("关键帧工具原来的参数保留（factor=2）", items.some(i => i.type === "keys" && i.factor === 2));
+            check("剪到工作区 / 运动模糊（默认隐藏的工具）在用户布局里保留", types.has("trim") && types.has("motionBlur"));
+        }
+    }
+    await browser.close();
+
+    // 默认预设本身也要能通过：新建面板时没有任何需要迁移的东西
+    console.log(failures ? "✗ 迁移测试：" + failures + " 项没通过" : "✓ 迁移测试全部通过");
+    process.exit(failures ? 1 : 0);
+})();

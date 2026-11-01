@@ -431,3 +431,23 @@ select { width: 100%; font-family: var(--sans); cursor: pointer; }
 .checks li.bad .mk, .checks li.bad .nm { color: var(--accent); }
 .checks .dt { color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
 .checks .fx { grid-column: 3; color: var(--text); }
+
+/* =====================================================================
+   3.7.0：时间排列、内置片段、组件库「更多」、迁移说明、使用统计
+   ===================================================================== */
+.cell.flash-cell { outline: 1px solid var(--accent); outline-offset: 2px; }
+.lib-item.is-hidden .nm, .lib-item.is-hidden .ds { color: var(--muted); }
+.cat-more { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px; }
+.cat-more summary { cursor: pointer; list-style: none; }
+.cat-more summary::before { content: "+ "; color: var(--accent); }
+.cat-more[open] summary::before { content: "− "; }
+.mig-list { margin: 8px 0; padding-left: 16px; font-size: 12px; line-height: 1.7; }
+.mig-list b { font-weight: 500; color: var(--text); }
+.usage-h { font: 500 10px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 8px 0 4px; }
+.usage-top { list-style: none; margin: 0; padding: 0; }
+.usage-top li { display: grid; grid-template-columns: minmax(0, 1fr) 70px 28px; gap: 8px; align-items: center; font-size: 11px; padding: 3px 0; }
+.usage-top .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.usage-top .bar { height: 4px; background: var(--field); border-radius: 2px; overflow: hidden; }
+.usage-top .bar i { display: block; height: 100%; background: var(--accent); }
+.usage-top .n { text-align: right; color: var(--muted); font-size: 10.5px; }
+.usage-never { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 0 0 8px; }
