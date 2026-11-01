@@ -50,15 +50,15 @@
         applyEffect: "效果收藏", wireframe: "线框叠加", wireClear: "清除线框", wireStyle: "线框颜色", applyExpr: "表达式片段", runCode: "脚本片段",
         wiggle: "抖动", loop: "循环", bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色", run: "运行脚本库里的脚本"
     };
-    var usage = {}, usageTimer = null;
+    var usage = {}, usageTimer = null, usageLoaded = false;
     function bumpUsage(name) {
         usage[name] = (usage[name] || 0) + 1;
+        if (!usageLoaded) return;                 // 磁盘上的历史还没读到：先只记内存，读到后合并再写，不覆盖历史
+        local.set("usage" + PANEL, usage);        // 本机缓存立刻写，关面板也不丢
         clearTimeout(usageTimer);
-        usageTimer = setTimeout(function () {
-            local.set("usage" + PANEL, usage);
-            B.host("saveConfig", { name: "usage_panel" + PANEL, text: JSON.stringify(usage) });
-        }, 2000);
+        usageTimer = setTimeout(saveUsage, 2000);
     }
+    function saveUsage() { B.host("saveConfig", { name: "usage_panel" + PANEL, text: JSON.stringify(usage) }); }
     function host(name, args) {
         if (USAGE_LABEL[name]) bumpUsage(name);
         return B.host(name, args);
@@ -304,13 +304,13 @@
     var PRESETS = {
         main: {
             name: "主面板", items: [
-                H("CREATE", "新建图层"), T("create"), T("studio"),
+                H("PRECOMP · COMP", "预合成 · 合成"), T("decompose"), T("dupPrecomp"), T("dupComp"), T("colors"),
+                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
                 H("KEYFRAME", "曲线 · 关键帧"), T("graph"), T("keys"), T("ease"),
                 H("ANIMATE", "快速动画 · 时间排列"), T("quick"), T("arrange"),
                 H("BEAT", "音乐节拍"), T("beat"),
-                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
-                H("PRECOMP · COMP", "预合成 · 合成"), T("decompose"), T("dupPrecomp"), T("dupComp"), T("colors"),
                 H("WIREFRAME", "线框叠加"), T("wire"),
+                H("CREATE", "新建图层"), T("create"), T("studio"),
                 H("ANCHOR · ALIGN", "锚点 · 对齐"), T("anchor"), T("centerComp"), T("precomp"),
                 T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
                 H("LAYER", "图层"), T("smartRename"), T("reverseLayers"), T("rename"),
@@ -329,12 +329,12 @@
         },
         organize: {
             name: "整理", items: [
-                H("CREATE", "新建图层"), T("create"),
                 H("PRECOMP · COMP", "预合成 · 合成"), T("decompose"), T("dupPrecomp"), T("dupComp"), T("colors"),
+                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects"),
+                H("CREATE", "新建图层"), T("create"),
                 H("ANCHOR", "锚点"), T("anchor"), T("centerComp"), T("precomp"),
                 H("ALIGN", "对齐"), T("alignLeft"), T("alignHCenter"), T("alignRight"), T("alignTop"), T("alignVCenter"), T("alignBottom"), T("distH"), T("distV"),
-                H("LAYER", "图层"), T("smartRename"), T("reverseLayers"), T("rename"),
-                H("STYLE · EFFECTS", "样式 · 效果"), T("style"), T("effects")
+                H("LAYER", "图层"), T("smartRename"), T("reverseLayers"), T("rename")
             ]
         },
         scripts: { name: "我的脚本", items: [H("MY SCRIPTS", "我的脚本"), H("SNIPPETS", "代码片段")] },
@@ -371,6 +371,14 @@
             if (!MERGE_TO[src[i].type]) have[src[i].type] = true;
             if (src[i].type === "snippet") sids[src[i].sid] = true;
         }
+        // 被合并 / 被去重的按钮带着的参数：迁移完补到目标组件上（目标自己已有的参数不覆盖）
+        var carry = {};
+        function keep(k, v) { if (v !== undefined && carry[k] === undefined) carry[k] = v; }
+        for (i = 0; i < src.length; i++) {
+            if (src[i].type === "seq") { keep("num", src[i].num); keep("step", src[i].step); }
+            if (src[i].type === "chain") keep("gap", src[i].gap);
+            if (src[i].type === "beat") keep("every", src[i].every);
+        }
         for (i = 0; i < src.length; i++) {
             var it = src[i], t = it.type, target = MERGE_TO[t], sid = TO_SNIPPET[t];
             if (target) {
@@ -402,6 +410,10 @@
             }
             moves.push({ from: "beatSeq", to: "arrange" });
         } else if (have.beat) moves.push({ from: "beatSeq", to: "arrange" });
+        for (i = 0; i < out.length; i++) if (out[i].type === "arrange") {
+            for (var ck in carry) if (out[i][ck] === undefined) out[i][ck] = carry[ck];
+            break;
+        }
         // 原来有内容、迁移后变空的分组标题一起去掉（用户自己建的空分组不动）
         var hadContent = {}, cur = null;
         for (i = 0; i < src.length; i++) {
@@ -436,6 +448,7 @@
             ul.appendChild(el("li", "", "<b>" + esc(byTo[to].join(" / ")) + "</b> → " + esc(NEW_PLACES[to])));
         });
         migrationNotice = null;
+        local.set("migNotice" + PANEL, SCHEMA);
         dialog("(3.7) — 按钮搬家了", [
             el("p", "", "为了少一些重复的入口，下面这些按钮合并进了对应的组件。你的布局、颜色和设置都保留了，面板上没有出现空格子。"),
             ul,
@@ -460,8 +473,12 @@
         saveTimer = setTimeout(function () {
             var text = JSON.stringify(cfg);
             local.set("panel" + PANEL, cfg);
-            if (cfgSynced) host("saveConfig", { name: "panel" + PANEL, text: text });
-            else cfgDirty = true;   // 没连上磁盘时的改动，恢复连接后推到磁盘
+            if (cfgSynced) {
+                host("saveConfig", { name: "panel" + PANEL, text: text }).then(function (r) {
+                    // 写不进磁盘（比如没开写入权限）：改成「离线改动」，权限打开或重新连上后再写
+                    if (r && !r.ok) { cfgSynced = false; cfgDirty = true; }
+                });
+            } else cfgDirty = true;   // 没连上磁盘时的改动，恢复连接后推到磁盘
         }, 250);
     }
 
@@ -480,7 +497,10 @@
             c.items.forEach(function (it) { if (!it.id) it.id = uid(); });
             var moves = migrateConfig(c);
             cfg = c;
-            if (moves.length) { migrationNotice = moves; saveConfig(); }
+            if (moves.length) {
+                if (local.get("migNotice" + PANEL, 0) < SCHEMA) migrationNotice = moves;
+                saveConfig();
+            }
         });
     }
 
@@ -1544,7 +1564,7 @@
                     addItem(type === "heading" ? { type: type, en: "SECTION", zh: "新分组" } : { type: type });
                 }));
             });
-            nodes.push(el("div", "cat-title", esc(cat)), list);
+            if (list.children.length) nodes.push(el("div", "cat-title", esc(cat)), list);
         });
         var sl = el("div", "cat-list");
         lib.items.forEach(function (it) {
@@ -2000,7 +2020,11 @@
             var u = null;
             try { if (r.ok && r.data && r.data.text) u = JSON.parse(r.data.text); } catch (e) {}
             var mine = u || local.get("usage" + PANEL, {}) || {};
-            for (var k in mine) usage[k] = (usage[k] || 0) + mine[k];   // 启动前已经点过的也算上
+            for (var k in mine) usage[k] = (usage[k] || 0) + mine[k];   // 读到之前已经点过的也算上
+            usageLoaded = true;
+            local.set("usage" + PANEL, usage);
+            saveUsage();
+            if ($("#page-settings").classList.contains("on")) renderUsage();
         });
     }
     function renderUsage() {
@@ -2032,6 +2056,7 @@
             return confirmBox("(−) — RESET USAGE", "清空这个面板的使用统计？其他面板的不受影响。").then(function (ok) {
                 if (!ok) return null;
                 usage = {};
+                usageLoaded = true;
                 local.set("usage" + PANEL, usage);
                 return B.host("saveConfig", { name: "usage_panel" + PANEL, text: "{}" }).then(renderUsage).then(function () { return { ok: true, msg: "已清空这个面板的使用统计" }; });
             });
@@ -2252,7 +2277,7 @@
                         cfgSynced = true; cfgDirty = false;
                     });
                 }
-                return loadConfig().then(function () { applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name; renderLayout(); renderSettings(); });
+                return loadConfig().then(function () { applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name; renderLayout(); renderSettings(); showMigrationNotice(); });
             }));
         }
         if (!snippetsSynced && !snippetsBad) {

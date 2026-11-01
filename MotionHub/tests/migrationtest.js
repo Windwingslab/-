@@ -123,7 +123,84 @@ async function load(browser, text) {
             check("依次排列的 Num / Step 带到了时间排列", arr && arr.mode === "stagger" && arr.num === 2 && arr.step === 4, JSON.stringify(arr));
             check("关键帧工具原来的参数保留（factor=2）", items.some(i => i.type === "keys" && i.factor === 2));
             check("剪到工作区 / 运动模糊（默认隐藏的工具）在用户布局里保留", types.has("trim") && types.has("motionBlur"));
+            check("节拍组件的「每 N 拍」带到了时间排列（every=2）", arr && arr.every === 2, JSON.stringify(arr));
         }
+    }
+    // 审查回归：首尾相接排在依次排列前面时，Num / Step 不丢；已有时间排列时，节拍的 every 也补上
+    {
+        const page = await browser.newPage();
+        await page.addInitScript(() => { window.__adobe_cep__ = { getExtensionId: () => "com.windwings.motionhub.panel1", getSystemPath: () => "", registerKeyEventsInterest() {}, evalScript(c, cb) { cb(c === "typeof MH" ? "object" : JSON.stringify({ ok: true, data: { text: null } })); } }; });
+        await page.goto("file://" + EXT + "/index.html");
+        await page.waitForTimeout(400);
+        const r = await page.evaluate(() => window.MHDebug.migrate({ items: [
+            { id: "a", type: "chain", gap: 3 }, { id: "b", type: "seq", num: 3, step: 5 }, { id: "c", type: "beat", every: 4 }] }));
+        const arr = r.cfg.items.filter(i => i.type === "arrange");
+        console.log("参数合并：");
+        check("只有一个时间排列，保留首尾相接模式，并补上 Num=3 / Step=5 / 间隔=3 / 每 4 拍", arr.length === 1 && arr[0].mode === "chain" && arr[0].num === 3 && arr[0].step === 5 && arr[0].gap === 3 && arr[0].every === 4, JSON.stringify(r.cfg.items));
+        const r2 = await page.evaluate(() => window.MHDebug.migrate({ items: [{ id: "h", type: "heading", en: "EMPTY" }, { id: "h2", type: "heading", en: "X" }, { id: "w", type: "wiggle" }] }));
+        check("用户自己建的空分组保留；迁移后仍有内容的分组保留", r2.cfg.items.length === 3 && r2.cfg.items[0].id === "h", JSON.stringify(r2.cfg.items));
+        await page.close();
+    }
+    // 审查回归：迁移结果写不进磁盘（没开写入权限）时，说明只弹一次
+    {
+        const text = JSON.stringify(OLD.custom);
+        const run = async (ls) => {
+            const page = await browser.newPage();
+            await page.addInitScript(([text, ls]) => {
+                localStorage.clear();
+                for (const k in ls) localStorage.setItem(k, ls[k]);
+                window.__adobe_cep__ = { getExtensionId: () => "com.windwings.motionhub.panel1", getSystemPath: () => "", registerKeyEventsInterest() {},
+                    evalScript(code, cb) {
+                        if (code === "typeof MH") return cb("object");
+                        const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code); const a = JSON.parse(m[2]);
+                        let r = { ok: true, data: {} };
+                        if (m[1] === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
+                        if (m[1] === "saveConfig") r = { ok: false, msg: "无法写入" };
+                        if (m[1] === "init") r.data = { version: "3.7.0", ae: "24", canWrite: false, os: "mac" };
+                        if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
+                        setTimeout(() => cb(JSON.stringify(r)), 2);
+                    } };
+            }, [text, ls]);
+            await page.goto("file://" + EXT + "/index.html");
+            await page.waitForTimeout(900);
+            const shown = await page.evaluate(() => !document.querySelector("#modal").hidden && /按钮搬家/.test(document.querySelector("#dlg-title").textContent));
+            const store = await page.evaluate(() => { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); o[k] = localStorage.getItem(k); } return o; });
+            await page.close();
+            return { shown, store };
+        };
+        const first = await run({});
+        const second = await run(first.store);
+        console.log("写盘失败：");
+        check("第一次启动弹说明，磁盘写不进去时第二次启动不再弹", first.shown && !second.shown, JSON.stringify({ first: first.shown, second: second.shown }));
+    }
+    // 审查回归：使用统计——读到磁盘历史之前点了按钮，不能覆盖历史，也不能重复计数
+    {
+        const page = await browser.newPage({ viewport: { width: 320, height: 1600 } });
+        const saves = [];
+        await page.exposeFunction("__saveUsage", (t) => saves.push(t));
+        await page.addInitScript(() => {
+            localStorage.clear();
+            window.__adobe_cep__ = { getExtensionId: () => "com.windwings.motionhub.panel3", getSystemPath: () => "", registerKeyEventsInterest() {},
+                evalScript(code, cb) {
+                    if (code === "typeof MH") return cb("object");
+                    const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code); const a = JSON.parse(m[2]);
+                    let r = { ok: true, msg: "完成", data: {} }, delay = 2;
+                    if (m[1] === "loadConfig") { r.data = { text: a.name === "usage_panel3" ? JSON.stringify({ anchor: 5 }) : null }; if (a.name === "usage_panel3") delay = 600; }
+                    if (m[1] === "saveConfig" && a.name === "usage_panel3") window.__saveUsage(a.text);
+                    if (m[1] === "init") r.data = { version: "3.7.0", ae: "24", canWrite: true, os: "mac" };
+                    if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
+                    if (m[1] === "ctx") r.data = { comp: "C", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
+                    setTimeout(() => cb(JSON.stringify(r)), delay);
+                } };
+        });
+        await page.goto("file://" + EXT + "/index.html");
+        await page.waitForTimeout(150);
+        await page.click('.anchor-grid .tile >> nth=0');   // 磁盘上的统计还没读到
+        await page.waitForTimeout(3200);
+        const last = saves.length ? JSON.parse(saves[saves.length - 1]) : null;
+        console.log("使用统计：");
+        check("读到历史之前点的一次，和磁盘上的 5 次合并成 6 次（不覆盖、不重复）", last && last.anchor === 6, JSON.stringify(saves));
+        await page.close();
     }
     await browser.close();
 
