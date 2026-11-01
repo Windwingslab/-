@@ -237,7 +237,8 @@
         function why(e) { return (e && (e.code || e.message)) || String(e); }
         function writeText(file, text) {
             if (!ok()) return { ok: false, msg: "这里没有 Node，没法直接写文件" };
-            var tmp = file + ".tmp";
+            // 4 个面板会同时写同一个共享文件（state.json、_snippets.json）：临时文件名各不相同，互不踩踏
+            var tmp = file + "." + ((proc && proc.pid) || 0) + "-" + Math.random().toString(36).slice(2, 8) + ".tmp";
             try {
                 fs.mkdirSync(path.dirname(file), { recursive: true });
                 fs.writeFileSync(tmp, text, "utf8");
