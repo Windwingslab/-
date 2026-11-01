@@ -39,7 +39,7 @@ async function load(browser, text) {
                 const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
                 const name = m[1], a = JSON.parse(m[2]);
                 let r = { ok: true, msg: "", data: {} };
-                if (name === "init") r.data = { version: "3.7.0", ae: "24.3.0", canWrite: true, os: "mac", libPath: "/lib" };
+                if (name === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: true, os: "mac", libPath: "/lib" };
                 if (name === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
                 if (name === "saveConfig") window.__save(a.name, a.text);
                 if (name === "loadSnippets") r.data = { text: null };
@@ -156,7 +156,7 @@ async function load(browser, text) {
                         let r = { ok: true, data: {} };
                         if (m[1] === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
                         if (m[1] === "saveConfig") r = { ok: false, msg: "无法写入" };
-                        if (m[1] === "init") r.data = { version: "3.7.0", ae: "24", canWrite: false, os: "mac" };
+                        if (m[1] === "init") r.data = { version: "3.7.1", ae: "24", canWrite: false, os: "mac" };
                         if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
                         setTimeout(() => cb(JSON.stringify(r)), 2);
                     } };
@@ -187,7 +187,7 @@ async function load(browser, text) {
                     let r = { ok: true, msg: "完成", data: {} }, delay = 2;
                     if (m[1] === "loadConfig") { r.data = { text: a.name === "usage_panel3" ? JSON.stringify({ anchor: 5 }) : null }; if (a.name === "usage_panel3") delay = 600; }
                     if (m[1] === "saveConfig" && a.name === "usage_panel3") window.__saveUsage(a.text);
-                    if (m[1] === "init") r.data = { version: "3.7.0", ae: "24", canWrite: true, os: "mac" };
+                    if (m[1] === "init") r.data = { version: "3.7.1", ae: "24", canWrite: true, os: "mac" };
                     if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
                     if (m[1] === "ctx") r.data = { comp: "C", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
                     setTimeout(() => cb(JSON.stringify(r)), delay);
@@ -201,6 +201,81 @@ async function load(browser, text) {
         console.log("使用统计：");
         check("读到历史之前点的一次，和磁盘上的 5 次合并成 6 次（不覆盖、不重复）", last && last.anchor === 6, JSON.stringify(saves));
         await page.close();
+    }
+    // 3.7.1 H1：没开写入权限 + 清空本机缓存后重新打开，布局还在（ExtendScript 写不进去时改用 Node 直接写盘）
+    {
+        const HOME = "/Users/test", CFG = HOME + "/Library/Application Support/MotionHub/";
+        const run = async (disk, withNode) => {
+            const page = await browser.newPage();
+            const errors = [];
+            page.on("pageerror", e => errors.push(e.message));
+            await page.addInitScript(([disk, withNode, CFG, HOME]) => {
+                localStorage.clear();
+                const mem = window.__mem = Object.assign({}, disk);
+                const err = (code) => { const e = new Error(code); e.code = code; return e; };
+                if (withNode) window.require = (m) => {
+                    if (m === "fs") return {
+                        mkdirSync() {}, existsSync: p => p in mem, unlinkSync: p => { delete mem[p]; },
+                        writeFileSync: (p, t) => { mem[p] = String(t); },
+                        renameSync: (a, b) => { if (!(a in mem)) throw err("ENOENT"); mem[b] = mem[a]; delete mem[a]; },
+                        readFileSync: p => { if (!(p in mem)) throw err("ENOENT"); return mem[p]; }
+                    };
+                    if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: p => p.replace(/\/[^\/]*$/, "") };
+                    if (m === "os") return { homedir: () => HOME };
+                    throw err("MODULE_NOT_FOUND");
+                };
+                window.__hostWrites = 0;
+                window.__adobe_cep__ = { getExtensionId: () => "com.windwings.motionhub.panel1", getSystemPath: () => "", registerKeyEventsInterest() {},
+                    evalScript(code, cb) {
+                        if (code === "typeof MH") return cb("object");
+                        const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code); const a = JSON.parse(m[2]);
+                        let r = { ok: true, msg: "", data: {} };
+                        // ExtendScript 读得到 Node 写的同一个文件；没开写入权限时写不进去
+                        if (m[1] === "loadConfig") r.data = { text: (CFG + a.name + ".json") in mem ? mem[CFG + a.name + ".json"] : null };
+                        if (m[1] === "saveConfig" || m[1] === "saveSnippets") { window.__hostWrites++; r = { ok: false, msg: "无法写入：" + a.name }; }
+                        if (m[1] === "loadSnippets") r.data = { text: null };
+                        if (m[1] === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: false, os: "mac", libPath: "/lib", libReady: true };
+                        if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
+                        if (m[1] === "importSamples") r.data = { copied: 0, existing: 0, skipped: true };
+                        if (m[1] === "ctx") r.data = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
+                        setTimeout(() => cb(JSON.stringify(r)), 2);
+                    } };
+            }, [disk, withNode, CFG, HOME]);
+            await page.goto("file://" + EXT + "/index.html");
+            await page.waitForTimeout(900);
+            return { page, errors };
+        };
+        console.log("无写入权限（H1）：");
+        // 第一次打开：改面板名字 → 等防抖保存
+        const a = await run({}, true);
+        const hostBefore = await a.page.evaluate(() => window.__hostWrites);
+        await a.page.evaluate(() => { const el = document.querySelector("#set-name"); el.value = "我的剪辑面板"; el.dispatchEvent(new Event("change")); });
+        await a.page.waitForTimeout(600);
+        const hostAfter = await a.page.evaluate(() => window.__hostWrites);
+        const disk = await a.page.evaluate(() => window.__mem);
+        const bannerA = await a.page.evaluate(() => document.querySelector("#set-perm") ? document.querySelector("#set-perm").textContent : "");
+        await a.page.close();
+        const saved = disk[CFG + "panel1.json"] ? JSON.parse(disk[CFG + "panel1.json"]) : null;
+        check("写入权限关着：布局用 Node 写进了 userData/MotionHub/panel1.json（先写 .tmp 再改名，没有留下 .tmp）", saved && saved.name === "我的剪辑面板" && !Object.keys(disk).some(k => /\.tmp$/.test(k)), JSON.stringify(Object.keys(disk)));
+        check("「示例已导入」标记也写到了磁盘（state.json）", disk[CFG + "state.json"] && JSON.parse(disk[CFG + "state.json"]).seeded === true, JSON.stringify(disk[CFG + "state.json"]));
+        check("没有页面报错", !a.errors.length, a.errors.join(" | "));
+        // 第二次打开：本机缓存清空了，布局从磁盘读回来
+        const b = await run(disk, true);
+        const nameB = await b.page.evaluate(() => window.MHDebug.config().name);
+        await b.page.close();
+        check("清空本机缓存后重新打开，面板名字和布局还在", nameB === "我的剪辑面板", nameB);
+        check("已知权限关着时，改动直接用 Node 写，不再先去试一次注定失败的 ExtendScript 写入", hostAfter === hostBefore, hostBefore + " → " + hostAfter);
+        // 对照：没有 Node 时（旧行为）同样的操作会丢——说明这条测试确实测到了问题
+        const c = await run({}, false);
+        await c.page.evaluate(() => { const el = document.querySelector("#set-name"); el.value = "我的剪辑面板"; el.dispatchEvent(new Event("change")); });
+        await c.page.waitForTimeout(600);
+        const diskC = await c.page.evaluate(() => window.__mem);
+        await c.page.close();
+        const d = await run(diskC, false);
+        const nameD = await d.page.evaluate(() => window.MHDebug.config().name);
+        await d.page.close();
+        check("对照组（没有 Node）：清空缓存后改动丢失——这正是 H1 要修的问题", nameD !== "我的剪辑面板", nameD);
+        check("设置页的权限说明写明「面板布局和设置照常保存在磁盘上」", /照常保存在磁盘上/.test(bannerA), bannerA);
     }
     await browser.close();
 

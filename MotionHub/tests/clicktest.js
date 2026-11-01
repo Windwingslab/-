@@ -22,10 +22,10 @@ const OUT = path.join(__dirname, "out");
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.7.0", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
         case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
-        case "selfCheck": return ok({ version: "3.7.0", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
+        case "selfCheck": return ok({ version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
         case "scan": return ok({
             items: [
                 { path: "/lib/动画/弹跳.jsx", key: "/动画/弹跳.jsx", name: "弹跳", file: "弹跳.jsx", cat: "动画", ext: "jsx", desc: "测试脚本", author: "", type: "脚本" },
@@ -40,6 +40,14 @@ function fakeHost(name, args, state) {
         case "listEffects": return ok({ effects: [{ match: "ADBE Gaussian Blur 2", name: "高斯模糊", cat: "模糊" }] });
         case "audioInfo": return { ok: false, msg: "先选中一个带声音的图层" };
         case "pickFiles": return ok({ files: [] });
+        // 拖入：弹跳 = 库里有内容不同的同名文件（另存）、对齐 = 内容一样（已在库里）、坏 = 写不进去
+        case "writeDropped": {
+            const n = args.name;
+            if (n === "坏.jsx") return { ok: false, msg: "没能写入「坏.jsx」（磁盘已满）：检查磁盘空间和脚本库文件夹是否可写" };
+            const st = n === "弹跳.jsx" ? "renamed" : n === "对齐.jsx" ? "exists" : "new";
+            const saved = st === "renamed" ? "弹跳 (2).jsx" : n;
+            return ok({ key: "/动画/" + saved, state: st, name: n, savedAs: saved });
+        }
         case "bezierRead": return ok({ bezier: [0.3, 0, 0.2, 1] }, "已读取曲线");
         default: return ok({}, "（测试）" + name + " 完成");
     }
@@ -236,6 +244,25 @@ async function runRegressions(browser) {
     await page.evaluate(() => document.querySelector("#modal").closeWith(null));
     await page.waitForTimeout(100);
     out.push({ name: "对话框开着时不显示「处理中」气泡", ok: st.modal && !st.busyBubble, detail: JSON.stringify(st) });
+
+    // 3.7.1 拖入：说明哪个另存了、哪个已经在库里、哪个没加进去；没加进去的不连累其他文件
+    await page.evaluate(() => {
+        const dt = new DataTransfer();
+        ["弹跳.jsx", "对齐.jsx", "新.jsx", "坏.jsx", "说明.txt"].forEach(n => dt.items.add(new File(["// " + n], n)));
+        document.dispatchEvent(new DragEvent("dragenter", { dataTransfer: dt, bubbles: true }));
+        document.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    });
+    await page.waitForTimeout(200);
+    const dlgOpen = await page.evaluate(() => !document.querySelector("#modal").hidden);
+    await page.click("#dlg-btns .btn.accent");
+    await page.waitForTimeout(700);
+    const dr = await page.evaluate(() => ({
+        hint: document.querySelector(".hint") ? document.querySelector(".hint").textContent : "",
+        bubble: document.querySelector(".fb") && !document.querySelector(".fb").hidden ? document.querySelector(".fb").className + " " + document.querySelector(".fb").textContent : "",
+        keys: window.MHDebug.config().items.filter(i => i.type === "script").map(i => i.key)
+    }));
+    out.push({ name: "拖入：说明另存的新名字、已在库里的个数、没加进去的原因、跳过的非脚本文件", ok: dlgOpen && /已添加 2 个文件/.test(dr.hint) && /新的存为「弹跳 \(2\)\.jsx」/.test(dr.hint) && /1 个已经在库里/.test(dr.hint) && /另有 1 个没加进去：没能写入「坏\.jsx」/.test(dr.hint) && /1 个不是 \.jsx/.test(dr.hint) && /\berr\b/.test(dr.bubble), detail: JSON.stringify(dr) });
+    out.push({ name: "拖入：写不进去的那个不连累其他文件，成功的照常放到当前面板", ok: ["/动画/弹跳 (2).jsx", "/动画/对齐.jsx", "/动画/新.jsx"].every(k => dr.keys.indexOf(k) !== -1) && dr.keys.indexOf("/动画/坏.jsx") === -1, detail: JSON.stringify(dr.keys) });
 
     out.push({ name: "回归场景里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
     await page.close();

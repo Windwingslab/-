@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.7.0";
+    var VERSION = "3.7.1";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -1609,6 +1609,52 @@ var MH = (function () {
     function libPath() { return state.libPath || (Folder.myDocuments.fsName + "/MotionHub/Library"); }
     function libRoot() { return needFolder(new Folder(libPath()), "脚本库文件夹"); }
 
+    // =====================================================================
+    // 不覆盖任何用户文件：同名同内容 → 算已经有了；同名不同内容 → 新的另起名字，两个都保留
+    // =====================================================================
+    function readBinary(f) {
+        var s = null;
+        try {
+            f.encoding = "BINARY";
+            if (f.open("r")) { s = f.read(); f.close(); }
+        } catch (e) { try { f.close(); } catch (e1) {} s = null; }
+        return s;
+    }
+    function sameContent(a, b) {
+        try { if (a.length !== b.length) return false; } catch (e) { return false; }
+        var x = readBinary(a), y = readBinary(b);
+        return x !== null && y !== null && x === y;
+    }
+    // 弹跳.jsx → 弹跳 (2).jsx → 弹跳 (3).jsx …（name 是解码后的文件名）
+    function freeFile(folder, name) {
+        var m = /^(.*?)(\.[^.]*)?$/.exec(name), base = m[1], ext = m[2] || "";
+        var f = new File(folder.fsName + "/" + name), n = 2;
+        while (f.exists) { f = new File(folder.fsName + "/" + base + " (" + n + ")" + ext); n++; }
+        return f;
+    }
+    // 把 src 放进 folder，不覆盖：返回 {file, state}，state = new / exists（内容一样，没复制）/ renamed（另起了名字）
+    function placeInto(src, folder) {
+        var name = File.decode(src.name), dest = new File(folder.fsName + "/" + name);
+        if (dest.fsName === src.fsName) return { file: dest, state: "exists" };
+        if (dest.exists) {
+            if (sameContent(src, dest)) return { file: dest, state: "exists" };
+            dest = freeFile(folder, name);
+            if (!src.copy(dest.fsName)) fail("没能复制「" + name + "」（" + src.error + "）：检查脚本库文件夹是否可写");
+            return { file: dest, state: "renamed", from: name };
+        }
+        if (!src.copy(dest.fsName)) fail("没能复制「" + name + "」（" + src.error + "）：检查脚本库文件夹是否可写");
+        return { file: dest, state: "new" };
+    }
+    // 添加 / 拖入的结果说明
+    function placedMsg(n, renamed, existing) {
+        var msg = n ? "已添加 " + n + " 个文件" : "";
+        var i, parts = [];
+        for (i = 0; i < renamed.length; i++) parts.push("「" + renamed[i].from + "」库里已经有一个内容不同的，新的存为「" + renamed[i].to + "」");
+        if (parts.length) msg += "。" + parts.join("；") + "，两个都保留了";
+        if (existing) msg += (msg ? "。" : "") + existing + " 个已经在库里（内容完全一样），没有重复添加";
+        return msg || "没有添加任何文件：选中的文件都不存在了";
+    }
+
     // 返回 {copied, existing}：真正复制了几个文件、几个已经存在被跳过
     function copyFolder(src, dst, count) {
         count = count || { copied: 0, existing: 0 };
@@ -1705,11 +1751,27 @@ var MH = (function () {
         return { items: out, categories: categories(), libPath: root.fsName };
     };
 
-    LIB.importSamples = function () {
+    // 脚本库里有没有任何脚本 / 预设（和 scanDir 一样跳过 _ 和 . 开头的文件夹）
+    function hasAnyScript(dir, depth) {
+        var items = listFiles(dir);
+        for (var i = 0; i < items.length; i++) {
+            var f = items[i], nm = File.decode(f.name);
+            if (f instanceof Folder) {
+                if (depth < 3 && nm.charAt(0) !== "_" && nm.charAt(0) !== "." && hasAnyScript(f, depth + 1)) return true;
+            } else if (EXT_RE.test(nm)) return true;
+        }
+        return false;
+    }
+
+    // a.auto = 启动时自动导入：脚本库里已经有脚本就不导，用户删掉的示例不会被导回来。
+    // 设置页的「导入示例」不带 auto，照常补齐缺的示例
+    LIB.importSamples = function (a) {
         if (!EXT_ROOT) fail("找不到插件目录");
         var src = new Folder(EXT_ROOT.fsName + "/library_seed");
         if (!src.exists) fail("没有找到示例脚本文件夹");
-        var n = copyFolder(src, libRoot());
+        var root = libRoot();
+        if (a && a.auto && hasAnyScript(root, 0)) return { copied: 0, existing: 0, skipped: true, msg: "脚本库里已经有脚本，没有自动导入示例" };
+        var n = copyFolder(src, root);
         return {
             copied: n.copied, existing: n.existing,
             msg: n.copied ? "已导入 " + n.copied + " 个示例脚本" : (n.existing ? "示例脚本已经在脚本库里了" : "没有导入任何示例脚本：检查脚本库文件夹是否可写")
@@ -1733,22 +1795,26 @@ var MH = (function () {
         var root = libRoot(), target = root;
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
         if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
-        var keys = [], panels = 0;
+        var keys = [], panels = 0, panelSkip = [], renamed = [], existing = 0, added = 0;
         for (var i = 0; i < a.paths.length; i++) {
             var f = new File(a.paths[i]);
             if (!f.exists) continue;
-            var dest = new File(target.fsName + "/" + File.decode(f.name));
-            if (dest.fsName !== f.fsName) {
-                if (dest.exists) dest.remove();
-                if (!f.copy(dest.fsName)) fail("复制失败：" + File.decode(f.name));
-            }
-            keys.push(dest.fsName.substring(root.fsName.length).replace(/\\/g, "/"));
+            var put = placeInto(f, target);
+            if (put.state === "exists") existing++; else added++;
+            if (put.state === "renamed") renamed.push({ from: put.from, to: File.decode(put.file.name) });
+            keys.push(put.file.fsName.substring(root.fsName.length).replace(/\\/g, "/"));
             if (a.toPanels && /\.(jsx|jsxbin)$/i.test(f.name)) {
+                // ScriptUI Panels 里的同名文件可能是用户自己装的别的面板：不覆盖
                 var pf = needFolder(userPanelsFolder(), "ScriptUI Panels 文件夹");
-                if (f.copy(pf.fsName + "/" + File.decode(f.name))) panels++;
+                var pd = new File(pf.fsName + "/" + File.decode(f.name));
+                if (pd.exists && !sameContent(f, pd)) panelSkip.push(File.decode(f.name));
+                else if (pd.exists || f.copy(pd.fsName)) panels++;
             }
         }
-        return { keys: keys, msg: "已添加 " + keys.length + " 个文件" + (a.toPanels ? "，" + panels + " 个已装到 ScriptUI Panels（重启 AE 生效）" : "") };
+        var msg = placedMsg(added, renamed, existing);
+        if (a.toPanels) msg += "。" + panels + " 个已装到 ScriptUI Panels（重启 AE 生效）";
+        if (panelSkip.length) msg += "。ScriptUI Panels 里已经有内容不同的「" + panelSkip.join("」「") + "」，没有覆盖";
+        return { keys: keys, renamed: renamed, existing: existing, msg: msg };
     };
 
     LIB.run = function (a) {
@@ -1756,9 +1822,10 @@ var MH = (function () {
         if (!f.exists) fail("文件不存在，请刷新脚本库");
         if (/\.ffx$/i.test(f.name)) {
             var comp = activeComp(), layers = needLayers(comp, 1);
+            // applyPreset 本身就作用于合成里所有选中的图层：只调用一次，否则 3 个图层会各加 3 份
             app.beginUndoGroup("MotionHub：应用预设");
             try {
-                for (var i = 0; i < layers.length; i++) layers[i].applyPreset(f);
+                layers[0].applyPreset(f);
             } finally {
                 app.endUndoGroup();
             }
@@ -1777,11 +1844,20 @@ var MH = (function () {
     LIB.remove = function (a) {
         var f = new File(a.path);
         if (!f.exists) fail("文件不存在");
-        var trash = needFolder(new Folder(libRoot().fsName + "/_已移除"), "「_已移除」文件夹");
-        var dest = new File(trash.fsName + "/" + File.decode(f.name));
-        if (dest.exists) dest.remove();
-        if (!(f.copy(dest.fsName) && f.remove())) fail("移除失败：" + f.error);
-        return "已移到 _已移除 文件夹";
+        var root = libRoot(), trashPath = root.fsName + "/_已移除", where = "_已移除";
+        // 原来在哪个分类，就放进 _已移除 里的同名子文件夹，方便找回
+        var rel = f.parent.fsName.substring(root.fsName.length).replace(/\\/g, "/").replace(/^\/+/, "");
+        var cat = rel.split("/")[0];
+        if (cat) { trashPath += "/" + cat; where += "/" + cat; }
+        var trash = needFolder(new Folder(trashPath), "「_已移除」文件夹");
+        var dest = freeFile(trash, File.decode(f.name));
+        if (!f.copy(dest.fsName)) fail("没能移除「" + File.decode(f.name) + "」（" + f.error + "）：检查脚本库文件夹是否可写");
+        if (!f.remove()) {
+            try { dest.remove(); } catch (e) {}
+            fail("没能移除「" + File.decode(f.name) + "」（" + f.error + "）：文件可能正被占用，关掉用到它的程序再试");
+        }
+        var renamed = File.decode(dest.name) !== File.decode(f.name);
+        return "已移到 " + where + (renamed ? "（那里已有同名文件，存为「" + File.decode(dest.name) + "」）" : "") + "，可以手动恢复";
     };
 
     LIB.chooseLibrary = function () {
@@ -1849,12 +1925,19 @@ var MH = (function () {
         var root = libRoot(), target = root;
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
         if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
-        var f = new File(target.fsName + "/" + a.name.replace(/[\\\/:*?"<>|]/g, "_"));
+        var name = a.name.replace(/[\\\/:*?"<>|]/g, "_"), bytes = b64decode(a.b64);
+        var f = new File(target.fsName + "/" + name), st = "new";
+        if (f.exists) {
+            if (readBinary(f) === bytes) return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: "exists", name: name, savedAs: name };
+            f = freeFile(target, name);
+            st = "renamed";
+        }
         f.encoding = "BINARY";
-        if (!f.open("w")) fail("无法写入：" + f.fsName);
-        f.write(b64decode(a.b64));
+        if (!f.open("w")) fail("没能写入「" + name + "」（" + f.error + "）：检查脚本库文件夹是否可写");
+        var wrote = f.write(bytes);
         f.close();
-        return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/") };
+        if (wrote === false) { try { f.remove(); } catch (e) {} fail("没能写完「" + name + "」（" + f.error + "）：检查磁盘空间和脚本库文件夹是否可写"); }
+        return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: st, name: name, savedAs: File.decode(f.name) };
     };
 
     // —— 音频：找到选中的音频图层，返回文件路径和时间信息 ——

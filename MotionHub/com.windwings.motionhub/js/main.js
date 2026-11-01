@@ -50,6 +50,53 @@
         applyEffect: "效果收藏", wireframe: "线框叠加", wireClear: "清除线框", wireStyle: "线框颜色", applyExpr: "表达式片段", runCode: "脚本片段",
         wiggle: "抖动", loop: "循环", bounce: "弹性", clearExpr: "清除表达式", dupComp: "复制合成", collectColors: "收集颜色", run: "运行脚本库里的脚本"
     };
+    // =====================================================================
+    // 配置文件读写（布局、曲线、片段设置、使用统计都走这里）
+    // 先交给后台；后台写不进去（AE 没开「允许脚本写入文件」）或连不上时，用 Node 直接读写同一个文件。
+    // 这样没开写入权限的用户，布局也一直在磁盘上，不会因为重装插件、升级 AE、清理临时文件而丢
+    // =====================================================================
+    var canWrite = null;      // AE 的写入权限：null = 还不知道（init 之前）
+    var libPathNow = "";      // 这次会话里后台告诉我们的脚本库位置
+    function nodeConfigWrite(name, text, prev) {
+        var w = B.disk.writeText(B.disk.configPath(name), text);
+        return w.ok ? { ok: true, msg: "", via: "node" } : { ok: false, msg: prev ? prev + "；" + w.msg : w.msg };
+    }
+    function writeConfigText(name, text) {
+        if (canWrite === false && B.disk.ok()) return Promise.resolve(nodeConfigWrite(name, text));
+        return B.host("saveConfig", { name: name, text: text }).then(function (r) {
+            if (r && r.ok) return r;
+            return B.disk.ok() ? nodeConfigWrite(name, text, r && r.msg) : r;
+        });
+    }
+    function readConfigText(name) {
+        return B.host("loadConfig", { name: name }).then(function (r) {
+            if ((r && r.ok) || !B.disk.ok()) return r;
+            var d = B.disk.readText(B.disk.configPath(name));
+            return d.ok ? { ok: true, msg: "", data: { text: d.text }, via: "node" } : r;
+        });
+    }
+    function snippetsPath() { return libPathNow ? B.disk.join(libPathNow, "_snippets.json") : ""; }
+    function writeSnippetsText(text) {
+        var viaNode = function (prev) {
+            var p = snippetsPath();
+            if (!p) return { ok: false, msg: prev || "还不知道脚本库在哪里，片段只存在本机缓存" };
+            var w = B.disk.writeText(p, text);
+            return w.ok ? { ok: true, msg: "", via: "node" } : { ok: false, msg: prev ? prev + "；" + w.msg : w.msg };
+        };
+        if (canWrite === false && B.disk.ok()) return Promise.resolve(viaNode());
+        return B.host("saveSnippets", { text: text }).then(function (r) {
+            if (r && r.ok) return r;
+            return B.disk.ok() ? viaNode(r && r.msg) : r;
+        });
+    }
+    function readSnippetsText() {
+        return B.host("loadSnippets").then(function (r) {
+            if ((r && r.ok) || !B.disk.ok() || !snippetsPath()) return r;
+            var d = B.disk.readText(snippetsPath());
+            return d.ok ? { ok: true, msg: "", data: { text: d.text }, via: "node" } : r;
+        });
+    }
+
     var usage = {}, usageTimer = null, usageLoaded = false;
     function bumpUsage(name) {
         usage[name] = (usage[name] || 0) + 1;
@@ -58,7 +105,7 @@
         clearTimeout(usageTimer);
         usageTimer = setTimeout(saveUsage, 2000);
     }
-    function saveUsage() { B.host("saveConfig", { name: "usage_panel" + PANEL, text: JSON.stringify(usage) }); }
+    function saveUsage() { writeConfigText("usage_panel" + PANEL, JSON.stringify(usage)); }
     function host(name, args) {
         if (USAGE_LABEL[name]) bumpUsage(name);
         return B.host(name, args);
@@ -474,7 +521,7 @@
             var text = JSON.stringify(cfg);
             local.set("panel" + PANEL, cfg);
             if (cfgSynced) {
-                host("saveConfig", { name: "panel" + PANEL, text: text }).then(function (r) {
+                writeConfigText("panel" + PANEL, text).then(function (r) {
                     // 写不进磁盘（比如没开写入权限）：改成「离线改动」，权限打开或重新连上后再写
                     if (r && !r.ok) { cfgSynced = false; cfgDirty = true; }
                 });
@@ -483,7 +530,7 @@
     }
 
     function loadConfig() {
-        return host("loadConfig", { name: "panel" + PANEL }).then(function (r) {
+        return readConfigText("panel" + PANEL).then(function (r) {
             var c = null, bad = false;
             try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) { bad = true; }
             cfgSynced = r.ok && !bad;
@@ -697,9 +744,9 @@
     // —— 智能组件：自定义缓动曲线 ——
     // 用户自己保存的曲线，存在共享配置 curves.json 里
     var userCurves = [];
-    function saveCurves() { local.set("curves", userCurves); host("saveConfig", { name: "curves", text: JSON.stringify(userCurves) }); }
+    function saveCurves() { local.set("curves", userCurves); writeConfigText("curves", JSON.stringify(userCurves)); }
     function loadCurves() {
-        return host("loadConfig", { name: "curves" }).then(function (r) {
+        return readConfigText("curves").then(function (r) {
             var c = null;
             try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) {}
             userCurves = c || local.get("curves", []);
@@ -1601,6 +1648,7 @@
             lib.items = r.data.items;
             lib.categories = r.data.categories;
             lib.libPath = r.data.libPath;
+            if (lib.libPath) libPathNow = lib.libPath;
             lib.byKey = {};
             lib.items.forEach(function (it) { lib.byKey[it.key] = it; });
             renderCats();
@@ -1668,6 +1716,21 @@
         });
     }
 
+    // 拖入结果说明：和 host 的「添加」用同一套话（同名同内容 = 已经在库里；同名不同内容 = 另存一份）
+    function droppedMsg(rs) {
+        var added = 0, existing = 0, renamed = [];
+        rs.forEach(function (r) {
+            var d = r.data;
+            if (d.state === "exists") { existing++; return; }
+            added++;
+            if (d.state === "renamed") renamed.push("「" + d.name + "」库里已经有一个内容不同的，新的存为「" + d.savedAs + "」");
+        });
+        var msg = added ? "已添加 " + added + " 个文件" : "";
+        if (renamed.length) msg += "。" + renamed.join("；") + "，两个都保留了";
+        if (existing) msg += (msg ? "。" : "") + existing + " 个已经在库里（内容完全一样），没有重复添加";
+        return msg;
+    }
+
     // 把文件拖进面板
     var dropDepth = 0, overlay = $("#drop-overlay");
     function isFileDrag(e) { return !dragId && e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1; }
@@ -1678,7 +1741,9 @@
         if (!isFileDrag(e)) return;
         e.preventDefault();
         dropDepth = 0; overlay.hidden = true;
-        var files = Array.prototype.filter.call(e.dataTransfer.files, function (f) { return /\.(jsx|jsxbin|ffx)$/i.test(f.name); });
+        var all = e.dataTransfer.files;
+        var files = Array.prototype.filter.call(all, function (f) { return /\.(jsx|jsxbin|ffx)$/i.test(f.name); });
+        var skipped = all.length - files.length;
         if (!files.length) { toast({ ok: false, msg: "只支持 .jsx / .jsxbin / .ffx 文件" }); return; }
         categoryDialog("(+) — DROP FILES", files.map(function (f) { return esc(f.name); }).join("<br>")).then(function (v) {
             if (!v) return;
@@ -1690,11 +1755,15 @@
                     fr.readAsDataURL(f);
                 });
             })).then(function (rs) {
-                var bad = rs.filter(function (r) { return !r.ok; });
-                if (bad.length) { toast(bad[0]); return; }
-                afterInstall(rs.map(function (r) { return r.data.key; }), v).then(function () {
-                    var r = { ok: true, msg: "已添加 " + rs.length + " 个文件" + (v.pin ? "，并放到了当前面板" : "") };
-                    B.show(null, "ok", r.msg); toast(r);
+                var bad = rs.filter(function (r) { return !r || !r.ok; });
+                var good = rs.filter(function (r) { return r && r.ok && r.data; });
+                if (!good.length) { var b0 = bad[0] || { ok: false, msg: "没有加进任何文件" }; B.show(null, "err", b0.msg); toast(b0); return; }
+                afterInstall(good.map(function (r) { return r.data.key; }), v).then(function () {
+                    var msg = droppedMsg(good) + (v.pin ? "。已放到当前面板" : "");
+                    if (bad.length) msg += "。另有 " + bad.length + " 个没加进去：" + bad[0].msg;
+                    if (skipped) msg += "。" + skipped + " 个不是 .jsx / .jsxbin / .ffx 文件，跳过了";
+                    var r = { ok: !bad.length, msg: msg };
+                    B.show(null, r.ok ? "ok" : "err", r.msg); toast(r);
                 }, function (e) {
                     var r = { ok: false, msg: "文件已经加进脚本库，但刷新列表失败：" + (e && e.message ? e.message : e) + "。点脚本库页的「刷新」再试" };
                     B.show(null, "err", r.msg); toast(r);
@@ -1813,9 +1882,9 @@
     BUILTIN_SNIPPETS.forEach(function (b) { b.builtin = true; });
     // 搜索、组件库里能看到的片段：没隐藏的内置片段 + 自己的片段
     function visibleSnippets() { return BUILTIN_SNIPPETS.filter(function (b) { return !isHiddenBuiltin(b); }).concat(snippets); }
-    function saveSnipPrefs() { local.set("snipPrefs", snipPrefs); host("saveConfig", { name: "snippet_prefs", text: JSON.stringify(snipPrefs) }); }
+    function saveSnipPrefs() { local.set("snipPrefs", snipPrefs); writeConfigText("snippet_prefs", JSON.stringify(snipPrefs)); }
     function loadSnipPrefs() {
-        return host("loadConfig", { name: "snippet_prefs" }).then(function (r) {
+        return readConfigText("snippet_prefs").then(function (r) {
             var p = null;
             try { if (r.ok && r.data && r.data.text) p = JSON.parse(r.data.text); } catch (e) {}
             snipPrefs = p || local.get("snipPrefs", null) || { hidden: [] };
@@ -1832,13 +1901,13 @@
     // 没从磁盘读到片段时（后台没连上 / 文件损坏）只存本机缓存，不覆盖磁盘上的文件
     function saveSnippets() {
         local.set("snippets", snippets);
-        if (snippetsSynced) return host("saveSnippets", { text: JSON.stringify(snippets, null, 2) });
+        if (snippetsSynced) return writeSnippetsText(JSON.stringify(snippets, null, 2));
         snippetsDirty = true;
         return Promise.resolve({ ok: true });
     }
     var snippetsSynced = false, snippetsBad = false, snippetsDirty = false;
     function loadSnippets() {
-        return host("loadSnippets").then(function (r) {
+        return readSnippetsText().then(function (r) {
             var s = null, bad = false;
             try { if (r.ok && r.data && r.data.text) s = JSON.parse(r.data.text); } catch (e) { bad = true; }
             snippetsSynced = r.ok && !bad;
@@ -1994,10 +2063,13 @@
         });
     });
 
-    function updatePerm(canWrite) {
+    function updatePerm(cw) {
+        canWrite = !!cw;
         var p = $("#set-perm");
         p.className = "status" + (canWrite ? "" : " bad");
-        p.textContent = canWrite ? "已允许脚本写入文件，可以正常添加脚本。" : "未允许脚本写入文件：请到 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」。";
+        p.textContent = canWrite ? "已允许脚本写入文件，可以正常添加脚本。"
+            : "打开 AE「首选项 → 脚本和表达式」，勾选「允许脚本写入文件和访问网络」：添加脚本、导入示例要用到它。" +
+              (B.disk.ok() ? "面板布局和设置不受影响，照常保存在磁盘上。" : "打开之前，面板布局只保存在这台电脑的缓存里。");
     }
     $("#set-change").addEventListener("click", function () {
         act0(this, function () {
@@ -2016,7 +2088,7 @@
 
     // 使用统计：4 个面板各存一份，这里汇总
     function loadUsage() {
-        return B.host("loadConfig", { name: "usage_panel" + PANEL }).then(function (r) {
+        return readConfigText("usage_panel" + PANEL).then(function (r) {
             var u = null;
             try { if (r.ok && r.data && r.data.text) u = JSON.parse(r.data.text); } catch (e) {}
             var mine = u || local.get("usage" + PANEL, {}) || {};
@@ -2031,7 +2103,7 @@
         var box = $("#set-usage");
         return Promise.all([1, 2, 3, 4].map(function (n) {
             if (n === PANEL) return Promise.resolve(usage);
-            return B.host("loadConfig", { name: "usage_panel" + n }).then(function (r) {
+            return readConfigText("usage_panel" + n).then(function (r) {
                 try { return r.ok && r.data && r.data.text ? JSON.parse(r.data.text) : {}; } catch (e) { return {}; }
             });
         })).then(function (all) {
@@ -2058,7 +2130,7 @@
                 usage = {};
                 usageLoaded = true;
                 local.set("usage" + PANEL, usage);
-                return B.host("saveConfig", { name: "usage_panel" + PANEL, text: "{}" }).then(renderUsage).then(function () { return { ok: true, msg: "已清空这个面板的使用统计" }; });
+                return writeConfigText("usage_panel" + PANEL, "{}").then(renderUsage).then(function () { return { ok: true, msg: "已清空这个面板的使用统计" }; });
             });
         });
     });
@@ -2272,7 +2344,7 @@
         if (!cfgSynced && !cfgBad) {
             jobs.push(step("同步面板布局", function () {
                 if (cfgDirty) {
-                    return host("saveConfig", { name: "panel" + PANEL, text: JSON.stringify(cfg) }).then(function (r) {
+                    return writeConfigText("panel" + PANEL, JSON.stringify(cfg)).then(function (r) {
                         if (!r.ok) throw new Error(r.msg);
                         cfgSynced = true; cfgDirty = false;
                     });
@@ -2284,7 +2356,7 @@
             jobs.push(step("同步代码片段", function () {
                 if (snippetsDirty) {
                     snippetsSynced = true;
-                    return host("saveSnippets", { text: JSON.stringify(snippets, null, 2) }).then(function (r) {
+                    return writeSnippetsText(JSON.stringify(snippets, null, 2)).then(function (r) {
                         if (!r.ok) { snippetsSynced = false; throw new Error(r.msg); }
                         snippetsDirty = false;
                     });
@@ -2341,6 +2413,8 @@
             if (!r || !r.ok) throw new Error(r ? r.msg : "没有返回");
             var d = r.data;
             OS = d.os || OS;
+            canWrite = !!d.canWrite;
+            if (d.libPath) libPathNow = d.libPath;
             $("#set-about").textContent = "MOTIONHUB v" + d.version + " · 面板 " + PANEL + " · AE " + d.ae;
             updatePerm(d.canWrite);
             bannerState.perm = !d.canWrite;
@@ -2360,6 +2434,30 @@
         });
     }
 
+    // 「示例已导入」的标记存在磁盘上（userData/MotionHub/state.json）：重装、清缓存都不会丢，
+    // 用户删掉的示例不会被导回来。老版本把标记放在本机缓存里，第一次启动时搬到磁盘
+    function loadState() {
+        return readConfigText("state").then(function (r) {
+            var st = null;
+            if (r && r.ok && r.data && r.data.text) { try { st = JSON.parse(r.data.text); } catch (e) { st = null; } }
+            return st && typeof st === "object" && !Array.isArray(st) ? st : {};
+        }, function () { return {}; });
+    }
+    function seedSamples() {
+        return loadState().then(function (st) {
+            if (st.seeded) return;
+            var mark = function () { st.seeded = true; local.set("seeded", true); return writeConfigText("state", JSON.stringify(st)); };
+            if (local.get("seeded", false)) return mark();
+            // auto：脚本库里已经有脚本就不导（host 返回 skipped）
+            return host("importSamples", { auto: true }).then(function (r) {
+                if (!r.ok) throw new Error(r.msg);
+                var d = r.data || {};
+                // 真正复制了文件、或者库里本来就有，才记下「已导入」；什么都没做成的话下次再试
+                if (d.copied > 0 || d.existing > 0 || d.skipped) return mark();
+            });
+        });
+    }
+
     function boot() {
         return step("读取面板布局", loadConfig).then(function () {
             if (!cfg) cfg = local.get("panel" + PANEL, null) || fromPreset(PANEL_PRESET[PANEL] || "blank");
@@ -2370,14 +2468,7 @@
             return step("连接后台", initInfo);
         }).then(function (initRes) {
             var failed = initRes && initRes.ok === false;
-            // 示例脚本：真正复制了文件才记下「已导入」，下次还会再试
-            var seed = (failed || local.get("seeded", false)) ? Promise.resolve() : step("导入示例脚本", function () {
-                return host("importSamples").then(function (r) {
-                    if (r.ok && r.data && r.data.copied > 0) local.set("seeded", true);
-                    if (r.ok && r.data && r.data.copied === 0 && r.data.existing > 0) local.set("seeded", true);
-                    if (!r.ok) throw new Error(r.msg);
-                });
-            });
+            var seed = failed ? Promise.resolve() : step("导入示例脚本", seedSamples);
             return Promise.all([
                 seed.then(function () { return step("读取脚本库", refreshLibrary); }),
                 step("读取代码片段", function () { return loadSnipPrefs().then(loadSnippets); }),

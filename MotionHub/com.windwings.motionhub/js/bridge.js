@@ -208,8 +208,65 @@
         });
     }
 
+    // =====================================================================
+    // 本机磁盘（Node）：存插件自己的数据文件（布局、片段、设置）
+    // AE 没开「允许脚本写入文件」时 ExtendScript 写不了文件，但 CEP 面板自己可以写自己的数据。
+    // 先写 .tmp 再改名：写到一半崩溃也不会留下半个文件
+    // =====================================================================
+    var disk = (function () {
+        var fs = null, path = null, os = null, proc = null;
+        try {
+            // --mixed-context 下 require 是全局函数；没开 mixed-context 时在 window.cep_node 上
+            var cn = window.cep_node;
+            var req = typeof require === "function" ? require : (cn && typeof cn.require === "function" ? cn.require : null);
+            proc = typeof process !== "undefined" ? process : (cn && cn.process) || null;
+            if (req) { fs = req("fs"); path = req("path"); os = req("os"); }
+        } catch (e) { fs = null; }
+        function ok() { return !!(fs && path && os); }
+        // 和 ExtendScript 的 Folder.userData 是同一个位置：Windows 是 %APPDATA%，Mac 是 ~/Library/Application Support
+        function userDataDir() {
+            if (!ok()) return "";
+            if (IS_WIN) {
+                var env = proc && proc.env ? proc.env.APPDATA : "";
+                return env || path.join(os.homedir(), "AppData", "Roaming");
+            }
+            return path.join(os.homedir(), "Library", "Application Support");
+        }
+        // 和 host.jsx 的 configFile() 用同一个文件名规则
+        function configPath(name) { return path.join(userDataDir(), "MotionHub", String(name).replace(/[^\w.\-]/g, "_") + ".json"); }
+        function why(e) { return (e && (e.code || e.message)) || String(e); }
+        function writeText(file, text) {
+            if (!ok()) return { ok: false, msg: "这里没有 Node，没法直接写文件" };
+            var tmp = file + ".tmp";
+            try {
+                fs.mkdirSync(path.dirname(file), { recursive: true });
+                fs.writeFileSync(tmp, text, "utf8");
+                fs.renameSync(tmp, file);
+                return { ok: true, path: file };
+            } catch (e) {
+                try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) {}
+                return { ok: false, msg: "写不进 " + file + "（" + why(e) + "）：检查这个文件夹是否可写" };
+            }
+        }
+        // text = null 表示文件不存在
+        function readText(file) {
+            if (!ok()) return { ok: false, msg: "这里没有 Node，没法直接读文件" };
+            try {
+                if (!fs.existsSync(file)) return { ok: true, text: null, path: file };
+                return { ok: true, text: fs.readFileSync(file, "utf8"), path: file };
+            } catch (e) {
+                return { ok: false, msg: "读不了 " + file + "（" + why(e) + "）" };
+            }
+        }
+        return {
+            ok: ok, userDataDir: userDataDir, configPath: configPath, writeText: writeText, readText: readText,
+            join: function () { return ok() ? path.join.apply(path, arguments) : ""; }
+        };
+    })();
+
     window.MHBridge = {
-        version: "3.7.0",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
+        version: "3.7.1",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
+        disk: disk,
         host: host,
         reconnect: reconnect,
         isBackendDown: function () { return backendDown; },
