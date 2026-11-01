@@ -1,0 +1,72 @@
+[verified] ScriptPath JSX files of different extensions running in the same host share one global namespace; same-named globals are overwritten and the last-loaded extension's definition wins. Two bundles each defining `var MH` will clobber each other.
+    -> https://github.com/Adobe-CEP/CEP-Resources/blob/master/CEP_12.x/Documentation/CEP%2012%20HTML%20Extension%20Cookbook.md#load-multiple-jsx-files — "And this behavior will be across multiple extension running in the same point product, for example, if a.jsx, b.jsx and c.jsx belong to extension a,b,c separately, and extension loading order is extension a-> extension b-> extension c, `$.ext` will be still a string" (same text in CEP 11.1 cookbook L2766)
+[verified] After Effects scripting uses one shared global environment for the whole session.
+    -> https://github.com/docsforadobe/after-effects-scripting-guide/blob/master/docs/introduction/overview.md L174 — "Scripting shares a global environment... variables and functions, once defined by running a script that contains them, persist in subsequent scripts during a given After Effects session."
+[verified] AE ignores #targetengine, so per-extension engine isolation via directive is not available in AE.
+    -> https://github.com/docsforadobe/javascript-tools-guide/blob/master/docs/extendscript-tools-features/preprocessor-directives.md L95 — "Supported by Adobe Illustrator CS5 and Adobe InDesign CS5; other applications ignore the directive."
+[unverified] The manifest XSD defines an optional ScriptPath Engine attribute, but AE support for it is undocumented; do not rely on it.
+    -> https://github.com/Adobe-CEP/CEP-Resources/blob/master/CEP_7.x/ExtensionManifest_v_7_0.xsd L231 — "This defines an optional ID for the ExtendsScript engine. This can be used to run different scripts in the same engine."
+[verified] $.fileName is documented as unreliable in the first-loaded (ScriptPath) JSX; MotionHub's host.jsx derives EXT_ROOT from it.
+    -> CEP 12 cookbook L2740 — "PLEASE AVOID using `$.fileName` in the FIRST LOADED JSX file"; /home/user/-/MotionHub/com.windwings.motionhub/jsx/host.jsx:11 `EXT_ROOT = new File($.fileName).parent.parent`
+[verified] The front-end health check only tests `typeof MH`, so it cannot detect that another bundle's MH replaced MotionHub's.
+    -> /home/user/-/MotionHub/com.windwings.motionhub/js/bridge.js:43,48,71 — evalRaw("typeof MH") ... if (t === "object")
+[verified] CEP keeps per-extension browser data in cep_cache named HostID_HostVersion_ExtensionName (Win: %LOCALAPPDATA%\Temp\cep_cache, mac: ~/Library/Caches/CSXS/cep_cache).
+    -> CEP 12 cookbook #http-cookie — "Each persistent cookie is a file. File name is HostID_HostVersion_ExtensionName, such as PHXS_15.0.0_com.adobe.extension1." and the two cep_cache paths
+[verified] CEF persists localStorage only inside the cache_path; Chromium 88 stores it under '<storage root>/Local Storage/leveldb'.
+    -> https://github.com/chromiumembedded/cef/blob/4324/include/internal/cef_types.h L243 — "HTML5 databases such as localStorage will only persist across sessions if a cache path is specified."; https://github.com/chromium/chromium/blob/88.0.4324.150/components/services/storage/public/cpp/constants.cc L9-15 — kLocalStoragePath "Local Storage", kLocalStorageLeveldbName "leveldb"
+[likely] CEP localStorage is scoped per HostID + HostVersion + extension id (not per bundle, not per HTML file path); changing the extension id starts with empty localStorage.
+    -> Inference from the two facts above plus CEP 12 cookbook #multi-process-architecture — "Each CEP extension runs in a separate CEP HTML Engine" and https://github.com/Adobe-CEP/CEP-Resources/issues/360 — "Users have to type in their username/password for each panel they open"
+[likely] An AE version update probably also resets localStorage, because CEP's per-extension naming includes the full host version.
+    -> https://github.com/Adobe-CEP/CEP-Resources/issues/52 (Jolg42) — "it looks like the localStorage is empty after an update of Illustrator too"; https://github.com/Adobe-CEP/CEP-Resources/issues/520 — log `CEPHtmlEngine11-ILST-28.7.1-com.adobe.CEPHTMLTEST.Panel1.log`
+[likely] Deleting cep_cache deletes CEP localStorage as well as cookies.
+    -> Search summary of https://community.adobe.com/questions-628/illustrator-cc-2018-issues-with-cookies-and-local-storage-685469 — "It seems like whenever Illustrator closes, it deletes the cookie cache directory for all extensions (on Mac, ~/Library/Caches/CSXS/cep_cache)" with localStorage lost (page not fetchable from this session)
+[verified] Both MotionHub installers delete every cep_cache folder matching *motionhub* on each install, which likely wipes mh.* and mhs.* localStorage.
+    -> /home/user/-/MotionHub/安装-Mac.command:33-34 `rm -rf "$HOME/Library/Caches/CSXS/cep_cache/"*motionhub*`; /home/user/-/MotionHub/安装-Windows.bat:25-26 `for /d %%d in ("%TEMP%\cep_cache\*motionhub*") do rmdir /s /q`
+[verified] Studio prefs exist only in localStorage (mhs.size/gap/pad/radius/bg/exp/accent); the panels keep offline fallback copies of layouts and snippets in localStorage.
+    -> /home/user/-/MotionHub/com.windwings.motionhub/js/studio.js:35-36,111-120,1708-1712; /home/user/-/MotionHub/com.windwings.motionhub/js/main.js:475,491,1834,1846
+[verified] requestOpenExtension targets an extension by id and cannot carry startup data.
+    -> https://github.com/Adobe-CEP/CEP-Resources/blob/master/CEP_12.x/CSInterface.js L691-704 — "Loads and launches another extension, or activates the extension if it is already loaded." / "@param startupParams Not currently used, pass ""."
+[verified] requestOpenExtension is non-blocking with no callback; the workaround is the opened extension sending a CEP event back (ready handshake).
+    -> https://github.com/Adobe-CEP/CEP-Resources/issues/56 — "The current requestOpenExtension() function is non-blocking call but doesn't provide a callback parameter."; https://github.com/Adobe-CEP/CEP-Resources/issues/114 — "Panel1 first sets up a CEP event listener for an event like \"Panel2Ready\""
+[verified] getExtensions returns the extensions known to the host (all, or a filtered id list), fixed for the CEP session; Extension objects include basePath but no version.
+    -> CSInterface.js L706-725 — "The extension list is initialized once, and remains the same during the lifetime of the CEP session." / "If omitted, retrieves data for all extensions."; Extension class L110-153 lists id, name, mainPath, basePath, ... isPluginExtension (no version)
+[likely] Opening an extension that lives in another bundle via requestOpenExtension works (id-based, no bundle scoping), though Adobe never states it explicitly.
+    -> Adobe sample https://github.com/Adobe-CEP/CEP-Resources/blob/master/CEP_12.x/Samples/CEP_HTML_Test_Extension-12.0/html/CSAPI.html L316 `extensions = CSLibrary.getExtensions();` and L311 `CSLibrary.requestOpenExtension(extensions[list.selectedIndex].id);` (buttons "Get All Extensions" / "Open Selected Extension")
+[verified] MotionHub's Studio button reports success without checking that Studio exists or opened.
+    -> /home/user/-/MotionHub/com.windwings.motionhub/js/main.js:646-648 — requestOpenExtension(...) then `return { ok: true, msg: "已打开 Studio..." }`
+[verified] CEP Panel extensions participate in host workspaces and are reopened at startup if open at shutdown.
+    -> CEP 12 cookbook #extension-types — "The Panel type behaves like any other application panel. It can be docked, participates in workspaces, has fly-out menus, and is re-opened at start-up if open at shutdown."
+[likely] AE stores workspaces as XML in the prefs ModifiedWorkspaces folder.
+    -> Search-result text of https://helpx.adobe.com/after-effects/desktop/get-started/get-familiar-with-the-interface/workspaces-panels-viewers.html — "Workspaces are stored in XML files in the preferences folder." (.../After Effects/[version]/ModifiedWorkspaces); page not fetched
+[likely] Workspace frames reference CEP panels by extension id, so renaming or removing the id loses the docked slot; what AE shows for a missing id is not documented.
+    -> Third-party https://github.com/Engine-Room-Games/after-effects-mcp/commit/1c329752e160a2d38e019664b3b8ff71c2b34a0d — "a workspace saved with the old panel docked names `…ae-mcp.panel` in that frame" ... "which nobody has measured"
+[verified] CEP picks among installed copies by bundle id at load: the highest version wins, and a version tie goes to the newer manifest mtime; folders are searched product → system → per-user.
+    -> CEP 12 cookbook #extension-folders — "If two extensions have same extension bundle ID, the one with higher version is loaded." / "...same version, the one whose manifest file has latest modification date is loaded."
+[likely] No update or migration hook exists. New or updated bundles take effect only after a host restart, and each extension must migrate its own data.
+    -> No such API in CSInterface.js; getExtensions doc "initialized once"; MXI example requires-restart="true" in https://github.com/Adobe-CEP/Getting-Started-guides/blob/master/Package%20Distribute%20Install/readme.md
+[verified] Extension ids must be unique across the whole CEP system, and manifest paths must be ./-relative to the bundle root.
+    -> ExtensionManifest_v_7_0.xsd L75 — "This id has to be unique within the whole CEP system."; L219/L224 — "The path has to be relative to the extensions root directory and start with a \"./\"."; L580 — "points to a resource relative to the extension bundle's root."
+[unverified] Behavior when two different bundles declare the same extension id is undocumented; avoid overlap during the transition.
+    -> No rule in the cookbook's extension-folder resolution (which only covers the same bundle id); the XSD requires uniqueness
+[verified] Signatures cover each packaged bundle and are checked at every launch; unsigned extensions do not run without PlayerDebugMode.
+    -> https://github.com/Adobe-CEP/Getting-Started-guides/blob/master/Package%20Distribute%20Install/readme.md L30-46 — "The signature verifies that the package has not been altered since it was packaged... CEP checks for a valid certificate each time a host application tries to run an extension"; table "No signature | Extension does not run"
+[likely] Sharing files between bundles via ../ paths is unsupported: bundles can be installed in different roots and are signed separately. Copy the brand CSS and fonts into each bundle instead.
+    -> Inference from the extension-folder, XSD relative-path and signing facts above
+[verified] The manifest DependencyList is enforced only by Extension Manager at install time, not at runtime.
+    -> ExtensionManifest_v_7_0.xsd DependencyList — "Adobe Extension Manager will install this extension only if all of its strict dependencies are already installed in the system."
+[verified] CSEvent with scope APPLICATION is the channel between extensions in one host; GLOBAL scope has been unsupported since CEP 5.
+    -> CEP 12 cookbook #vulcan-messages — "Starting with CEP 5.0, global CEP Events whose scope attribute is set to \"GLOBAL\" are no longer supported."; Vulcan doc — "To send a message between extensions running within one application, use the CSEvent type in CSInterface.js."
+[verified] CEP auto-parses JSON-string event.data into an object on the receiving side.
+    -> CEP 12 cookbook #cep-events — "If the value is a valid JSON string, CEP will parse it natively and convert it to an object."
+[verified] CEP events are dispatched on the host main thread, so long-running ExtendScript delays event delivery.
+    -> CEP 12 cookbook L1184 — "CEP event is also dispatched from host application's main thread... please split the script into small parts... so that CEP event has a chance to be scheduled."
+[verified] AE has no documented invisible or persistent background extension, so no hidden listener can be assumed.
+    -> CEP 12 cookbook #invisible-html-extensions support table lists Photoshop, Premiere Pro, Prelude, Animate, Audition, InDesign, InCopy, Illustrator (no After Effects); #html-extension-persistent covers Photoshop, InDesign, InCopy only
+[likely] Only loaded extensions with a registered listener receive a CSEvent and nothing is queued, so a handoff needs a mailbox plus a ready/ack handshake.
+    -> Vulcan doc "between extensions running within one application"; issues #56 and #114 handshake workaround
+[unverified] Whether the dispatching extension receives its own APPLICATION event is undocumented.
+    -> No statement in the cookbook or CSInterface.js; forum hint only (search summary)
+[verified] Each bundle that ships the Geist fonts must include the OFL licence text.
+    -> /home/user/-/MotionHub/com.windwings.motionhub/fonts/OFL.txt:55-57 — "may be bundled, redistributed and/or sold with any software, provided that each copy contains the above copyright notice and this license."
+[verified] Part A: ScriptUI Panels scripts appear at the bottom of the Window menu; a panel script run outside the panel gets a non-Panel `this` and opens as a palette only if it uses the dual-mode pattern.
+    -> https://github.com/docsforadobe/after-effects-scripting-guide/blob/master/docs/introduction/overview.md L182 — "Scripts in the ScriptUI Panels folder are available from the bottom of the Window menu."; L202 — "You cannot use the File > Scripts > Run Script File menu command to run a script that refers to this."

@@ -1,0 +1,72 @@
+[verified] macOS 用户级 ScriptUI Panels 路径：~/Library/Preferences/Adobe/After Effects/<x.y>/Scripts/ScriptUI Panels/
+    -> https://community.adobe.com/questions-529/what-is-install-scriptui-panel-actually-doing-60875 — expert example on Ae 25.4: '~/Library/Preferences/Adobe/After Effects/25.4/Scripts/ScriptUI Panels/'; /home/user/thirdparty-src/scripts-launcher/src/jsx/aeft/aeft.ts:42-47 'Folder.userData.parent.fsName + "/Preferences/Adobe/After Effects/" + v + "/Scripts" + subPath'
+[verified] Windows 用户级 ScriptUI Panels 路径：%APPDATA%\Adobe\After Effects\<x.y>\Scripts\ScriptUI Panels\
+    -> https://community.adobe.com/questions-529/removing-old-scripts-from-window-menu-56278 — '\AppData\Roaming\Adobe\After Effects\24.3\Scripts\ScriptUI Panels'; aeft.ts:50-55 'Folder.userData.fsName + "/Adobe/After Effects/" + v + "/Scripts" + subPath'; javascript-tools-guide/docs/file-system-access/folder-object.md:227 'In Windows, the value of %APPDATA%'
+[verified] <version> 文件夹是运行中 AE 的「主.次」版本（如 24.3、25.4），不是所有 24.x 共用 24.0
+    -> 社区实例路径 16.1、17.1、17.5、24.3、25.4（见上述帖子及 https://community.adobe.com/questions-529/installed-a-script-using-the-menu-and-now-i-can-t-uninstall-it-or-even-find-it-28403 'User/Library/Preferences/Adobe/After Effects/17.1/Scripts'）；aeft.ts:32 'app.version.match(/^\d+\.\d+/)'；Adobe Help Preferences 页 '\Users\[user_name]\AppData\Roaming\Adobe\After Effects\[version]'
+[likely] 补丁版（如 24.6.1）共用 24.6 文件夹；每个新的 x.y 是新文件夹，要靠「迁移旧版本首选项」把用户脚本带过去
+    -> 社区迁移帖 https://community.adobe.com/questions-529/i-am-migrating-to-a-newer-version-of-adobe-after-effects-on-my-mac-17-0-6-build-35-to-24-6-1-need-help-with-migrating-backing-up-all-settings-presets-etc-1631218（从 24.6.1 'migrate them over to 24.6'）；removing-old-scripts 帖：旧脚本因 Migrate Previous Version Preferences 残留；scripts-launcher README.md:63 'a script installed only under a different AE version's folder won't show up'
+[likely] 用户级 Scripts 下可能没有 ScriptUI Panels 子文件夹，需要自己创建
+    -> https://lova.tt/no-admin-access-install-after-effects-scripts-anyway（WebSearch 摘要）'you may need to make a new folder called "ScriptUI Panels" within the user Script folder'
+[verified] 应用级路径：mac /Applications/Adobe After Effects <年份>/Scripts/ScriptUI Panels；Win C:\Program Files\Adobe\Adobe After Effects <年份>\Support Files\Scripts\ScriptUI Panels
+    -> https://helpx.adobe.com/after-effects/using/scripts.html 'Windows: Program Files\Adobe\Adobe After Effects <version>\Support Files; macOS: Applications/Adobe After Effects <version>'；社区 'Applications/Adobe After Effects 2024/Scripts/ScriptUI Panels'；aeft.ts:41,49 Folder.appPackage(.parent) + '/Scripts'
+[likely] 应用级文件夹要管理员权限（Program Files 需要 UAC 提升），每个年度版各一份，升级年度版要重装
+    -> lova.tt：系统级需要管理员、用户级不需要；https://creativecow.net/forums/thread/ae-scripts-denied-despite-troubleshooting/ '"Access is denied" implies ... running without administrator privileges'；https://battleaxe.gitbook.io/freebies 升级后要重新复制
+[verified] 文件 > 脚本 > 安装 ScriptUI 面板… 存在，它把文件复制到用户首选项里的 Scripts/ScriptUI Panels，重启后出现在「窗口」菜单底部
+    -> https://community.adobe.com/questions-529/what-is-install-scriptui-panel-actually-doing-60875 'The menu command installs the script in the Ae preferences'；https://madebyloop.co.uk/how-to-install-after-effects-script/ 'notification stating that the script has been copied to your preferences folder' / 'once you've restarted After Effects your script will show up at the bottom of the "Window" menu'
+[likely] 「安装脚本文件 / 安装 ScriptUI 面板」从 AE 12.1 起就有，装到用户级、不需要管理员
+    -> https://lova.tt/no-admin-access-install-after-effects-scripts-anyway（WebSearch 摘要）'in AE 12.1 (CC, October 2013), the Install Script options send the file to the user-level path'
+[verified] AE 运行中新放进去的脚本，要重启才会出现在菜单里
+    -> after-effects-scripting-guide/docs/introduction/overview.md:88 'If you place a script in the Scripts folder while After Effects is running, you must restart After Effects for the script to appear in the Scripts menu, though you can immediately run the new script using the Run Script File command.'；社区：运行中删除脚本，菜单也不更新
+[verified] 只有从「窗口」菜单打开时，AE 才把 Panel 作为脚本的全局 this；Run Script File 运行时 this 不是 Panel
+    -> overview.md:184 'a ScriptUI Panels script uses the `this` object that represents the panel'；overview.md:202 'You cannot use the File > Scripts > Run Script File menu command to run a script that refers to this... check whether this is a Panel object'；https://community.adobe.com/t5/after-effects-discussions/free-source-code-dockable-floating-panel-with-controls/td-p/3753531 '*this* (in the global context) refers to the Panel object for your script, which is created for you automatically'
+[likely] 用 $.evalFile 或其他启动器运行面板脚本，拿不到 Panel，只能得到不能停靠的浮动窗口
+    -> https://community.adobe.com/t5/after-effects-discussions/is-it-possible-to-dock-a-script-if-i-don-t-launch-it-from-window-tab/m-p/10882934 'scripts have different scopes when launched from Window -> ... or File -> Scripts, and there's no way around this'；aescripts FAQ（没有 ScriptUI Panels 权限时）：用 Run Script File 运行，但不能停靠
+[likely] palette 是浮动窗口；官方示例的 palette 分支没有调用 show()，照抄的脚本从 MotionHub 运行时可能什么都不显示
+    -> javascript-tools-guide/docs/user-interface-tools/window-object.md:17 '"palette" - Creates a modeless dialog, also called a floating palette'；overview.md:204-212 示例里只有 new Window("palette"…) 和 add，没有 show()
+[likely] 已装好的面板可以从 CEP 用 findMenuCommandId(带扩展名的文件名) + executeCommand 打开停靠版
+    -> /home/user/thirdparty-src/scripts-launcher/src/jsx/aeft/aeft.ts:179-186 'const id = app.findMenuCommandId(fileName); if (id !== 0) { app.executeCommand(id); }'；README.md:57 'launches a ScriptUI panel via app.findMenuCommandId() + app.executeCommand() (the same mechanism as clicking it in the Window menu)'；application.md:585 'The text of the menu command, exactly as it is shown in the UI.'
+[verified] findMenuCommandId 跨语言版本不可靠，不适合用来调「安装 ScriptUI 面板…」这类会被翻译的菜单
+    -> after-effects-scripting-guide/docs/general/application.md:574 'this method is not reliable across different language packages of AE'
+[verified] AE 25.4 起有 app.restart()
+    -> after-effects-scripting-guide/docs/introduction/changelog.md:50-52 'After Effects 25.4 ... Scripting method added: app.restart()'；application.md:838 'Restarts the After Effects application.'
+[unverified] app.restart() 在工程没保存时会不会提示保存
+    -> 文档没写；社区 https://community.adobe.com/questions-529/how-to-restart-after-effects-using-a-script-58384 只说 app.quit() 'will save your project if needed'
+[verified] $.evalFile(path[, timeout=10000]) 读入并执行脚本文件，返回执行结果
+    -> javascript-tools-guide/docs/extendscript-tools-features/dollar-object.md:415 'Loads a JavaScript script file from disk, evaluates it, and returns the result of evaluation.'；:422 'A number of milliseconds to wait before returning undefined, if the script cannot be evaluated. Defaults to 10000.'
+[likely] 被运行脚本里同步抛出的错误会传到 $.evalFile 的调用方，可以 catch；e.line / e.fileName 指向被运行的文件
+    -> MotionHub host.jsx:1767 '$.evalFile(f);' 的异常被 host.jsx:2284-2285 的 catch 接住并格式化 e.toString() 和 e.line；社区 CEP 帖：把 evalFile 包在 try/catch 里返回 e 的信息。line/fileName 指向被运行文件，还没在真机上确认
+[verified] palette 回调里的错误发生在 evalFile 返回之后，外面的 try/catch 抓不到
+    -> JS 语义：回调由之后的界面事件触发，那时 try 块早已结束
+[likely] 这类没被 catch 的错误，AE 会自己弹窗 'Unable to execute script at line N. …'（带行号）
+    -> overview.md:76 'generates an error message from the application. This error message includes information about the nature of the error and the line of the script on which it occurred'；社区帖标题 'After Effects .jsxbin files in Scripts UI panel all show error Unable to execute script at line 5.'
+[unverified] $.error 存的是最近一次运行时错误，但它是全局的、会被别的代码覆盖，没法对应到某个脚本
+    -> dollar-object.md:102 'The most recent run-time error information, contained in a JavaScript Error object.'（会被覆盖这一点没有验证）
+[likely] app.onError 是 AE 应用级错误回调，全局只有一个，不是用来接脚本代码错误的
+    -> application.md:291 'The callback function is passed the error string and a severity string'（文档举的例子是渲染出错）；https://community.adobe.com/t5/after-effects/app-onerror-function-callbacks/td-p/3942723 'is not called by your programming error but by afterfx ... for its own errors but also for a lot of its feedback'
+[verified] beginSuppressDialogs 能压下脚本错误弹窗，但没有接口读出被压下的内容
+    -> application.md:416 'Begins suppression of script error dialog boxes in the user interface.'；application.md:482 'When true, errors that have occurred following the call to beginSuppressDialogs() are displayed in a dialog box.'
+[likely] .jsxbin 报错仍带 message 和行号，但行号指作者的源码，对用户没意义
+    -> 社区 jsxbin 报错样例 'Unable to execute script at line 5. Null is not an object'、line 112（显示乱码）、line 215 'JSON is undefined'：https://community.adobe.com/questions-529/unable-to-execute-script-at-line-112-internal-error-problem-62910
+[unverified] 能否临时替换全局 alert 来记下脚本弹出的文字
+    -> javascript-tools-guide/docs/extendscript-tools-features/user-notification-dialogs.md:17 'alert(message[, title="Script Alert", errorIcon=false]);'——文档没说它能不能被改写
+[verified] 所有脚本共用一个全局环境，AE 忽略 #targetengine，所以用户脚本可能覆盖 MotionHub 的 MH
+    -> overview.md:174 'Scripting shares a global environment...'；preprocessor-directives.md:95 'Supported by Adobe Illustrator CS5 and Adobe InDesign CS5; other applications ignore the directive.'；bridge.js:43-44 只在 typeof MH 不是 'object' 时才重新加载
+[verified] 运行 .ffx 应该用 Layer.applyPreset(File)，它作用于该合成所有选中的图层；没有选中时新建纯色层来应用
+    -> after-effects-scripting-guide/docs/layer/layer.md:469 'to all the currently selected layers of the comp to which the layer belongs. If no layer is selected, it applies the animation preset to a new solid layer.'；:474 'not to the layer whose applyPreset function is called'
+[likely] MotionHub 现在对每个选中图层各调一次 applyPreset，N 个图层每个会被应用 N 次
+    -> host.jsx:1758-1761 'layers = needLayers(comp, 1); ... for (var i = 0; i < layers.length; i++) layers[i].applyPreset(f);'；https://community.adobe.com/questions-529/scripting-applypreset-problem-75336 'applyPreset() seems to apply ( number of selected layers ) of time'
+[likely] applyPreset 出错时的样子：路径或参数不对会抛 'Unable to call "applyPreset" because of parameter 1…'；文件不是预设会出 'Reading past end of file'
+    -> https://community.adobe.com/questions-529/reading-past-end-of-file-trying-to-apply-preset-from-script-29498（帖子标题）；parameter 1 那条来自 WebSearch 摘要里的社区和 CEP 讨论
+[verified] undo 组可以嵌套，内层并入外层，所以在 evalFile 外包一层就能做到一步撤销
+    -> application.md:436 'Groups within groups become part of the larger group, and will undo correctly. In this case, the names of inner groups are ignored.'
+[verified] File.copy 会静默覆盖目标文件；MotionHub 装到 ScriptUI Panels 时不备份同名旧文件
+    -> javascript-tools-guide/docs/file-system-access/file-object.md:585 'If a file exists at the target location, it is overwritten.'；host.jsx:1746-1749 'if (f.copy(pf.fsName + "/" + File.decode(f.name))) panels++;'
+[verified] MotionHub 只读文件前 4000 个字符判断是不是面板脚本，.jsxbin 判断不出来
+    -> host.jsx:1640 'var head = file.read(4000);'；host.jsx:1646 'if (/instanceof\s+Panel/.test(head)) it.type = "面板";'
+[verified] userPanelsFolder() 用主.次版本拼路径，与 AE 的命名一致；但 ensureFolder 会递归建出不存在的版本目录
+    -> host.jsx:1682-1687 'var ver = v[0] + "." + parseInt(v[1], 10); ... "/Scripts/ScriptUI Panels"'；host.jsx:1590 'if (f.parent && !f.parent.exists && !ensureFolder(f.parent)) return null;'
+[unverified] Adobe 计划：AE 的 UXP 插件 2026-11 前公测；2028-12 起不再接受新 CEP 并默认禁用；2029-12 之后的版本移除 CEP
+    -> WebSearch 摘要（页面没有直接抓取）：https://blog.developer.adobe.com/en/publish/2026/10/adobe-developers-live-2026-recap-cep-to-uxp-migration-express-connectors-and-what-we-publish-next ；https://helpx.adobe.com/creative-cloud/apps/integration-with-other-apps/manage-plugins/cep-uxp-plugin-transition.html
+[verified] 本会话直连不了 ae-scripting.docsforadobe.dev 和 lova.tt，要在会话网络设置里放行；代理还拒绝了 community.adobe.com 等
+    -> WebFetch 报错 'getaddrinfo ENOTFOUND ae-scripting.docsforadobe.dev' 和 'getaddrinfo ENOTFOUND lova.tt'；代理状态 recentRelayFailures 里 community.adobe.com、extendscript.docsforadobe.dev、developer.adobe.com、web.archive.org 都是 403

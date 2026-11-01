@@ -1,0 +1,260 @@
+[high] A、B 两份方案在发版顺序、版本号和同一批文件的改法上互相矛盾。照任何一份执行，都会和另一份冲突。
+① 版本和顺序：A §0、§12 写「作为 MotionHub 3.8.0 发布」，又说「A 先合入、B 在 A 的基础上改，或者放进同一个改动」；B §0、§9、§15 和决定项 4/5 写「两个包都是 3.8.0、B 先发、A 用 3.9.0」。
+② bridge.js:43/48/71 的探活：A §6.3 改成 `typeof MH.call === "function"`，B §5 改成 `MH.bundle === "motionhub"` 身份探活。同一行有两种写法。
+③ 样式：A §7.2 往 style.css 加约 40 行，而 B 已经把 style.css 拆成 brand.css + panel.css。
+④ 共用文件里的面板专属文案：A §6.3 往 bridge.js 加「…关闭这个面板再从「窗口 → 扩展」打开」。B 要求 bridge.js 和 Studio 逐字节一致（shared.js 检查），Studio 会拿到只适合面板的说法。
+⑤ A 的原型 build.js 按原文替换 host.jsx 末尾的 `return { call: call, version: VERSION };`。B 会把这一行改成带 bundle 字段，替换就会落空。另外 A 文中所有 host.jsx 行号（1583–1858、2267–2287），在 B 剪掉 1914–2200 后整体前移约 287 行。
+   FIX: 合并方案只保留一条线：
+- B 先发 3.8.0，两个包同号；A 发 MotionHub 3.9.0，原型和行号都在 3.8.0 上重新生成。
+- bridge.js 只用 B 的身份探活，删掉 A 的 `typeof MH.call` 写法。
+- A 的新样式只写进 panel.css。
+- bridge.js 里不放任何只属于面板或 Studio 的文案，由调用方通过 opts 或页面上的 data-mh-* 传入。
+- A §12 改写成「依赖 B 3.8.0」，并把「把 A 合到 B 之上」单列 1 人日。
+
+[high] 没开「允许脚本写入文件」的用户，面板布局只存在 localStorage：磁盘写失败时 main.js:474–490 只写 mh.panelN（已核实）。B 只堵住了「安装脚本清缓存」这一条路，还有几条照样会丢：
+- cep_cache 的目录名带 AE 版本号【可能】。每次 AE 次版本升级（如 25.0 → 25.1）都会换成一个空的 localStorage，这些用户 4 个面板的布局全部回到默认预设。
+- Windows 上 cep_cache 在 %TEMP% 下，系统清理临时文件时也会被删。
+- 用户如果用 3.7 的老安装脚本回退，同样会全部清掉。
+这违反「绝不丢布局」。B 已经用 Node fs 写盘解决了 Studio 设置的同一个问题，面板却没有跟上。安装脚本最后打印的「✓ 布局…都没有动」，对这批用户只在安装这一刻成立。
+   FIX: 面板沿用 Studio 的做法：
+- saveConfig 在 ExtendScript 写盘失败时，改用 Node fs 把 panelN.json 写进同一个 Folder.userData/MotionHub/，先写 .tmp 再 rename。面板已经开了 --enable-nodejs。
+- loadConfig 不用改，读的还是同一个文件。格式不变，不需要迁移。
+- A 新增的 recent.json、_favorites.json、panels_installed.json 用同样的兜底。
+- migrationtest 加一条：no-write 模式下清空 localStorage 再重新载入，布局仍在。
+
+[high] Windows 的安装和回滚是这次升级里最复杂、对数据最敏感的部分：预检、读 manifest、版本比较、备份轮换、installed.txt、Y/N 确认、回滚。这些全部写在 .bat 里，却没有任何自动测试（B §13.1 原话：「Windows 批处理只能在真机上手测」）。
+- cmd 在 `chcp 65001` + UTF-8 中文 + 括号块的组合下本来就容易解析出错。原型已经踩到一处：在 `for … do ( … )` 里用 echo 展开含 `(x86)` 的 %SYSROOT%（已核实）。
+- 原型的 xcopy 不检查 errorlevel。
+- 目标用户的 Windows 用户名常带中文。%APPDATA% 含中文时，xcopy、find、findstr 在 65001 代码页下怎么表现【未核实】。
+   FIX: - 安装-Windows.bat 和 回滚-Windows.bat 只留几行启动器，逻辑放进同目录的 install.ps1。
+- install.ps1 存成带 BOM 的 UTF-8：Windows PowerShell 5.1 读不带 BOM 的文件时按 ANSI 解析，中文会乱码。
+- 用 [xml] 读 manifest，用 [version] 比较版本，Move-Item / Copy-Item 都加 -ErrorAction Stop。
+- installtest 在 Linux 上用 pwsh 跑同一套场景（假的 APPDATA / TEMP / LOCALAPPDATA），Windows 逻辑由此进入 run-all。
+- M2 加一台中文用户名、执行策略被组策略锁定的 Windows 机器。锁定时 -ExecutionPolicy Bypass 可能无效【可能】，要准备回退路径。
+- 工作量见「工作量偏低」一条。
+
+[medium] Windows 漏了一个 CEP 系统扩展目录。CEP 12 cookbook「Extension Folders」原文列了两处：`C:\Program Files (x86)\Common Files\Adobe\CEP\extensions` 和 `C:\Program Files\Common Files\Adobe\CEP\extensions`（since CEP 6.1）。已核实：/tmp/claude-0/-home-user--/af7c9a59-84cf-5f30-9a85-a817b1e77a9c/scratchpad/dl/cep12.md:592。
+下面这些地方都只看 (x86) 那一处：现有的 安装-Windows.bat:27、B 原型的 SYSROOT、B §7 判断「Studio 装了没有」的磁盘检查、§10 的预检、Studio 的冲突提示和自检行。
+3.7 装在另一处时，预检会把已装版本判断错，冲突检查也会漏报。
+   FIX: - Windows 上所有判断「面板包 / Studio 装在哪」的地方都查 3 处：%APPDATA%\Adobe\CEP\extensions、%ProgramFiles%\Common Files\Adobe\CEP\extensions、%ProgramFiles(x86)%\Common Files\Adobe\CEP\extensions。
+- 路径列表只在一处定义：前端一个常量，install.ps1 一个数组。
+- installtest 加「旧版装在 %ProgramFiles%\Common Files」的场景。
+- README 的手动删除说明列出两处系统目录。
+
+[medium] B 的设计里，「打开 Studio」在 missing 状态下不调用 requestOpenExtension。只要判断错一次，就会把装好的 Studio 说成「还没装」，用户照着重装也没用。
+误判来源都是方案自己标出的未核实点：
+- getExtensions 是不是只列「已打开」的扩展【未核实】；
+- 磁盘检查漏了上一条的 Windows 目录；
+- 文件夹被改过名：CEP 按 manifest 认包，不按文件夹名。
+   FIX: - missing 时也照样调用 requestOpenExtension。ID 不存在时它静默失败【可能】，没有副作用。
+- 气泡改成：「没看到 Studio 就安装它：这台电脑可能还没装 MotionHub Studio（3.8 起单独安装）。运行安装包里的「安装-Mac.command」（Windows 用「安装-Windows.bat」），再重启 AE」。
+- clicktest 断言 missing 时 window.__opened 也被设置。
+- 等 M0 第 6 项有了结果，再决定要不要收紧。
+
+[medium] Mac 安装脚本检测 AE 时会误报，而 B 新加的「按键后再查一次，AE 还开着就不往下走」会把误报变成出不去的循环。
+- 安装-Mac.command:14 用 `pgrep -f "After Effects"`，匹配的是完整命令行（已核实）。
+- 用户把压缩包解压在路径含 After Effects 的文件夹里（例如「文稿/After Effects 插件/」）时，运行安装脚本的 bash 进程自己就会被匹配到。
+- aerender 这类路径在 AE 安装目录里的辅助进程也可能被匹配到【可能】。
+   FIX: - Mac 改用 `pgrep -x "After Effects"`，只比进程名。AE 主程序的进程名是 After Effects【可能】，在 M0 里确认。
+- 等待循环里给一个退出键：「按 Q 放弃安装（什么都不会改）；退出 AE 后按其他键继续」。
+- installtest 加两个用例：安装包放在路径含 After Effects 的文件夹里；pgrep 替身一直返回「在运行」时，按 Q 能退出，而且没有改动任何文件。
+
+[medium] 安装既没有「装完校验」，也没有跨包的原子性。
+- B §10 第 4 步是逐个包「旧包移进备份 → 复制新包 → 打印 ✓」。
+- 原型的 Mac 脚本 cp -R 之后直接打印 ✓；Windows 的 `xcopy … >nul` 不检查返回值（已核实）。
+- 合装包里第二个包（Studio）复制失败时，结果是：面板 3.8 已装好，带 Studio 的 3.7 包已经进了备份，新 Studio 没装上。Studio 从菜单里消失，停靠的格子变空，屏幕上却显示两个 ✓。
+   FIX: 分两阶段安装：
+① 把所有新包先复制到备份根目录下的 staging/（和扩展目录在同一个卷上），逐个校验：manifest 版本等于安装包版本，文件数一致。
+② 全部通过后，才把旧包改名移进备份、把 staging 里的包改名移到扩展目录。
+- 任何一步失败，就按已完成的步骤反向恢复，并提示：「重新运行安装脚本：MotionHub Studio 没有装上（原因），已恢复成安装前的样子，这次什么都没改」。
+- 只有校验通过才打印 ✓。
+- installtest 加「第二个包复制失败」「磁盘满」场景，断言结束时的状态和安装前一致。
+
+[medium] 安装脚本没有降级保护。
+- 合装包只在 MotionHub 发版时打（B §3.2、§9），里面放的是「打包当时最新的 studio 标签」。
+- Studio 单独发了 3.8.1 之后，用户再运行手里的 MotionHub_v3.8.0.zip，会把 Studio 3.8.1 换回 3.8.0。§10 的步骤里没有比较「已装版本」和「安装包版本」。
+- 反过来，用旧合装包也会把面板从 3.9 退回 3.8。
+   FIX: - 每个包装之前先比较已装版本和安装包版本。安装包更旧就跳过这个包，并说明：「保留已装的 MotionHub Studio v3.8.1：安装包里的 v3.8.0 更旧。要退回旧版，运行「回滚-Mac.command」」。降级只能走回滚脚本这一个入口。
+- 任一个包发版时都重新打一次合装包（pack.sh 几秒就跑完），文件名带两个版本号，例如 MotionHub_v3.8.0_Studio_v3.8.1.zip。
+- installtest 加场景：已装 Studio 3.8.1，再运行带 3.8.0 的合装包。
+
+[medium] 「一步回滚」在两种常见情况下会失效。
+① 备份轮换规则是「只保留最近 3 次安装」（B §10 第 4 步）。3.8.0 之后再装 3 次 Studio 单装包，含 3.7 面板包的那份备份就会被自动删掉，再也退不回 3.7。
+② Mac 系统目录里的旧版仍然用 `sudo rm -rf` 删掉（B §10 说「沿用现在的做法」，原型也一样），不进备份。只在系统目录装过的用户，回滚时没有东西可以还原。
+另外，合装包和 Studio 单装包各带一份回滚脚本，版本不同却读同一个备份目录，而 installed.txt 没有格式版本号。
+   FIX: - 轮换规则改成：保留最近 3 次；另外，每个包 ID 最近一份「不同于当前版本」的备份永不自动删除。
+- 系统目录里的旧版改用 `sudo mv` 移进同一次备份，再 chown 给当前用户。installed.txt 记下它原来的位置，回滚时放回原处，需要时再要一次密码。
+- installed.txt 第一行写格式版本。回滚脚本遇到不认识的版本就拒绝，并提示：「换用新的回滚脚本：这份备份是更新版的安装脚本写的，这次什么都没改」。
+- installtest 加「连续安装 4 次后仍能回到 3.7」。
+
+[medium] B 把「只装 Studio」列为正式支持的用法（决定项 9），但 Studio 从来不检查 AE 的「允许脚本写入文件和访问网络」。
+- studio.js 里没有任何 canWrite 检查（grep 已核实）。
+- renderComp 用 ExtendScript 的 `dir.create()` 建临时文件夹，而且不看返回值（host.jsx:2163）。
+- 开关没打开时，「导入 AE 合成」多半会失败，报的却是误导性的「没有渲染出画面，请检查合成的工作区」【可能】。
+在 3.7 里，是面板的横幅替 Studio 提醒了用户；只装 Studio 的电脑没有这层提醒。
+   FIX: - 临时文件夹改由 studio.js 用 Node 的 `fs.mkdtempSync` 在 os.tmpdir() 下建好，再把路径传给 renderComp，这样 Studio 的导入不再依赖这个开关。
+- studio.jsx 加 canWriteFiles()。确实需要用 ExtendScript 写文件的操作，先返回：「先在 AE「首选项 → 脚本和表达式」勾选「允许脚本写入文件和访问网络」，再导入合成」。
+- M0 加一项：开关关闭时，把 Studio 的导入和 5 种导出各跑一遍。
+- 让 clicktest 的 no-write 模式对 Studio 的 mock 也生效（现在 Studio 的 mock 忽略后台状态）。
+
+[medium] 全局名 MH 改不改，两份方案互相推：B 决定项 12 写「在 A 里决定」，A 没有做决定，只在用户脚本跑完后把 MH 恢复回来。
+AE 里所有 CEP 扩展和用户脚本共用一个 ExtendScript 全局环境（cookbook 原文，已核实），两个字母的 MH 很容易和别人撞名：
+- 别家扩展也定义 MH 时，B 的身份探活会判成 foreign 并重新载入 host.jsx，又把对方的 MH 覆盖掉，两边来回抢。
+- 对方的 MH 如果也有 call 方法，MotionHub 根本走不到探活，会直接拿到看不懂的返回值。
+- A 的「运行后恢复 MH」也会覆盖用户脚本自己的 MH，让它浮动窗口里的按钮回调失灵。
+   FIX: 3.8.0 就改名，例如面板用 WINDWINGS_MH，Studio 用 WINDWINGS_STUDIO。
+- B 已经把全局名做成了 data-mh-ns 参数，只需要改 index.html / studio.html 上的属性、两个 jsx 里的 var 名，以及 clicktest、migrationtest 里写死的 `MH.call(` 和 `typeof MH`。
+- 身份探活保留，作为兜底。A 的「恢复」只针对新名字，几乎不会触发。
+- 决定项 12 从「A 里再定」改成「3.8.0 改名」。
+
+[medium] A 的面板识别缓存放在 MH 闭包里（A §3.1：「第一个面板扫完，其余面板直接命中缓存」）。但每个扩展载入时都会通过 ScriptPath 重新执行 host.jsx（host.jsx:18 的注释、CEP 调研【可能】），新闭包里的缓存是空的。
+- AE 启动时 4 个面板各调一次 scan（main.js:2382）。
+- evalScript 在 AE 主线程上同步执行。
+- 每个文件的读取量从现在的 4000 字，变成最多 256 KB，或头尾各 64 KB。
+有 300 个脚本的库，冷启动时可能被完整读 4 遍，AE 会卡住几秒【未核实，见 R14】。
+   FIX: - 缓存放进 $.global.MH_SNIFF，像 MH_CLIP 一样在重新载入后保留。键用 fsName + modified + length。
+- 每次 scan 设一个总读取上限（例如 8 MB）。超出部分先返回 panel:null，下一次 scan 再补上。
+- 跨面板的刷新（切到脚本库、面板获得焦点）只调 libState，不调 scan。
+- hosttest 加一条：重新执行一次 host.jsx 后，第二次 scan 不再读全文。
+- R14 记录 4 个面板同时冷启动的总耗时，并定一个上限（例如 1 秒）。
+
+[medium] A2 对 panel:false 的脚本只解释、不让装（A §4.2：「置灰…点了会说明原因」）。
+- 这违反了 3.6 起的规则：「变暗的按钮仍然可以点，最终以 AE 的判断为准」。
+- 识别不出来的面板脚本也被挡住了，例如：Panel 判断写在 #include 进来的文件里；用 `constructor` 或 `toString()` 来判断；代码被压缩改写过。
+需求是「一键装成可停靠面板」。识别错了，用户就完全没办法装。
+   FIX: - 置灰的项点了之后弹确认框，做法和 jsxbin 一样：「看不出「X」是面板脚本：代码里没有判断 Panel。装进去后如果「窗口」菜单里多出一个空面板，在 ⋯ 里点「卸载停靠面板」就行」，按钮为「取消 / 仍要安装」。
+- clicktest 场景 4 改成断言：点击后出现确认框，选「仍要安装」会调用 dockInstall。
+
+[medium] A2 只复制脚本主文件，不处理它的 #include 依赖。
+- sniff 已经读了全文，却不解析 `#include`、`//@include`，也不解析用相对路径的 `$.evalFile`。
+- 这类脚本装完提示「已安装」，要等重启 AE、从「窗口」菜单打开时才报错。失败的反馈晚了一整个重启，违背「每次点击都有可见反馈」。
+- A §4.4 只提醒了同名的素材文件夹。
+   FIX: - sniff 时顺带提取相对路径的 include 列表；dockInstall 检查这些文件放进 ScriptUI Panels 后能不能找到。
+- 找不到就在确认框里列出来：「一起复制依赖文件：「X」引用了 lib/ui.jsx，只装主文件的话停靠面板打不开。点「一起复制」把这些文件按原来的相对位置放过去」。
+- 只复制被引用的文件，并记进安装清单；卸载时一起移进备份。
+- 绝对路径的 include 不处理，只提示。
+- hosttest 加「带 #include 的脚本」用例。
+
+[medium] 「撤销一步到位」在 A 里被推迟成「R2 确认之前保持现状、不套撤销组」（A §6.2）。也就是说 3.9 发出去时，不自己分组的脚本仍然要按好几次撤销。另外还有两个问题：
+- 原型的判断是 `group = info.panel !== true`（/tmp/claude-0/-home-user--/af7c9a59-84cf-5f30-9a85-a817b1e77a9c/scratchpad/a-proto/host-a.jsx:1773，已核实）。jsxbin 的 panel 是 null，会被套组，而商业面板脚本大多是 jsxbin；只开 palette、不判断 Panel 的脚本也会被套组。两种情况都会留下空的「运行「X」」撤销记录。
+- R 清单里漏了一个风险：用户脚本在自己的撤销组里抛错，或者多调一次 endUndoGroup 时，外层组可能触发 AE 的「Undo group mismatch, will attempt to fix」警告【可能】。
+   FIX: - 撤销组默认就开，但只套 ext 为 jsx、panel === false 且 palette === false 的脚本。这类脚本的修改都在 evalFile 期间同步完成。jsxbin 和 palette 脚本不套。
+- R 清单加 R16：脚本在自己的撤销组里抛错、多调一次 endUndoGroup、中途用 app.open 打开另一个工程时，外层组各是什么表现。
+- R2 只决定 jsxbin 要不要也纳入。
+- hosttest 加用例：jsxbin 和只开 palette 的脚本不开撤销组。
+
+[medium] 两份方案合起来，还缺这几类测试：
+① jsx 没有「未声明标识符」检查。es3check 只查语法和 ES5 方法（已核实）。从 host.jsx 剪出 287 行、再复制 JSON / fail / listFiles 时，漏掉一个辅助函数只会在 AE 里变成 ReferenceError。这次抽查确认 Studio 那一段目前是自洽的。
+② Mac 安装脚本只在 Linux 的 bash 5 + GNU 工具下测过。macOS 的 /bin/bash 是 3.2，sort、stat、date、sed -i 也都是 BSD 版本。
+③ 许可证随包没有自动检查。已核实：livephoto.js 头注释指向的 third_party/video-to-live-photo/ 搬家后路径仍然有效，NOTICE 也跟着走了。缺的是防止以后回归的检查。
+④ host.jsx 和 studio.jsx 各一份的 q / stringify / fail / listFiles / call() 外壳，以后会各自演化（A 会改 call() 的 catch）。
+⑤ installtest 只覆盖 3.7 → 3.8，没有更早版本装在系统目录的情况。3.7 的脚本还在用 sudo 删系统目录，说明更早的版本装过那里。
+   FIX: ① es3check 再加一遍 acorn-walk：收集 IIFE 里用到但没声明的标识符，减去 ExtendScript 全局白名单（app、$、File、Folder、Window…），两个 jsx 都跑。
+② installtest 在 bash 3.2（例如 bash:3.2 容器）里再跑一遍，并过 shellcheck；版本比较用纯 bash 函数，不用 sort -V。
+③ versioncheck --release 检查三件事：带 fonts/ 的包必须有 fonts/OFL.txt；带 livephoto.js 的包必须有 third_party/video-to-live-photo/ 下的 4 个文件；面板包里不能再有 livephoto.js 或 third_party/。
+④ 两个 jsx 里复制的那几段用 `// <shared:json>…</shared:json>` 标出来，shared.js 一并逐字比较。
+⑤ installtest 加一个夹具：3.4.x 装在系统目录，3.7 装在用户目录。
+
+[medium] 工作量偏低，而且两份方案的真机测试各算各的。
+- B 给「备份和回滚脚本（Mac / Win）+ installtest」估了 1.5 人日。它要覆盖两个平台的预检、回滚、轮换和假 HOME 测试，再加上 Windows 改用 PowerShell、两阶段安装、降级保护、备份轮换这几条，至少要 3.5 人日。
+- B 给「拆 brand.css + 扩大 cssprobe + brandlint」估了 1 人日。光是悬停、按下、编辑模式、各个对话框、横幅、⌘K 这些状态的 Playwright 驱动，就要 1 天以上。
+- 真机方面，B 的 M0 + M2 共 2 天，A 的 R1–R15 共 2 天。但 A 要求 mac/win × AE 2022/2025 × 中/英界面，共 8 个组合；B 还要测 AE 次版本升级和工作区重启。
+- AE 2022 现在还能不能从 Creative Cloud 装到【未核实】，而 manifest 声明支持 22.0。
+- 「把 A 合到 B 之上」这部分完全没有估。
+   FIX: 重排工作量：
+- B 约 9 人日：安装 3.5、CSS 1.5，其余不变，另加面板 Node fs 写盘、Studio 写入权限检查、旧后台名提示约 0.5。
+- A 约 12.5 人日（不含真机），另加改名、识别缓存、include 依赖、识别正则修正约 1。
+- A/B 整合 1 人日。
+- 合并后的真机矩阵 5 人日，含一轮修复和复测。
+阶段 4 合计约 26 人日（原来 20）。开工前先确认有能装 AE 2022 的测试机；装不到，就把 Host 下限改成能测到的最低版本，并写进 3.8 的更新说明。
+
+[low] Studio 设置采用「studio.json 优先」（B §8），在两种情况下会吞掉用户的设置：
+① 回滚到 3.7 期间，在 3.7 里改过的设置（3.7 只写 localStorage），重新升级时会被旧的 studio.json 盖掉。
+② 3.7 时在 AE 2024 和 AE 2025 里各用一套设置的用户，升级后先启动的那个 AE 版本把设置写进 studio.json，另一个版本的那套被静默丢掉。
+   FIX: - 3.8 每次写 studio.json 时，在 localStorage 里同时记一个 `mhs.__disk`，即这次写入内容的哈希。
+- 启动时，如果 localStorage 里的 mhs.* 和 `mhs.__disk` 对不上（说明之后被旧版 Studio 改过），就以 localStorage 为准，并写回 studio.json。
+- 被覆盖的那份存进 studio.json 的 replaced 字段，不直接丢。
+- clicktest 的「设置搬家」用例加一条：回滚期间改过设置，再升级。
+
+[low] A 新增的状态文件沿用 writeText 的写法：先截断，再写入（host.jsx:1819 直接 open("w")）。AE 中途崩溃会留下空文件。
+- 原型的 readState 遇到空字符串直接返回默认值，也不另存 .bad（/tmp/claude-0/-home-user--/af7c9a59-84cf-5f30-9a85-a817b1e77a9c/scratchpad/a-proto/patch-lib.jsx:78，已核实）。收藏就这么没了。
+- 安装清单 panels_installed.json 丢了更麻烦：用户被替换掉的原 ScriptUI 面板备份再也关联不上，「撤销安装」也放不回原文件。
+   FIX: - 所有新文件都按这个顺序写：先写 .tmp，再把旧文件改名为 .bak，最后把 .tmp 改名为正式文件（File.rename）。
+- 读的时候，正式文件缺失或为空就读 .bak。
+- panels_installed.json 每次变动时，另外追加一行到 panels_installed.log，丢了能重建。
+- hosttest 加「写到一半失败」用例。
+
+[low] A 的识别逻辑有两处细节会出错：
+① 原型的 palette 判断是 `/["']palette["']/`，要求 palette 后面紧跟引号。ScriptUI 的资源字符串写法 `new Window("palette { … }")` 匹配不到，于是被判成「没有浮动分支」，并提示用户「这个脚本可能只能停靠使用」，这句话是错的。
+② 尾部读取用的是 `file.seek(65536, 2)`。Tools Guide 只写了 mode 2 是「Seek backward from the end」，没说参数该写正数还是负数。test.js 的 mock 正是按原型的假设写的（len - pos），符号写反了也测不出来。
+   FIX: - palette 判断改成 `/["']palette\b/i`。
+- 尾部读取改用绝对位置，不再依赖正负号：`file.seek(Math.max(0, file.length - 65536), 0)`。
+- hosttest 加一个用资源字符串创建 palette 的夹具。
+
+[low] 3.7 的前端和 3.8 的 host.jsx 可能出现在同一个 AE 会话里。
+- 触发条件：AE 开着时被装上了新版，可能是 AE 进程检测漏报，也可能是用户手动拷了文件夹。
+- 之后打开任何一个面板，ScriptPath 都会从原路径重新执行 host.jsx，而那里已经是 3.8 的文件。
+- 还开着的 3.7 Studio，每个操作都会收到「未知操作：listComps」，用户不知道该怎么办。
+   FIX: - 3.8 的 host.jsx 在 call() 里，把 Studio 的 7 个旧名字（listComps、renderComp、pickVideos、saveFile、chooseFolder、studioRender、studioBuild）映射成一条提示：「重启 After Effects：Studio 已更新为单独的扩展，重启后从「窗口 → 扩展 → MotionHub Studio · 剪辑排版」打开」。
+- hosttest 加一条对应用例。
+
+[low] 「打开 Studio」和 Studio 的冲突提示，各有一句文案会把用户带进死胡同：
+① onDisk 状态说「没出现就重启 AE 再点」。可如果 Studio 装了但加载失败（manifest 损坏、文件不全），重启后还是 onDisk，用户会被反复要求重启。
+② Studio 的冲突提示只给「更新 MotionHub 到 3.8」一条路（B §7）。但触发它的典型场景之一，恰恰是用户故意用 3.7 的老安装脚本回退；B §12 自己也说老脚本会留下 com.windwings.studio。
+   FIX: ① 给出「重启」提示时记下当时的会话标记，例如在 $.global 里存一个时间戳。重启后如果还是同一个状态，就改说：「重新安装 Studio：文件夹在，但 AE 没有加载它（文件可能不完整）。重新运行安装包里的「安装-Mac.command」」。
+② 冲突提示给两条路：「…要用 3.8：运行 MotionHub 3.8 安装包里的「安装-Mac.command」；要留在 3.7：运行「回滚-Mac.command」，它会把单独的 Studio 移进备份」。
+
+[low] A3 有三处范围没写清：
+① 代码片段在脚本库页的另一个分段里，⌘K 也会列出它们。需求写的是「脚本库加最近使用和收藏」，方案却只覆盖脚本文件。
+② 收藏放在脚本库根目录，跟着库走。README 说脚本库可以放在网盘上供多台电脑共用。如果这是团队共享的 NAS，一个人取消收藏就会影响所有人。这是产品决定，不是实现细节。
+③ 收藏会跟着搬家的文件走，但面板上同一个 key 的脚本按钮不会，仍然显示「（缺失）」，两处行为不一致。
+   FIX: - 在方案里写明代码片段参不参与。参与的话，用 `snippet:<id>` 作 key，存在同一个文件里。
+- 把「收藏跟着库走，还是跟着人走（存 userData）」列进决定项，并给出推荐。
+- 面板按钮渲染时套用同一条规则：库里只有一个同名文件，就指向它。只在显示时解析，不改 panelN.json，不需要迁移。
+
+[low] 有几条文案不符合「以动词开头、说清哪里不对、怎么修」：
+- A：「只有 .jsx / .jsxbin 脚本能安装为停靠面板」——不以动词开头，也没给修法。
+- A：「「X.jsx」不是 MotionHub 装的：…」「AE 重启后没有加载「X.jsx」：…」——以名词开头。
+- A 的升级横幅：「AE 升级到了 24.4，之前装的 2 个停靠面板要重新装一次」。
+- B：「找不到可以退回的版本：备份文件夹 … 是空的，这次什么都没改」——没给修法。
+   FIX: 依次改为：
+- 「换一个 .jsx 或 .jsxbin 脚本：预设（.ffx）不能装成停靠面板」
+- 「手动删除「X.jsx」：它不是 MotionHub 装的。在设置页点「打开 ScriptUI Panels 文件夹」删掉它，重启 AE 后生效」
+- 「重新安装「X.jsx」：AE 重启后没有加载它。点 ⋯ →「更新停靠面板」；还不行，用 AE 菜单「文件 → 脚本 → 安装 ScriptUI 面板…」」
+- 「重新安装 2 个停靠面板：AE 升级到了 24.4，旧版本里装的不会自动带过来」
+- 「手动退回旧版：备份文件夹 … 是空的（这台电脑第一次装的就是 3.8），这次什么都没改。要用 3.7，先删掉 …/com.windwings.studio，再运行 3.7 的安装脚本」
+
+[low] 有几条和平台版本有关的假设，已经过时或可能过时：
+① README:25 教 Mac 用户「右键 → 打开 → 再点一次「打开」」来绕过拦截。macOS 15 起这条路被去掉了，要到「系统设置 → 隐私与安全性」里点「仍要打开」【可能】。新加的「回滚-Mac.command」同样会被拦。
+② 「窗口 → 扩展」这条菜单路径散落在几十处文案里，两份方案又各加了十几处。AE 引入 UXP 后，可能会像 Photoshop 那样把这个菜单改名为「扩展（旧版）」【未核实】。
+③ 两个安装脚本都只给 CSXS 9–13 写 PlayerDebugMode。下一版 AE 如果用 CSXS 14，两个包都会静默加载不出来。
+   FIX: ① README 和两个 .command 的说明同时写 macOS 14 及以前、macOS 15 及以后的做法。M2 在 macOS 15 以上的系统上，从浏览器下载 zip 实测一次。
+② 菜单路径集中成一个常量，前端一处、安装脚本一处。M0 在当前 AE 的中文和英文界面里核对实际的菜单名。
+③ PlayerDebugMode 的循环扩到 CSXS 9–16，多写几个版本没有坏处。
+
+[low] 如果用户「更换」脚本库时，选了插件目录里的文件夹（例如 …/CEP/extensions/com.windwings.motionhub/ 下面的某个文件夹）：
+- 每次安装，它都会连同旧包一起被移进备份，轮换后被自动删除。
+- 代码片段 _snippets.json 和收藏也在这个文件夹里，会一起丢。
+- LIB.chooseLibrary 现在没有任何检查（host.jsx:1787）。
+概率很低，但一旦发生，整个脚本库就没了。
+   FIX: - LIB.chooseLibrary 拒绝插件目录（EXT_ROOT，或前端传来的插件目录）里面的路径，提示：「换一个文件夹：插件目录在每次升级时会被整个替换，放在这里的脚本会丢」。
+- 安装脚本把旧包移进备份之前，如果发现包里有安装包清单之外的 .jsx / .jsxbin / .ffx / _snippets.json，就先停下来列出这些文件并说明情况，而且这份备份不参与自动轮换。
+
+[low] 代码事实抽查结果，供合并方案引用。
+与仓库一致的：
+- LIB.run 直接调用 $.evalFile，没有 try/catch，jsx 不开撤销组（host.jsx:1754–1769、2278–2281）。
+- call() 遇到 throw null 时，读 e.isUser 会再抛一次（2284–2285）。
+- install、writeDropped、remove 会覆盖同名文件（1742、1852–1856、1782）。
+- toPanels 复制的是源文件，拖放时这个选项被忽略（1748；main.js 拖放处只传 name/cat/b64）。
+- userPanelsFolder 的 x.y 拼法（1681–1688）。
+- ⌘K 列表截到 40 条（openPalette 里的 slice(0,40)）。
+- 「打开 Studio」不做检查就报成功（main.js:646–648）。
+- bridge.js 写死了 MH、host.jsx 和 3.7.0（15、43、47、48、71、212）。
+- 两个安装脚本都删 *motionhub* 缓存（Mac 33–34、Win 25–26）。
+- Studio 段 1914–2200 是自洽的：面板代码不引用其中任何辅助函数，main.js 也不调用 Studio 的 7 个后台函数。
+- 3.6–3.7 期间，Studio 专属文件只改了 studio.html 里的 9 处版本号。
+- B 的原型补丁对 d991307 仍能通过 git apply --check。
+- File.copy 会覆盖目标文件（Tools Guide file-object.md:585）。
+不一致或有遗漏的只有两处：Windows 系统扩展目录少了一处；File.seek 的 mode 2 参数正负号没有依据。
+   FIX: 结论不用改。B 合并后，把 A 引用的 host.jsx 行号整体重算一遍（见第 1 条）；合并方案里的所有行号统一注明基线 commit。
+
