@@ -10,10 +10,12 @@ if [ ! -d "$ID" ]; then
     read -n 1 -s -r -p "按任意键关闭…"; exit 1
 fi
 
-# AE 开着时装新版不会生效。-x 只认进程名正好是「After Effects」的，不会把路径里带这几个字的别的程序当成 AE
-while pgrep -x "After Effects" >/dev/null 2>&1; do
+# AE 开着时装新版不会生效。-U 只查当前用户自己开的 AE，别的账户开着的不拦。
+# 只认进程名以「After Effects」开头的（正式版和 Beta 版都算）；不加 -f，路径里带这几个字的别的程序（包括本脚本）不会被当成 AE
+while pgrep -U "$(id -u)" "^After Effects" >/dev/null 2>&1; do
     echo "⚠ After Effects 正在运行。请先完全退出 AE（Cmd+Q），退出后按任意键继续；按 Q 放弃安装。"
-    read -n 1 -s -r KEY
+    # 读不到按键（没有终端、输入已结束）就停下，不要一直空转
+    read -n 1 -s -r KEY || { echo "读不到键盘输入，已放弃安装。请先退出 AE，再双击运行本文件。"; exit 1; }
     if [ "$KEY" = "q" ] || [ "$KEY" = "Q" ]; then
         echo "已放弃安装，什么都没有改动。"
         exit 0

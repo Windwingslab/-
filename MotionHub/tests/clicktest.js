@@ -205,7 +205,7 @@ async function runRegressions(browser) {
     await page.click("#banner-btn");
     await page.waitForTimeout(800);
     const r1 = await page.evaluate(() => ({
-        saves: window.__saves.map(s => JSON.parse(s.text).items.length),
+        saves: window.__saves.filter(s => s.name === "panel3").map(s => JSON.parse(s.text).items.length),
         banner: document.querySelector("#banner").hidden,
         cells: document.querySelectorAll("#layout .cell").length,
         bubble: document.querySelector(".fb") && !document.querySelector(".fb").hidden ? document.querySelector(".fb").textContent : ""

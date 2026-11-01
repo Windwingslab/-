@@ -12,12 +12,16 @@ if not exist "%SRC%" (
     exit /b 1
 )
 
-rem AE 开着时装新版不会生效
+rem AE 开着时装新版不会生效。tasklist 会列出所有 Windows 账户的进程，别的账户开着 AE 时可以按 I 直接安装
+rem 不按用户名筛选：以管理员身份运行的 AE，普通权限下可能查不出是谁开的，会被漏掉
 :checkae
 tasklist /FI "IMAGENAME eq AfterFX.exe" 2>nul | find /I "AfterFX.exe" >nul
 if errorlevel 1 goto aeclosed
 echo 注意：After Effects 正在运行。请先完全关闭 AE。
-choice /c CQ /n /m "关闭 AE 后按 C 继续，按 Q 放弃安装："
+rem choice 返回 C=1、Q=2、I=3，出错时是 255；errorlevel N 的意思是「大于等于 N」，所以从大到小判断
+choice /c CQI /n /m "关闭 AE 后按 C 继续；按 Q 放弃安装；AE 是别的 Windows 账户开的，按 I 直接安装："
+if errorlevel 4 goto giveup
+if errorlevel 3 goto aeclosed
 if errorlevel 2 goto giveup
 goto checkae
 :giveup
@@ -42,10 +46,14 @@ for %%r in ("%TEMP%\cep_cache" "%LOCALAPPDATA%\Temp\cep_cache") do (
 )
 
 rem 系统级目录里如果有旧版，AE 可能优先加载它（删除需要管理员权限，这里只提醒）
-set "SYS1=%ProgramFiles%\Common Files\Adobe\CEP\extensions\%ID%"
+rem 64 位目录用 ProgramW6432：从 32 位程序里打开本文件时，ProgramFiles 指的是 x86 目录
+rem 这几行不要放进括号块：x86 目录的路径里有右括号，会提前结束括号块
+set "PF64=%ProgramW6432%"
+if not defined PF64 set "PF64=%ProgramFiles%"
+set "SYS1=%PF64%\Common Files\Adobe\CEP\extensions\%ID%"
 set "SYS2=%ProgramFiles(x86)%\Common Files\Adobe\CEP\extensions\%ID%"
 if exist "%SYS1%" echo 注意：系统目录里还有一份旧版，AE 可能一直加载它。请以管理员身份删除这个文件夹：%SYS1%
-if exist "%SYS2%" echo 注意：系统目录里还有一份旧版，AE 可能一直加载它。请以管理员身份删除这个文件夹：%SYS2%
+if /i not "%SYS2%"=="%SYS1%" if exist "%SYS2%" echo 注意：系统目录里还有一份旧版，AE 可能一直加载它。请以管理员身份删除这个文件夹：%SYS2%
 
 rem 允许加载未签名扩展（AE 2020 及以上对应 CSXS 9-16）
 for %%v in (9 10 11 12 13 14 15 16) do reg add "HKCU\Software\Adobe\CSXS.%%v" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul
