@@ -180,10 +180,13 @@ async function openPanel(browser, port, n, local, ctxIn) {
         const fails = state.disk.log.filter(l => l[0] === "EPERM").length;
         const errs = [].concat(...panels.map(p => p.errors));
         // AE restarted: same localStorage, no more failures
+        // 关掉前把每个面板的本机缓存原样记下来，重开时用它（浏览器在关掉最后一个页面时偶尔会丢掉还没提交的 localStorage，这是测试环境的问题）
+        const snaps = [];
+        for (const p of panels) snaps.push(await p.page.evaluate(() => { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.indexOf("mh.") === 0) o[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } return o; }));
         for (const p of panels) await p.page.close();
         state.renameFail = 0;
         const again = [];
-        for (let i = 0; i < 4; i++) again.push(await openPanel(browser, port, i + 1, null, panels[i].ctx));
+        for (let i = 0; i < 4; i++) again.push(await openPanel(browser, port, i + 1, snaps[i], panels[i].ctx));
         await Promise.all(again.map(p => p.go()));
         await again[0].page.waitForTimeout(5000);
         const s2 = inspect(state.disk.mem);

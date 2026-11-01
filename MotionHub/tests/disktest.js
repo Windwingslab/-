@@ -112,6 +112,8 @@ async function openPanel(browser, o) {
         calls: () => page.evaluate(() => window.__calls.slice()),
         hint: () => page.evaluate(() => document.querySelector("#hint").textContent),
         bubble: () => page.evaluate(() => { const f = document.querySelector(".fb"); return f && !f.hidden ? f.className + " | " + f.textContent : ""; }),
+        // 关面板前把本机缓存原样记下来，重开时用它（浏览器在关掉最后一个页面时偶尔会丢掉还没提交的 localStorage，这是测试环境的问题）
+        local: () => page.evaluate(() => { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.indexOf("mh.") === 0) o[k.slice(3)] = JSON.parse(localStorage.getItem(k)); } return o; }),
         close: () => page.close()
     };
 }
@@ -227,10 +229,10 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const ctx = await browser.newContext();
         const p2 = await openPanel(browser, { ctx, panel: 1, disk: { [SNIP]: JSON.stringify([{ id: "x", kind: "expr", name: "磁盘上的", code: "1" }]) }, canWrite: false, node: true, local: {}, failRename: { "_snippets.json": "always" } });
         await addSnippet(p2, "一直没写进去的", "value + 7");
-        const disk2 = await p2.disk();
+        const disk2 = await p2.disk(), local2 = await p2.local();
         await p2.close();
         check("一直写不进去：磁盘上还是旧的", !names(J(disk2, SNIP)).includes("一直没写进去的"));
-        const p3 = await openPanel(browser, { ctx, panel: 1, disk: disk2, canWrite: false, node: true, local: null });
+        const p3 = await openPanel(browser, { ctx, panel: 1, disk: disk2, canWrite: false, node: true, local: local2 });
         const d3 = await until(p3.disk, d => names(J(d, SNIP)).includes("一直没写进去的"));
         check("下次启动：本机缓存里没写进去的片段合并回磁盘，磁盘上原有的也在", names(J(d3, SNIP)).includes("一直没写进去的") && names(J(d3, SNIP)).includes("磁盘上的"), d3[SNIP]);
         await p3.close(); await ctx.close();
@@ -248,9 +250,9 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         check("一次失败之后，后面的改动仍然写进磁盘（不会整场只存本机缓存）", J(dl, CFG + "panel1.json").name === "名字三", dl[CFG + "panel1.json"]);
         await L.page.evaluate(() => window.__setFail({ "panel1.json": "always" }));
         await renamePanel(L, "名字四"); await L.page.waitForTimeout(500);
-        const dl2 = await L.disk();
+        const dl2 = await L.disk(), ll2 = await L.local();
         await L.close();
-        const L2 = await openPanel(browser, { ctx: ctxL, panel: 1, disk: dl2, canWrite: false, node: true, local: null });
+        const L2 = await openPanel(browser, { ctx: ctxL, panel: 1, disk: dl2, canWrite: false, node: true, local: ll2 });
         const dL2 = await until(L2.disk, d => (J(d, CFG + "panel1.json") || {}).name === "名字四");
         check("最后一次没写进去就关了 AE：下次启动以本机缓存为准，并写回磁盘", (await L2.config()).name === "名字四" && J(dL2, CFG + "panel1.json").name === "名字四", JSON.stringify([(await L2.config()).name, dL2[CFG + "panel1.json"]]));
         await L2.close(); await ctxL.close();
