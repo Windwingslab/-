@@ -105,9 +105,16 @@ async function runPanel(browser, n, opts) {
     const results = [];
     for (let i = 0; i < total; i++) {
         const sel = '[data-ct="' + i + '"]';
+        // 有的操作会重绘整个布局（比如复制样式后更新组件标题），每次都按顺序重新标记第 i 个控件
+        await page.evaluate((i) => {
+            document.querySelectorAll("[data-ct]").forEach(n => n.removeAttribute("data-ct"));
+            const list = Array.from(document.querySelectorAll("#layout button, #layout .chip, #layout canvas.wave"));
+            if (list[i]) list[i].setAttribute("data-ct", i);
+        }, i);
         const info = await page.evaluate((sel) => {
             const el = document.querySelector(sel);
-            if (!el || !el.isConnected || el.offsetParent === null) return null;
+            if (!el || !el.isConnected) return { gone: "重绘后控件变少（比如切换了时间排列的模式），这个序号已不存在" };
+            if (el.offsetParent === null) return { gone: "当前隐藏（比如快速动画只有选「滑动」时才显示方向按钮），用户也点不到" };
             const cell = el.closest(".cell");
             return {
                 cls: el.className, text: (el.textContent || "").trim().slice(0, 24),
@@ -116,7 +123,7 @@ async function runPanel(browser, n, opts) {
                 needs: el.dataset.needs || ""
             };
         }, sel);
-        if (!info) { results.push({ i, skipped: "已不在页面上（之前的点击重绘了组件）" }); continue; }
+        if (info.gone) { results.push({ i, skipped: info.gone }); continue; }
         const before = await page.evaluate((sel) => ({
             calls: window.__calls.length,
             cls: document.querySelector(sel).className,
@@ -466,6 +473,8 @@ async function runStudio(browser, opts) {
         if (noNeeds.length) { fail++; lines.push("  ✗ 会调用选区类工具、却没有声明 needs 的控件：" + noNeeds.map(r => r.info.widget + "/" + (r.info.text || r.info.cls) + "→" + r.calls.join("+")).join("，")); }
         const withNeeds = p.results.filter(r => r.info && r.info.needs).length;
         lines.push("  声明了 needs 的控件 " + withNeeds + " 个");
+        const skipped = p.results.filter(r => r.skipped);
+        if (skipped.length) lines.push("  跳过 " + skipped.length + " 个：" + Array.from(new Set(skipped.map(r => r.skipped))).join("；"));
         if (toolDead.length) { fail++; lines.push("  ✗ 工具按钮既没有调用后台也没有气泡：" + toolDead.map(r => r.info.widget + "/" + (r.info.text || r.info.cls)).join("，")); }
     });
     lines.push("Studio：按钮 " + studio.results.length + " 个 · 外部请求 " + studio.requests.length + " 个 · JS 错误 " + studio.errors.length + " 个 · 按键登记 " + studio.keys);
