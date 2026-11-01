@@ -42,7 +42,14 @@ function startServer(state) {
                     if (op === "mkdirSync") { let d = args[0]; const add = []; while (d && d !== "/" && !D.dirs.has(d)) { add.push(d); d = dirOf(d); } add.forEach(x => D.dirs.add(x)); out = { ok: true }; }
                     else if (op === "existsSync") out = { ok: true, v: args[0] in D.mem || D.dirs.has(args[0]) };
                     else if (op === "unlinkSync") { if (!(args[0] in D.mem)) err("ENOENT"); delete D.mem[args[0]]; out = { ok: true }; }
-                    else if (op === "writeFileSync") { if (!D.dirs.has(dirOf(args[0]))) err("ENOENT"); D.mem[args[0]] = String(args[1]); out = { ok: true }; }
+                    else if (op === "writeFileSync") {
+                        if (!D.dirs.has(dirOf(args[0]))) err("ENOENT");
+                        const wx = args[2] && args[2].flag === "wx";
+                        if (wx && args[0] in D.mem) err("EEXIST");
+                        D.mem[args[0]] = String(args[1]);
+                        if (wx) { D.mt = D.mt || {}; D.mt[args[0]] = Date.now(); }
+                        out = { ok: true };
+                    }
                     else if (op === "renameSync") {
                         if (!(args[0] in D.mem)) err("ENOENT");
                         if (state.renameFail && rnd() < state.renameFail) { D.log.push(["EPERM", args[1], args[2]]); err("EPERM"); }
@@ -51,7 +58,10 @@ function startServer(state) {
                     else if (op === "readFileSync") { if (!(args[0] in D.mem)) err("ENOENT"); out = { ok: true, v: D.mem[args[0]] }; }
                     else if (op === "openSync") { if (!D.dirs.has(dirOf(args[0]))) err("ENOENT"); if (args[1] === "wx" && args[0] in D.mem) err("EEXIST"); D.mem[args[0]] = ""; D.mt = D.mt || {}; D.mt[args[0]] = Date.now(); out = { ok: true, v: 3 }; }
                     else if (op === "closeSync") out = { ok: true };
-                    else if (op === "statSync") { if (!(args[0] in D.mem)) err("ENOENT"); out = { ok: true, v: { mtimeMs: (D.mt && D.mt[args[0]]) || Date.now() } }; }
+                    else if (op === "statSync") {
+                        if (D.dirs.has(args[0])) out = { ok: true, v: { dir: true, mtimeMs: 0, size: 0 } };
+                        else { if (!(args[0] in D.mem)) err("ENOENT"); out = { ok: true, v: { dir: false, mtimeMs: (D.mt && D.mt[args[0]]) || 0, size: String(D.mem[args[0]]).length } }; }
+                    }
                     else out = { ok: false, code: "EINVAL" };
                 } catch (e) { out = { ok: false, code: e.code || String(e) }; }
                 res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(out)); return;
@@ -111,8 +121,9 @@ async function openPanel(browser, port, n, local, ctxIn) {
         window.require = (m) => {
             if (m === "fs") return {
                 mkdirSync: (p, o) => call("mkdirSync", [p, o]), existsSync: p => call("existsSync", [p]), unlinkSync: p => call("unlinkSync", [p]),
-                writeFileSync: (p, t) => call("writeFileSync", [p, t]), renameSync: (a, b) => call("renameSync", [a, b, n]), readFileSync: p => call("readFileSync", [p]),
-                openSync: (p, f) => call("openSync", [p, f]), closeSync: (fd) => call("closeSync", [fd]), statSync: p => call("statSync", [p])
+                writeFileSync: (p, t, o) => call("writeFileSync", [p, t, o]), renameSync: (a, b) => call("renameSync", [a, b, n]), readFileSync: p => call("readFileSync", [p]),
+                openSync: (p, f) => call("openSync", [p, f]), closeSync: (fd) => call("closeSync", [fd]),
+                statSync: p => { const v = call("statSync", [p]); return { isDirectory: () => !!v.dir, mtimeMs: v.mtimeMs, size: v.size }; }
             };
             if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: p => p.replace(/\/[^\/]*$/, "") || "/", basename: p => p.replace(/^.*\//, "") };
             if (m === "os") return { homedir: () => HOME };

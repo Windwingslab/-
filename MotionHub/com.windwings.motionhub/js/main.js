@@ -61,27 +61,17 @@
         var w = B.disk.writeText(B.disk.configPath(name), text);
         return w.ok ? { ok: true, msg: "", via: "node" } : { ok: false, msg: w.msg };
     }
+    // 有 Node 就一律用 Node 读写配置：先写临时文件再改名，不会留下写了一半的文件；也不用排在后台的队列里等
     function writeConfigText(name, text) {
-        if (canWrite === false && B.disk.ok()) return Promise.resolve(nodeConfigWrite(name, text));
-        return B.host("saveConfig", { name: name, text: text }).then(function (r) {
-            if (r && r.ok) return r;
-            return B.disk.ok() ? nodeConfigWrite(name, text, r && r.msg) : r;
-        });
-    }
-    // 后台说文件不存在时，用 Node 再确认一次：ExtendScript 打不开、但文件其实在的时候，绝不能当成「没有」再去覆盖它
-    function confirmMissing(r, p) {
-        if (!(r && r.ok && r.data && blank(r.data.text)) || !B.disk.ok() || !p) return r;
-        var d = B.disk.readText(p);
-        if (!d.ok) return { ok: false, msg: d.msg };
-        return blank(d.text) ? r : { ok: true, msg: "", data: { text: d.text, libPath: r.data.libPath }, via: "node" };
+        if (B.disk.ok()) return Promise.resolve(nodeConfigWrite(name, text));
+        return B.host("saveConfig", { name: name, text: text });
     }
     function readConfigText(name) {
-        return B.host("loadConfig", { name: name }).then(function (r) {
-            if (r && r.ok) return confirmMissing(r, B.disk.ok() ? B.disk.configPath(name) : "");
-            if (!B.disk.ok()) return r;
+        if (B.disk.ok()) {
             var d = B.disk.readText(B.disk.configPath(name));
-            return d.ok ? { ok: true, msg: "", data: { text: d.text }, via: "node" } : r;
-        });
+            return Promise.resolve(d.ok ? { ok: true, msg: "", data: { text: d.text }, via: "node" } : { ok: false, msg: d.msg });
+        }
+        return B.host("loadConfig", { name: name });
     }
     function snippetsPath() { return libPathNow ? B.disk.join(libPathNow, "_snippets.json") : ""; }
     function writeSnippetsText(text) {
@@ -101,7 +91,7 @@
         return B.host("loadSnippets").then(function (r) {
             // 后台会说它读的是哪个脚本库：别的面板换过脚本库时，这个面板跟着换（片段写到新库里，脚本列表也刷新）
             if (r && r.ok && r.data && r.data.libPath) setLibPath(r.data.libPath);
-            if (r && r.ok) return confirmMissing(r, snippetsPath());
+            if (r && r.ok) return r;
             if (!B.disk.ok() || !snippetsPath()) return r;
             var d = B.disk.readText(snippetsPath());
             return d.ok ? { ok: true, msg: "", data: { text: d.text }, via: "node" } : r;
@@ -122,6 +112,21 @@
     var DISK_ADVICE = "改动先存在这台电脑的缓存里，会自动重试；一直不行就检查文件夹是否可写";
     function diskFail(what, why) { return { ok: false, disk: { what: what, why: why }, msg: what + "没写进磁盘（" + why + "）：" + DISK_ADVICE }; }
     function sameJSON(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+    // 后台同步（拿到焦点、自动重试、别的面板的改动）引起的重绘：有操作正在跑、对话框开着时先等一等，
+    // 免得被点的按钮被换掉、丢了「处理中」还能再点一次，或者对话框背后的列表变了
+    var renderWanted = false, renderTimer = null;
+    function renderSoon() {
+        renderWanted = true;
+        if (renderTimer) return;
+        (function tryNow() {
+            renderTimer = null;
+            if (B.inflight() > 0 || !$("#modal").hidden) { renderTimer = setTimeout(tryNow, 250); return; }
+            if (!renderWanted) return;
+            renderWanted = false;
+            renderSnippets();
+            if (cfg) renderLayout();
+        })();
+    }
     function wait(ms) { return new Promise(function (res) { setTimeout(res, ms); }); }
     function blank(t) { return t == null || !/\S/.test(t); }   // 不存在、0 字节（写到一半中断）、只有空白：都当成「还没有」
 
@@ -132,16 +137,16 @@
     // o.fork(x) / o.forkNote(x) / o.keptNote(x)：两个面板改了同一条时怎么留、怎么说；o.changed()：列表变了以后重绘
     // o.hostRead() / o.hostWrite(text)：没有 Node 时退回给后台读写
     function sharedList(o) {
-        var S = { synced: false, bad: false, retry: 0, timer: null, q: Promise.resolve(), ops: local.get(o.tag + "Ops", null) || [] };
+        var S = { synced: false, bad: false, retry: 0, timer: null, q: Promise.resolve(), stamp: "", told: {}, ops: local.get(o.tag + "Ops", null) || [] };
         function queued(fn) { var run = function () { return fn(); }; S.q = S.q.then(run, run); return S.q; }
         function saveOps() { local.set(o.tag + "Ops", S.ops); }
-        function badMsg(file) { return o.what + "文件损坏（" + file + "）：原文件没有动，改动先存在这台电脑的缓存里。修好或删掉这个文件后，改动会自动写进去"; }
+        function badMsg(file) { return o.what + "文件损坏（" + file + "）：原文件没有动，改动先存在这台电脑的缓存里。先备份这个文件再修，修好后改动会自动写进去"; }
         function parseText(text) {
             if (blank(text)) return { missing: true, list: [] };
             try { var l = o.parse(text); return Array.isArray(l) ? { list: l } : null; } catch (e) { return null; }
         }
         function idxOf(list, k) { for (var i = 0; i < list.length; i++) if (o.key(list[i]) === k) return i; return -1; }
-        // 把操作按顺序套到磁盘上现在的列表上
+        // 把操作按顺序套到磁盘上现在的列表上。notes：[{ kind: "fork" | "kept", key, text }]
         function apply(disk, missing, ops) {
             var list = disk.slice(), remap = {}, notes = [];
             ops.forEach(function (op) {
@@ -149,14 +154,20 @@
                 if (op.op === "put") {
                     i = idxOf(list, o.key(op.item));
                     if (i === -1) { list.push(op.item); return; }
-                    // 别的面板也改过这一条（磁盘上的既不是这边改之前的，也不是改之后的）：两个版本都留下
-                    if (op.prev && o.fork && !sameJSON(list[i], op.prev) && !sameJSON(list[i], op.item)) { list.push(o.fork(op.item)); notes.push(o.forkNote(op.item)); return; }
+                    // 别的面板也改过这一条（磁盘上的既不是这边改之前的，也不是改之后的）：两个版本都留下。
+                    // 副本的 id 记在操作里：重试时再套一遍不会多出第二份
+                    if (op.prev && o.fork && !sameJSON(list[i], op.prev) && !sameJSON(list[i], op.item)) {
+                        var copy = o.fork(op.item, op.forkId);
+                        if (idxOf(list, o.key(copy)) === -1) list.push(copy);
+                        notes.push({ kind: "fork", key: o.key(op.item), text: o.forkNote(op.item) });
+                        return;
+                    }
                     list[i] = op.item;
                 } else if (op.op === "del") {
                     i = idxOf(list, op.key);
                     if (i === -1) return;
                     // 别的面板在这期间改过这一条：不删
-                    if (op.prev && !sameJSON(list[i], op.prev)) { if (o.keptNote) notes.push(o.keptNote(list[i])); return; }
+                    if (op.prev && !sameJSON(list[i], op.prev)) { notes.push({ kind: "kept", key: op.key, text: o.keptNote ? o.keptNote(list[i]) : "" }); return; }
                     list.splice(i, 1);
                 } else if (op.op === "init") {
                     // 启动时：磁盘上还没有（或是空文件）→ 用本机缓存，没有缓存就用默认内容；
@@ -172,9 +183,9 @@
             return { list: list, remap: remap, notes: notes };
         }
         // Node：按目标文件分组，每个文件在锁里读、套操作、写回（同步，几毫秒）。
-        // 操作记着当时的目标文件：脚本库换了以后，换之前的改动仍然写回原来那个库
+        // 每组各管各的：换之前的脚本库打不开，不耽误现在这个库；当前文件的结果决定面板里显示什么
         function syncNode() {
-            var cur = o.file(), groups = [], byFile = {}, view = null;
+            var cur = o.file(), groups = [], byFile = {};
             S.ops.forEach(function (op, i) {
                 var f = op.f || cur;
                 if (!f) return;
@@ -183,10 +194,11 @@
             });
             if (cur && !byFile[cur]) { byFile[cur] = { f: cur, ops: [], idx: [] }; groups.push(byFile[cur]); }
             if (!cur && !groups.length) return { ok: false, later: true };
-            var done = {}, res = { ok: true, notes: [], remap: {} };
-            for (var g = 0; g < groups.length; g++) {
-                var G = groups[g];
-                var r = B.disk.withLock(G.f, function () {
+            // 共用文件被删掉了（同步盘出错、手动清理）：用面板里现在的列表写回去，不把大家的列表清空（init 只在文件不存在时起作用）
+            if (cur && !byFile[cur].ops.some(function (op) { return op.op === "init"; })) byFile[cur].ops.push({ op: "init", items: o.get().length ? o.get() : null, absorb: false, f: cur });
+            var done = {}, notes = [], remap = {}, view = null, curFail = null, other = null;
+            groups.forEach(function (G) {
+                var r = B.disk.withLock(G.f, function (mine) {
                     var d = B.disk.readText(G.f);
                     if (!d.ok) return { ok: false, msg: d.msg };
                     var p = parseText(d.text);
@@ -195,18 +207,23 @@
                     if (G.ops.length && (p.missing ? a.list.length > 0 : !sameJSON(a.list, p.list))) {
                         var w = B.disk.writeText(G.f, o.dump(a.list));
                         if (!w.ok) return { ok: false, msg: w.msg };
+                        // 写的时候锁被别人接管了：这次不算做成，操作留着下次再套（套两遍结果一样）
+                        if (!mine()) return { ok: false, busy: true };
                     }
                     return { ok: true, list: a.list, remap: a.remap, notes: a.notes };
-                });
-                if (!r || !r.ok) { res = r || { ok: false, msg: "没有返回" }; break; }
-                G.idx.forEach(function (i) { done[i] = true; });
-                res.notes = res.notes.concat(r.notes);
-                for (var k in r.remap) res.remap[k] = r.remap[k];
-                if (G.f === cur) view = r.list;
-            }
+                }) || { ok: false, msg: "没有返回" };
+                if (r.ok) {
+                    G.idx.forEach(function (i) { done[i] = true; });
+                    notes = notes.concat(r.notes);
+                    for (var k in r.remap) remap[k] = r.remap[k];
+                    if (G.f === cur) view = r.list;
+                } else if (G.f === cur) curFail = r;
+                else if (!other) other = { f: G.f, r: r };
+            });
             S.ops = S.ops.filter(function (op, i) { return !done[i]; });
             saveOps();
-            if (res.ok) { res.list = view; if (!cur) res.later = true; }
+            var res = curFail || { ok: true, list: view, later: !cur };
+            res.notes = notes; res.remap = remap; res.other = other;
             return res;
         }
         // 没有 Node（只在测试或装坏了的环境里）：交给后台读写，尽力而为
@@ -233,53 +250,97 @@
         function retryLater() {
             clearTimeout(S.timer);
             if (!S.ops.length) return;
-            S.timer = setTimeout(function () { S.sync(); }, [1000, 2000, 5000, 10000][S.retry] || 30000);
+            S.timer = setTimeout(function () { S.sync(true); }, [1000, 2000, 5000, 10000][S.retry] || 30000);
             S.retry++;
         }
         function finish(x) {
-            if (x && x.ok && x.list) {
-                S.synced = true; S.bad = false; S.retry = 0; clearTimeout(S.timer);
+            x = x || { ok: false, msg: "没有返回" };
+            var any = false, k;
+            for (k in (x.remap || {})) { any = true; break; }
+            if (any && o.onRemap) o.onRemap(x.remap);
+            // 换之前的脚本库打不开：那边的改动留着重试，说一次
+            if (x.other) {
+                retryLater();
+                if (o.otherNote && !S.told[x.other.f]) { S.told[x.other.f] = true; toast(o.otherNote(x.other.f, x.other.r)); }
+            }
+            if (x.ok && x.list) {
+                S.synced = true; S.bad = false;
+                if (!x.other) { S.retry = 0; clearTimeout(S.timer); }
                 var changed = !sameJSON(x.list, o.get());
                 o.set(x.list); o.localSet(x.list);
-                var any = false;
-                for (var k in x.remap) { any = true; break; }
-                if (any && o.onRemap) o.onRemap(x.remap);
+                S.stamp = B.disk.ok() && o.file() ? B.disk.stamp(o.file()) : "";
                 if (changed && o.changed) o.changed();
                 return { ok: true, notes: x.notes || [] };
             }
-            if (x && x.ok) return { ok: true, later: true, notes: x.notes || [] };   // 别的文件写好了，当前这个还不知道在哪里
-            S.bad = !!(x && x.bad);
+            if (x.ok) return { ok: true, later: true, notes: x.notes || [] };   // 别的文件写好了，当前这个还不知道在哪里
+            S.bad = !!x.bad;
             // 没有 Node、后台又没连上：不在后台反复去敲，恢复连接时（重新连接 / 自动恢复）会整体同步一次，改动留在本机缓存里
-            if (x && x.offline) return { ok: true, offline: true };
+            if (x.offline) return { ok: true, offline: true };
             retryLater();
-            if (x && x.later) return { ok: false, later: true, msg: o.what + "还不知道存在哪里（后台还没连上）：改动先存在这台电脑的缓存里，连上后自动写进去" };
+            if (x.later) return { ok: false, later: true, msg: o.what + "还不知道存在哪里（后台还没连上）：改动先存在这台电脑的缓存里，连上后自动写进去" };
+            if (x.busy) return { ok: false, busy: true, msg: o.what + "正被别的面板写入：改动先存在这台电脑的缓存里，稍后自动再试" };
             if (S.bad) return { ok: false, bad: true, msg: x.msg };
-            return diskFail(o.what, (x && x.msg) || "没有返回");
+            return diskFail(o.what, x.msg || "没有返回");
         }
-        S.sync = function () { return queued(function () { return attempt(0).then(finish); }); };
+        // bg = 不是用户点出来的（自动重试、拿到焦点、启动）：别的面板的改动被保留 / 另存时，在提示栏说一声
+        S.sync = function (bg) {
+            return queued(function () { return attempt(0).then(finish); }).then(function (r) {
+                if (bg && r && r.notes && r.notes.length) toast({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
+                return r;
+            });
+        };
         S.pending = function () { return S.ops.length > 0; };
-        // 启动 / 重新连上 / 换了脚本库：先用本机缓存显示，再和磁盘对上
+        // 面板拿到焦点：有没写进去的改动就写；文件没变（修改时间 + 大小一样）就不读
+        S.refresh = function () {
+            if (S.ops.length) return S.sync(true);
+            if (!S.synced || !B.disk.ok()) return Promise.resolve({ ok: true });
+            var f = o.file();
+            if (f && S.stamp && B.disk.stamp(f) === S.stamp) return Promise.resolve({ ok: true });
+            return S.sync(true);
+        };
+        // 启动 / 重新连上 / 换了脚本库：先用本机缓存显示，再和磁盘对上。每个文件只留一条 init，不越攒越多
         S.load = function () {
             return queued(function () {
-                var cached = o.localGet();
+                var cached = o.localGet(), f = o.file();
                 if (!S.synced && cached) o.set(cached);
                 // 开发版留下过「Dirty」标记（上次的改动没写进去）：同样合并一次
                 var legacy = local.get(o.tag + "Dirty", null) === true;
                 if (legacy) local.set(o.tag + "Dirty", null);
-                var absorb = !local.get(o.tag + "Merged", false) || legacy;
-                S.ops.push({ op: "init", items: cached, absorb: absorb && !!cached, f: o.file() });
+                var absorb = (!local.get(o.tag + "Merged", false) || legacy) && !!cached, init = null;
+                S.ops.forEach(function (op) { if (op.op === "init" && (op.f || "") === (f || "")) init = op; });
+                if (init) { init.items = cached; init.absorb = init.absorb || absorb; }
+                else S.ops.push({ op: "init", items: cached, absorb: absorb, f: f });
                 saveOps();
-                if (absorb) local.set(o.tag + "Merged", true);   // 合并这一步已经记成操作了，写不进去也会一直留着重试
+                local.set(o.tag + "Merged", true);   // 合并这一步已经记成操作了，写不进去也会一直留着重试
                 return attempt(0).then(finish);
+            }).then(function (r) {
+                if (r && r.notes && r.notes.length) toast({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
+                return r;
             });
         };
-        // 用户的一次改动：面板里的列表已经改好了，这里记下操作并写进磁盘
+        // 换了脚本库：旧库上的 init 只是给不存在的文件写默认内容，丢掉；老版本本机列表的合并移到新库，别困在打不开的旧库上；
+        // 旧库上的加 / 改 / 删留着，等旧库能打开时写回去
+        S.retarget = function (from, to) {
+            var n = S.ops.length;
+            S.ops = S.ops.filter(function (op) {
+                if (op.op !== "init" || op.f !== from) return true;
+                if (op.absorb) { op.f = to; return true; }
+                return false;
+            });
+            if (S.ops.length !== n || S.ops.some(function (op) { return op.f === to; })) saveOps();
+        };
+        // 用户的一次改动：面板里的列表已经改好了，这里记下操作并写进磁盘。返回的 mine = 这次改动自己的说明（被保留 / 另存了）
         S.change = function (op) {
             op.f = o.file();
+            if (op.op === "put" && op.prev && !op.forkId) op.forkId = uid();
             S.ops.push(op); saveOps();
             o.localSet(o.get());
             S.retry = 0;
-            return S.sync();
+            var k = op.op === "del" ? op.key : o.key(op.item);
+            return S.sync().then(function (r) {
+                if (r && r.notes) r.mine = r.notes.filter(function (n) { return n.key === k; });
+                return r;
+            });
         };
         return S;
     }
@@ -373,18 +434,33 @@
     var errParts = [], errAt = 0;
     // 几个错误前后脚出现（比如启动时两个文件夹都写不进去）：合成一句显示，不互相覆盖；几处写盘失败只说一次怎么办
     function errText(parts) {
-        var disks = parts.filter(function (x) { return x.disk; }), texts = parts.filter(function (x) { return !x.disk; }).map(function (x) { return x.msg; });
+        var disks = parts.filter(function (x) { return x.disk; }), texts = [], files = [], dones = [], byRest = {}, order = [];
+        // 「连接后台失败：X」「读取脚本库失败：X」→「连接后台、读取脚本库失败：X」
+        parts.forEach(function (x) {
+            if (x.disk) return;
+            var m = /^(.{1,12}?)失败：([\s\S]+)$/.exec(x.msg), rest = m ? m[2] : x.msg;
+            if (!byRest[rest]) { byRest[rest] = []; order.push(rest); }
+            if (m && byRest[rest].indexOf(m[1]) === -1) byRest[rest].push(m[1]);
+            if (!m) byRest[rest].plain = true;
+        });
+        order.forEach(function (rest) { var who = byRest[rest]; texts.push(who.length && !who.plain ? who.join("、") + "失败：" + rest : rest); });
         if (disks.length === 1) texts.push(disks[0].msg);
-        else if (disks.length > 1) texts.push("这些没写进磁盘：" + disks.map(function (x) { return x.disk.what + "（" + x.disk.why + "）"; }).join("；") + "。" + DISK_ADVICE);
-        return texts.join("；");
+        else if (disks.length > 1) {
+            disks.forEach(function (x) {
+                var f = x.disk.what + "（" + x.disk.why + "）";
+                if (files.indexOf(f) === -1) files.push(f);
+                if (x.done && dones.indexOf(x.done) === -1) dones.push(x.done);
+            });
+            texts.push((dones.length ? dones.join("、") + "，但" : "") + "这些没写进磁盘：" + files.join("；") + "。" + DISK_ADVICE);
+        }
+        return texts.slice(-3).join("；");
     }
     function toast(r) {
         if (!r || (!r.msg && r.ok)) return r;
         var msg = r.msg;
         if (!r.ok) {
-            if (Date.now() - errAt > 4000) errParts = [];
-            errAt = Date.now();
-            if (!errParts.some(function (x) { return x.msg === r.msg; })) errParts.push({ msg: r.msg, disk: r.disk });
+            if (Date.now() - errAt > 4000) { errParts = []; errAt = Date.now(); }
+            if (!errParts.some(function (x) { return x.msg === r.msg; })) errParts.push({ msg: r.msg, disk: r.disk, done: r.done });
             msg = errText(errParts);
         } else errParts = [];
         clearTimeout(toastTimer);
@@ -748,7 +824,12 @@
     function loadConfig() {
         return readConfigText("panel" + PANEL).then(function (r) {
             var c = null, bad = false, fromLocal = false;
-            try { if (r.ok && r.data && r.data.text) c = JSON.parse(r.data.text); } catch (e) { bad = true; }
+            try { if (r.ok && r.data && !blank(r.data.text)) c = JSON.parse(r.data.text); } catch (e) { bad = true; }
+            // 布局文件坏了（写到一半断电等）：挪到旁边留着，用这台电脑缓存里的布局重新写好，并说一声
+            if (bad && B.disk.ok()) {
+                var moved = B.disk.moveAside(B.disk.configPath("panel" + PANEL), "bad-" + timeStamp());
+                if (moved) { bad = false; c = null; toast({ ok: false, msg: "面板布局文件损坏：已改名为「" + moved.replace(/^.*[\\\/]/, "") + "」留在原处，现在用这台电脑缓存里的布局并重新写好" }); }
+            }
             cfgSynced = r.ok && !bad;
             cfgBad = bad;
             var lc = local.get("panel" + PANEL, null), backup = null;
@@ -771,7 +852,27 @@
             if (moves.length && local.get("migNotice" + PANEL, 0) < SCHEMA) migrationNotice = moves;
             // 迁移改过布局，或者布局只存在本机缓存里（老版本没开写入权限时就是这样）：现在写进磁盘
             if (moves.length || (cfgSynced && fromLocal)) saveConfig();
-            if (backup) backupLayout(backup);
+            // 要备份的布局先单独存一份（以后的保存不会碰它），写进备份文件以后才删；写不进去下次打开面板、拿到焦点时再试
+            if (backup) local.set("cfgPendingBackup" + PANEL, backup);
+            flushPendingBackup();
+        });
+    }
+    function timeStamp() {
+        var d = new Date(), two = function (n) { return (n < 10 ? "0" : "") + n; };
+        return d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + "-" + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds());
+    }
+    var pendWarned = false;
+    function flushPendingBackup() {
+        var pend = local.get("cfgPendingBackup" + PANEL, null);
+        if (!pend || !pend.items) return Promise.resolve();
+        return backupLayout(pend).then(function (b) {
+            if (!b.ok) {
+                if (!pendWarned) { pendWarned = true; toast({ ok: false, msg: "这个 AE 版本里原来的面板布局还没备份上（" + b.msg + "）：先单独留在这台电脑的缓存里，下次打开面板会再试；检查 MotionHub 文件夹是否可写" }); }
+                return;
+            }
+            local.set("cfgPendingBackup" + PANEL, null);
+            local.set("cfgBackupNotice" + PANEL, b.name);
+            showBackupNotice();
         });
     }
     // 面板关掉（或 AE 退出）时还有没写出去的布局：用 Node 同步写掉（Node 的写是同步的，来得及）
@@ -782,17 +883,54 @@
         if (w.ok) cfgUnsaved(false);
     });
     function layoutKey(x) { return JSON.stringify({ name: x.name, accent: x.accent, items: x.items }); }
+    // 把一份布局写成备份文件 panelN-backup-<时间>.json，记进「载入预设」的备份列表。返回 { ok, msg, name }
+    var backupSeq = 0;
     function backupLayout(x) {
-        var d = new Date(), two = function (n) { return (n < 10 ? "0" : "") + n; };
-        var stamp = d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + "-" + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds());
-        var name = "panel" + PANEL + "-backup-" + stamp;
+        var stamp = timeStamp(), name = "panel" + PANEL + "-backup-" + stamp + (backupSeq++ ? "-" + backupSeq : "");
         return writeConfigText(name, JSON.stringify(x)).then(function (r) {
-            if (!r || !r.ok) { toast({ ok: false, msg: "这个 AE 版本里原来的面板布局和磁盘上的不一样，想另存一份备份但没写进去（" + ((r && r.msg) || "没有返回") + "）：它还在这台电脑的缓存里，检查文件夹是否可写" }); return; }
+            if (!r || !r.ok) return { ok: false, msg: (r && r.msg) || "没有返回" };
             var list = local.get("cfgBackups" + PANEL, []) || [];
             list.unshift({ name: name, label: (x.name || "面板") + " · " + x.items.length + " 个组件 · " + stamp.replace(/^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2}).*/, "$1-$2-$3 $4:$5") });
-            local.set("cfgBackups" + PANEL, list.slice(0, 5));
-            toast({ ok: true, msg: "这个 AE 版本里原来的面板布局和磁盘上的不一样（可能是另一个 AE 版本改过）：现在用的是磁盘上的，原来的已备份。要换回去：设置 → 载入预设 → 选「备份」" });
-        });
+            local.set("cfgBackups" + PANEL, list.slice(0, 8));
+            return { ok: true, name: name };
+        }, function (e) { return { ok: false, msg: (e && e.message) || String(e) }; });
+    }
+    // 第一次启动时备份过这个 AE 版本原来的布局：启动完弹一次说明（提示栏里的一句话很容易错过）
+    function showBackupNotice() {
+        var name = local.get("cfgBackupNotice" + PANEL, null);
+        if (!name) return;
+        if (!$("#modal").hidden) { setTimeout(showBackupNotice, 600); return; }
+        local.set("cfgBackupNotice" + PANEL, null);
+        dialog("(3.7.1) — 布局有备份", [
+            el("p", "", "这个 AE 版本里原来的面板布局，和磁盘上的不一样（多半是另一个 AE 版本改过这个面板）。现在用的是磁盘上的那份。"),
+            el("p", "muted", "原来的已经备份。以后也可以在「设置 → 载入预设」里选「备份」换回去。")
+        ], [
+            { label: "保留现在的", value: function () { return false; } },
+            { label: "换回原来的", accent: true, value: function () { return true; } }
+        ]).then(function (back) { if (back) restoreBackup(name); });
+    }
+    // 别的面板合并片段时把重复的默认片段换成了磁盘上那份：备份里的布局也按同样的对应改，换回来时按钮不会变成「已删除」
+    function applySnippetRemap(layout) {
+        var map = local.get("snipRemap", {}) || {};
+        layout.items.forEach(function (it) { if (it.type === "snippet" && Object.prototype.hasOwnProperty.call(map, it.sid)) it.sid = map[it.sid]; });
+    }
+    // 换成一份备份的布局：先把当前布局另存一份备份，备份写不进去就不换
+    function restoreBackup(name) {
+        return readConfigText(name).then(function (r) {
+            var b = null;
+            try { if (r && r.ok && r.data && r.data.text) b = JSON.parse(r.data.text); } catch (e) {}
+            if (!b || !b.items) return { ok: false, msg: "没读到这份备份（" + ((r && r.msg) || "文件不在了或已损坏") + "）：换一份备份再试" };
+            return backupLayout(cfg).then(function (bk) {
+                if (!bk.ok) return { ok: false, msg: "没有换：当前布局的备份没写进去（" + bk.msg + "）。检查 MotionHub 文件夹是否可写后再试" };
+                b.items.forEach(function (it) { if (!it.id) it.id = uid(); });
+                applySnippetRemap(b);
+                migrateConfig(b);
+                cfg = b;
+                applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name;
+                saveConfig(); renderLayout(); renderSettings(); selectTab("panel");
+                return { ok: true, msg: "已换回备份的布局，刚才的布局也另存了一份备份" };
+            });
+        }).then(function (res) { B.show(null, res.ok ? "ok" : "err", res.msg); toast(res); return res; });
     }
 
     function findItem(id) { for (var i = 0; i < cfg.items.length; i++) if (cfg.items[i].id === id) return i; return -1; }
@@ -997,7 +1135,7 @@
         key: function (c) { return JSON.stringify(c); },   // 名字 + 数值：同名不同曲线两个都留
         get: function () { return userCurves; }, set: function (l) { userCurves = l; },
         localGet: function () { return local.get("curves", null); }, localSet: function (l) { local.set("curves", l); },
-        changed: function () { renderLayout(); }
+        changed: renderSoon
     });
     function loadCurves() { return curveStore.load(); }
 
@@ -1712,7 +1850,7 @@
         name: "代码片段", cat: null, icon: "codeSnippet", size: [3, 1],
         render: function (cell, item) {
             var s = snippetById(item.sid);
-            var name = s ? s.name : "（已删除的片段）";
+            var name = s ? s.name : snippetsOnce ? "（已删除的片段）" : "读取中…";
             cell.appendChild(tile({
                 icon: s && s.kind === "expr" ? "exprSnippet" : "codeSnippet", label: name, cls: "script", filled: !!item.color,
                 needs: snippetNeeds(s), tool: s && s.builtin ? s.id : undefined,
@@ -1723,7 +1861,7 @@
                         ? { title: name + " · 表达式", click: "应用到选中属性", alt: "追加到已有表达式后面", note: s.code.split("\n")[0] }
                         : { title: name + " · 脚本", click: "执行", note: s.code.split("\n")[0] };
                 },
-                run: function (m) { return s ? runSnippet(s, m) : Promise.resolve({ ok: false, msg: "这个片段已经被删除" }); }
+                run: function (m) { return s ? runSnippet(s, m) : Promise.resolve({ ok: false, msg: snippetsOnce ? "这个片段已经被删除" : "片段还在读取：稍等一下再点" }); }
             }));
         }
     });
@@ -1899,21 +2037,23 @@
 
     // 脚本库位置只在这里改：别的面板换了脚本库（后台的 init / scan / ctx / loadSnippets 会报告现在的位置），
     // 这个面板的脚本列表和代码片段都跟着换，并说一声；换之前没写进去的片段改动，仍然写回原来那个库
-    var ownLibSwitch = false;
+    var ownLibSwitch = null;   // 这个面板自己正在换到的位置
     // 同一个文件夹的不同写法（末尾的斜杠、\ 和 /、大小写——Mac 和 Windows 的磁盘默认不分大小写）不算换了脚本库
     function samePath(a, b) { var n = function (x) { return String(x || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase(); }; return n(a) === n(b); }
     function setLibPath(p) {
         if (!p || p === libPathNow) return;
         if (libPathNow && samePath(p, libPathNow)) return;
-        var was = libPathNow, mine = ownLibSwitch;
+        var was = libPathNow, mine = !!ownLibSwitch && samePath(p, ownLibSwitch);
         libPathNow = p;
-        ownLibSwitch = false;
+        ownLibSwitch = null;
         if (!was) return;
-        loadSnippets();
-        if (!mine) {
-            refreshLibrary().then(null, function () {});
-            toast({ ok: true, msg: "脚本库已在别的面板换成「" + p + "」：这里的脚本和代码片段也换成了新库里的" });
-        }
+        if (B.disk.ok()) snippetStore.retarget(B.disk.join(was, "_snippets.json"), B.disk.join(p, "_snippets.json"));
+        loadSnippets().then(function (r) {
+            var who = mine ? "脚本库已换成「" + p + "」" : "脚本库已在别的面板换成「" + p + "」";
+            if (r && r.ok === false && !r.later) toast({ ok: false, msg: who + "，但新库里的代码片段读不到（" + ((r.disk && r.disk.why) || r.msg) + "）：这里暂时显示的是换之前的片段，会自动重试" });
+            else if (!mine) toast({ ok: true, msg: who + "：这里的脚本和代码片段也换成了新库里的" });
+        });
+        if (!mine) refreshLibrary().then(null, function () {});
     }
     function refreshLibrary() {
         return host("scan").then(function (r) {
@@ -2166,7 +2306,7 @@
         get: function () { return snipPrefs.hidden; }, set: function (l) { snipPrefs.hidden = l; },
         localGet: function () { var x = local.get("snipPrefs", null); return x && Array.isArray(x.hidden) ? x.hidden : null; },
         localSet: function (l) { local.set("snipPrefs", { hidden: l }); },
-        changed: function () { renderSnippets(); }
+        changed: renderSoon
     });
     function loadSnipPrefs() { return prefStore.load(); }
     function snippetNeeds(s) { return !s ? "" : s.tool ? (NEEDS[s.tool] || "") : s.kind === "expr" ? NEEDS.applyExpr : ""; }
@@ -2190,30 +2330,34 @@
         // 老版本每个面板各自生成过一份默认片段（id 不同、内容一样），自己也可能在几个面板里建过同样的片段：
         // 合并时内容完全一样的只留磁盘上那条，这个面板里的按钮改指过去
         body: snippetBody,
-        fork: function (x) { return { id: uid(), kind: x.kind, name: x.name + "（另存）", code: x.code }; },
+        fork: function (x, id) { return { id: id || uid(), kind: x.kind, name: x.name + "（另存）", code: x.code }; },
+        otherNote: function (f, r) { return { ok: false, msg: "换之前的脚本库「" + f.replace(/[\\\/]_snippets\.json$/, "") + "」现在打不开（" + ((r && r.msg) || "没有返回") + "）：那边的改动先留在这台电脑的缓存里，能打开时自动写回" }; },
         forkNote: function (x) { return "「" + x.name + "」在别的面板也改过：两份都留下了，这边改的存为「" + x.name + "（另存）」"; },
         keptNote: function (x) { return "「" + x.name + "」刚在别的面板改过，没有删除；确实要删的话再删一次"; },
         onRemap: function (remap) {
-            var n = 0;
+            var n = 0, all = local.get("snipRemap", {}) || {};
+            for (var k in remap) all[k] = remap[k];
+            local.set("snipRemap", all);
             if (!cfg) return;
             cfg.items.forEach(function (it) { if (it.type === "snippet" && Object.prototype.hasOwnProperty.call(remap, it.sid)) { it.sid = remap[it.sid]; n++; } });
-            if (n) { saveConfig(); renderLayout(); }
+            if (n) { saveConfig(); renderSoon(); }
         },
-        changed: function () { renderSnippets(); if (cfg) renderLayout(); }
+        changed: renderSoon
     });
     function loadSnippets() {
         return snippetStore.load().then(function (r) {
-            // 片段到了以后重绘面板：面板上的片段按钮是按 id 找片段的，片段没到时会显示成「已删除」
-            renderSnippets();
-            if (cfg) renderLayout();
+            // 片段到了以后重绘面板：面板上的片段按钮是按 id 找片段的，片段没到时会显示「读取中」
+            renderSoon();
             return r;
         });
     }
     function snippetIndex(id) { for (var i = 0; i < snippets.length; i++) if (snippets[i].id === id) return i; return -1; }
     // 共用列表的保存结果 → 按钮旁边的气泡
     function storeResult(w, done) {
-        if (w && w.ok === false) return { ok: false, msg: done + "，但" + w.msg };
-        var notes = (w && w.notes) || [];
+        if (w && w.ok === false) return { ok: false, msg: done + "，但" + w.msg, disk: w.disk, done: done };
+        var mine = (w && w.mine) || [], kept = mine.filter(function (n) { return n.kind === "kept"; })[0];
+        if (kept) return { ok: false, msg: kept.text };
+        var notes = mine.map(function (n) { return n.text; }).filter(Boolean);
         return { ok: true, msg: notes.length ? done + "。" + notes.join("；") : done };
     }
     function runSnippet(s, m) {
@@ -2349,38 +2493,25 @@
     $("#set-preset").addEventListener("click", function () {
         var lab = el("label", "", "选择预设（会替换当前面板的布局）");
         var sel = el("select");
-        [["main", "主面板：全部工具"], ["animate", "动画：曲线 · 关键帧 · 快速动画"], ["organize", "整理：锚点 · 对齐 · 图层"], ["scripts", "我的脚本"], ["blank", "空白"]].forEach(function (p) { sel.appendChild(new Option(p[1], p[0])); });
         (local.get("cfgBackups" + PANEL, []) || []).forEach(function (b) { sel.appendChild(new Option("备份：" + b.label, "backup:" + b.name)); });
+        [["main", "主面板：全部工具"], ["animate", "动画：曲线 · 关键帧 · 快速动画"], ["organize", "整理：锚点 · 对齐 · 图层"], ["scripts", "我的脚本"], ["blank", "空白"]].forEach(function (p) { sel.appendChild(new Option(p[1], p[0])); });
         lab.appendChild(sel);
         dialog("(◇) — PRESET LAYOUT", [lab], [
             { label: "取消", value: function () { return null; } },
             { label: "载入", accent: true, value: function () { return sel.value; } }
         ]).then(function (key) {
             if (!key) return;
-            if (key.indexOf("backup:") === 0) {
-                // 备份的布局整份换回来（名字、主题色一起）；当前的布局先另存一份，换错了还能再换回去
-                return readConfigText(key.slice(7)).then(function (r) {
-                    var b = null;
-                    try { if (r && r.ok && r.data && r.data.text) b = JSON.parse(r.data.text); } catch (e) {}
-                    if (!b || !b.items) { var bad = { ok: false, msg: "没读到这份备份（" + ((r && r.msg) || "文件不在了或已损坏") + "）：在设置页重新选一次，或者换一份备份" }; B.show(null, "err", bad.msg); toast(bad); return; }
-                    var cur = cfg;
-                    return backupLayout(cur).then(function () {
-                        b.items.forEach(function (it) { if (!it.id) it.id = uid(); });
-                        migrateConfig(b);
-                        cfg = b;
-                        applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name;
-                        saveConfig(); renderLayout(); renderSettings(); selectTab("panel");
-                        B.show(null, "ok", "已换回备份的布局");
-                        toast({ ok: true, msg: "已换回备份的布局，刚才的布局也另存了一份备份" });
-                    });
-                });
-            }
-            var keepName = cfg.name, keepAccent = cfg.accent;
-            cfg = fromPreset(key);
-            cfg.name = keepName; cfg.accent = keepAccent;
-            saveConfig(); renderLayout(); selectTab("panel");
-            B.show(null, "ok", "已载入预设布局");
-            toast({ ok: true, msg: "已载入预设布局" });
+            if (key.indexOf("backup:") === 0) return restoreBackup(key.slice(7));
+            // 载入预设会替换整个布局：先把当前布局另存一份备份（选错了还能从这里换回去），备份写不进去就不换
+            return backupLayout(cfg).then(function (bk) {
+                if (!bk.ok) { var no = { ok: false, msg: "没有载入：当前布局的备份没写进去（" + bk.msg + "）。检查 MotionHub 文件夹是否可写后再试" }; B.show(null, "err", no.msg); toast(no); return; }
+                var keepName = cfg.name, keepAccent = cfg.accent;
+                cfg = fromPreset(key);
+                cfg.name = keepName; cfg.accent = keepAccent;
+                saveConfig(); renderLayout(); selectTab("panel");
+                B.show(null, "ok", "已载入预设布局");
+                toast({ ok: true, msg: "已载入预设布局，原来的布局另存了一份备份（设置 → 载入预设 里可以换回去）" });
+            });
         });
     });
 
@@ -2396,8 +2527,9 @@
         act0(this, function () {
             return host("chooseLibrary").then(function (r) {
                 if (!r.ok || !r.data || !r.data.libPath) return r.ok ? null : r;
-                ownLibSwitch = true;
-                return refreshLibrary().then(function () { return { ok: true, msg: "已切换脚本库（所有面板共用）" }; });
+                if (samePath(r.data.libPath, libPathNow)) return { ok: true, msg: "还是原来的脚本库，没有更换" };
+                ownLibSwitch = r.data.libPath;
+                return refreshLibrary().then(function () { return { ok: true, msg: "已切换脚本库（所有面板共用）" }; }, function (e) { ownLibSwitch = null; throw e; });
             });
         });
     });
@@ -2641,10 +2773,16 @@
     document.addEventListener("mousemove", function () { refreshCtx(false); });
     window.addEventListener("focus", function () { refreshCtx(true); refreshShared(); });
     // 面板重新拿到焦点：共用列表和磁盘再对一次（别的面板的改动在这里同步过来），上次没写进去的改动再写一次
+    var sharedTimer = null;
     function refreshShared() {
         if (!B.disk.ok()) return;   // 没有 Node 时不在焦点上读盘：每次都要去后台排队
-        [snippetStore, curveStore, prefStore].forEach(function (st) { if (st.synced || st.pending()) st.sync(); });
-        if (cfgSynced && local.get("cfgDirty" + PANEL, false)) saveConfig();
+        // 先让这次点击画出来（0.12 秒后再读盘）；文件没变就不读
+        clearTimeout(sharedTimer);
+        sharedTimer = setTimeout(function () {
+            [snippetStore, curveStore, prefStore].forEach(function (st) { st.refresh(); });
+            if (cfgSynced && local.get("cfgDirty" + PANEL, false)) saveConfig();
+            flushPendingBackup();
+        }, 120);
     }
 
     // =====================================================================
@@ -2784,26 +2922,41 @@
         });
     }
 
+    var snippetsOnce = false;   // 代码片段至少读过一次（之前找不到的片段按钮显示「读取中」，不说「已删除」）
     function boot() {
+        // 片段、曲线、隐藏设置先用本机缓存画第一屏，磁盘上的稍后对上
+        snippets = local.get("snippets", null) || [];
+        userCurves = local.get("curves", null) || [];
+        var sp = local.get("snipPrefs", null);
+        if (sp && Array.isArray(sp.hidden)) snipPrefs.hidden = sp.hidden;
+        var early = null;
         return step("读取面板布局", loadConfig).then(function () {
             if (!cfg) cfg = local.get("panel" + PANEL, null) || fromPreset(PANEL_PRESET[PANEL] || "blank");
             applyAccent(cfg.accent || "#FF5900");
             $("#panel-name").textContent = cfg.name;
             renderLayout();
             renderSettings();
+            // 第一屏画完再读写共用文件。曲线和隐藏设置存在 userData 里，位置不依赖后台：和连接后台同时开始
+            if (B.disk.ok()) early = [
+                storeStep("同步内置片段的显示设置", loadSnipPrefs),
+                storeStep("同步曲线预设", loadCurves)
+            ];
             return step("连接后台", initInfo);
         }).then(function (initRes) {
             var failed = initRes && initRes.ok === false;
             var seed = failed ? Promise.resolve() : step("导入示例脚本", seedSamples);
             return Promise.all([
                 seed.then(function () { return step("读取脚本库", refreshLibrary); }),
-                storeStep("同步内置片段的显示设置", loadSnipPrefs),
-                storeStep("同步代码片段", loadSnippets),
-                storeStep("同步曲线预设", function () { return loadCurves().then(function (r) { renderLayout(); return r; }); }),
+                storeStep("同步代码片段", function () { return loadSnippets().then(function (r) { snippetsOnce = true; renderLayout(); return r; }); }),
                 step("读取使用统计", loadUsage)
-            ]).then(function (rs) {
+            ].concat(early || [
+                storeStep("同步内置片段的显示设置", loadSnipPrefs),
+                storeStep("同步曲线预设", loadCurves)
+            ])).then(function (rs) {
+                snippetsOnce = true;
                 refreshCtx(true);
                 showMigrationNotice();
+                showBackupNotice();
                 var bad = [initRes].concat(rs).filter(function (r) { return r && r.ok === false; });
                 bad.forEach(function (r) { toast(r); });
                 return bad;

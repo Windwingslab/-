@@ -168,6 +168,7 @@
 
     // 统一执行一次点击：fn 可以返回 Promise<{ok,msg}>、{ok,msg}、null（自己处理了界面，比如打开了对话框）
     // opts.toast(r)：同时写进底部提示栏留记录
+    var inflight = 0;   // 正在跑的操作数：后台同步引起的重绘会等它们结束（免得按钮被换掉、丢了「处理中」又能再点一次）
     function run(btn, fn, opts) {
         opts = opts || {};
         if (btn && btn._mhBusy) {
@@ -184,6 +185,7 @@
         }
         if (!p) return Promise.resolve(null);
         if (!p.then) p = Promise.resolve(p);
+        inflight++;
         if (btn) { btn._mhBusy = true; btn.classList.add("pending"); }
         var slow = 0;
         (function wait(delay) {
@@ -198,6 +200,7 @@
             return { ok: false, msg: "出错了：" + (err && err.message ? err.message : err) };
         }).then(function (r) {
             clearTimeout(slow);
+            inflight--;
             if (btn) { btn._mhBusy = false; btn.classList.remove("busy", "pending"); }
             if (!r) { hideBubble(); return r; }
             var ok = r.ok !== false;
@@ -249,43 +252,88 @@
                 return { ok: false, path: file, code: why(e), msg: file + "，" + why(e) };
             }
         }
-        // text = null 表示文件不存在
+        // text = null 表示文件不存在。只有 ENOENT / ENOTDIR 才算「不存在」：网络盘超时、没权限等别的错误一律算读失败，
+        // 绝不能当成「没有」再去覆盖它。开头的 BOM（记事本「带 BOM 的 UTF-8」）去掉
         function readText(file) {
             if (!ok()) return { ok: false, msg: "这里没有 Node，没法直接读文件" };
             try {
-                if (!fs.existsSync(file)) return { ok: true, text: null, path: file };
-                return { ok: true, text: fs.readFileSync(file, "utf8"), path: file };
+                var t = fs.readFileSync(file, "utf8");
+                if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1);
+                return { ok: true, text: t, path: file };
             } catch (e) {
-                return { ok: false, msg: "读不了 " + file + "（" + why(e) + "）" };
+                if (e && (e.code === "ENOENT" || e.code === "ENOTDIR")) return { ok: true, text: null, path: file };
+                return { ok: false, path: file, code: why(e), msg: "读不了 " + file + "（" + why(e) + "）" };
             }
         }
-        // 跨面板的文件锁：4 个面板是 4 个进程，改共用文件时先拿锁，锁里同步地读、改、写，只要几毫秒。
-        // 别的面板正拿着 → 返回 { busy: true }，调用方过几十毫秒再试；锁文件放了 2 秒还在，就当成上次异常退出留下的，接管它。
-        // 锁文件放在本机的 userData/MotionHub/.locks 里（不会出现在同步盘上的脚本库里）；建不了锁文件就不加锁照常做，总比存不进去好
+        // 文件的指纹（修改时间 + 大小）：面板拿到焦点时文件没变，就不用重新读。"" = 不知道
+        function stamp(file) {
+            if (!ok()) return "";
+            try { var st = fs.statSync(file); return st.mtimeMs + ":" + st.size; }
+            catch (e) { return e && e.code === "ENOENT" ? "none" : ""; }
+        }
+        // 把文件挪到旁边（比如损坏的配置文件）：<文件>.bad-<时间>，返回新路径；挪不动返回 ""
+        function moveAside(file, tag) {
+            if (!ok()) return "";
+            var to = file + "." + tag;
+            try { fs.renameSync(file, to); return to; } catch (e) { return ""; }
+        }
+        // ---------------------------------------------------------------
+        // 跨面板的文件锁：4 个面板各自跑在自己的进程里，改共用文件时先拿锁，锁里同步地读、改、写，只要几毫秒。
+        // · 锁文件里写着「进程号-随机串」。别人拿着时：那个进程还在、而且不到 60 秒 → 忙（调用方过几十毫秒再试）；
+        //   进程已经不在了，或者 60 秒还没放 → 当成上次异常退出留下的，接管它。
+        // · 接管是原子的：先把旧锁改名成只有自己知道的名字，改名成功的那一个才能接管。
+        // · fn 拿到 mine()：写完以后用它确认锁还在自己手里，不在就算这次没做成（操作留着下次再套，套两遍结果一样）。
+        // · 打开锁文件遇到别的错误（Windows 上刚删的锁还没放手等）也算忙，绝不无锁去写。
+        // · 锁文件放在本机的 userData/MotionHub/.locks（不会出现在同步盘上的脚本库里），建不了就用系统临时文件夹
+        var lockSeed = ((proc && proc.pid) || 0) + "-" + Math.random().toString(36).slice(2, 10);
+        function usableDir(d) {
+            try { fs.mkdirSync(d, { recursive: true }); } catch (e) {}
+            try { return typeof fs.statSync === "function" ? fs.statSync(d).isDirectory() : fs.existsSync(d); } catch (e2) { return false; }
+        }
+        function lockDir() {
+            var d = path.join(userDataDir(), "MotionHub", ".locks");
+            if (usableDir(d)) return d;
+            if (typeof os.tmpdir === "function") { d = path.join(os.tmpdir(), "MotionHub-locks"); if (usableDir(d)) return d; }
+            return "";
+        }
+        function alive(pid) {
+            if (!pid || !proc || typeof proc.kill !== "function") return true;   // 不知道就当它还活着
+            try { proc.kill(pid, 0); return true; } catch (e) { return !(e && e.code === "ESRCH"); }
+        }
         function withLock(file, fn) {
-            if (!ok()) return fn();
-            var s = String(file), h = 5381, i, fd = null;
+            if (!ok()) return fn(function () { return true; });
+            var s = String(file), h = 5381, i;
             for (i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
-            var dir = path.join(userDataDir(), "MotionHub", ".locks");
+            var dir = lockDir();
+            if (!dir) return { ok: false, msg: "建不了锁文件（" + path.join(userDataDir(), "MotionHub", ".locks") + "）：检查这个文件夹是否可写" };
             var lp = path.join(dir, s.replace(/^.*[\\\/]/, "").replace(/[^\w.\-]/g, "_") + "-" + h.toString(36) + ".lock");
-            try { fs.mkdirSync(dir, { recursive: true }); } catch (e0) {}
-            try { fd = fs.openSync(lp, "wx"); }
+            var token = lockSeed + "-" + Math.random().toString(36).slice(2, 8);
+            var mine = function () { try { return fs.readFileSync(lp, "utf8") === token; } catch (e) { return false; } };
+            var take = function () { fs.writeFileSync(lp, token, { flag: "wx" }); };
+            try { take(); }
             catch (e) {
-                if (!e || e.code !== "EEXIST") fd = null;
-                else {
-                    var age = 0;
-                    try { age = Date.now() - fs.statSync(lp).mtimeMs; } catch (e1) { age = 0; }
-                    if (age < 2000) return { ok: false, busy: true };
-                    try { fs.unlinkSync(lp); fd = fs.openSync(lp, "wx"); } catch (e2) { return { ok: false, busy: true }; }
+                if (!e || e.code !== "EEXIST") return { ok: false, busy: true };
+                var held = "", age = 0;
+                try { held = fs.readFileSync(lp, "utf8"); age = Date.now() - fs.statSync(lp).mtimeMs; } catch (e1) { return { ok: false, busy: true }; }
+                var stale = age >= 60000 || (held && !alive(parseInt(held, 10)));
+                if (!stale) return { ok: false, busy: true };
+                var aside = lp + "." + token + ".stale";
+                try { fs.renameSync(lp, aside); } catch (e2) { return { ok: false, busy: true }; }
+                var was = null;
+                try { was = fs.readFileSync(aside, "utf8"); } catch (e3) {}
+                if (was !== held) {   // 改名改到的已经是别人刚拿的新锁：还回去，这次算忙
+                    try { fs.renameSync(aside, lp); } catch (e4) {}
+                    return { ok: false, busy: true };
                 }
+                try { fs.unlinkSync(aside); } catch (e5) {}
+                try { take(); } catch (e6) { return { ok: false, busy: true }; }
             }
-            try { return fn(); }
-            finally {
-                if (fd !== null) { try { fs.closeSync(fd); } catch (e3) {} try { fs.unlinkSync(lp); } catch (e4) {} }
-            }
+            try { return fn(mine); }
+            finally { if (mine()) { try { fs.unlinkSync(lp); } catch (e7) {} } }
         }
         return {
             ok: ok, userDataDir: userDataDir, configPath: configPath, writeText: writeText, readText: readText, withLock: withLock,
+            stamp: stamp, moveAside: moveAside,
             join: function () { return ok() ? path.join.apply(path, arguments) : ""; }
         };
     })();
@@ -299,6 +347,7 @@
         onBackend: function (fn) { listeners.push(fn); },
         registerKeys: registerKeys,
         run: run,
+        inflight: function () { return inflight; },
         show: show,
         hide: hideBubble,
         toCode: toCode,

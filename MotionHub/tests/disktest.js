@@ -40,12 +40,19 @@ async function openPanel(browser, o) {
                 },
                 existsSync: p => p in mem || dirs.has(p),
                 unlinkSync: p => { window.__ops.push(["unlink", p]); if (!(p in mem)) throw err("ENOENT"); delete mem[p]; },
-                writeFileSync: (p, t) => { window.__ops.push(["write", p]); if (!dirs.has(dirOf(p))) throw err("ENOENT"); mem[p] = String(t); },
+                writeFileSync: (p, t, opt) => {
+                    window.__ops.push(["write", p]);
+                    if (!dirs.has(dirOf(p))) throw err("ENOENT");
+                    if (opt && opt.flag === "wx" && p in mem) throw err("EEXIST");
+                    mem[p] = String(t);
+                    if (opt && opt.flag === "wx") { window.__mtime = window.__mtime || {}; window.__mtime[p] = Date.now(); }
+                },
                 renameSync: (a, b) => {
                     window.__ops.push(["rename", a, b]);
                     if (!(a in mem)) throw err("ENOENT");
                     const name = b.split("/").pop();
                     if (fail[name] === "always" || fail[name] > 0) { if (fail[name] !== "always") fail[name]--; throw err("EPERM"); }
+                    if ((o.failRenameRe || []).some(x => new RegExp(x).test(name))) throw err("EPERM");
                     mem[b] = mem[a]; delete mem[a];
                 },
                 readFileSync: p => {
@@ -56,7 +63,11 @@ async function openPanel(browser, o) {
                 // 跨面板锁：wx = 文件已存在就失败
                 openSync: (p, flag) => { window.__ops.push(["open", p, flag]); if (!dirs.has(dirOf(p))) throw err("ENOENT"); if (flag === "wx" && p in mem) throw err("EEXIST"); mem[p] = ""; window.__mtime = window.__mtime || {}; window.__mtime[p] = Date.now(); return 3; },
                 closeSync: () => {},
-                statSync: p => { if (!(p in mem)) throw err("ENOENT"); return { mtimeMs: (window.__mtime && window.__mtime[p]) || Date.now() }; }
+                statSync: p => {
+                    if (dirs.has(p)) return { isDirectory: () => true, mtimeMs: 0, size: 0 };
+                    if (!(p in mem)) throw err("ENOENT");
+                    return { isDirectory: () => false, mtimeMs: (window.__mtime && window.__mtime[p]) || 0, size: String(mem[p]).length };
+                }
             };
             if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: dirOf, basename: p => p.replace(/^.*\//, "") };
             if (m === "os") return { homedir: () => o.HOME };
@@ -105,6 +116,13 @@ async function openPanel(browser, o) {
     };
 }
 const J = (disk, file) => (file in disk ? JSON.parse(disk[file]) : null);
+// 启动后的异步步骤在忙的机器上可能晚一点完成：轮询到条件成立（最多 4 秒），不靠固定的等待时间
+async function until(get, ok, ms) {
+    const t0 = Date.now();
+    let v = await get();
+    while (!ok(v) && Date.now() - t0 < (ms || 4000)) { await new Promise(r => setTimeout(r, 100)); v = await get(); }
+    return v;
+}
 const names = list => (list || []).map(s => s.name);
 
 async function gotoSnippets(p) {
@@ -170,7 +188,8 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         // 本机缓存没了（升级 AE、清理临时文件）：从磁盘读回来
         const q1 = await openPanel(browser, { panel: 1, disk, canWrite: false, node: true, local: {} });
         const q4 = await openPanel(browser, { panel: 4, disk: await q1.disk(), canWrite: false, node: true, local: {} });
-        const k1 = await q1.config(), k4 = await q4.config(), s4 = await q4.snippets();
+        const s4 = await until(q4.snippets, l => names(l).includes("面板1的片段") && names(l).includes("面板4的片段"));
+        const k1 = await q1.config(), k4 = await q4.config();
         check("清空本机缓存后：两个面板的布局都还在", k1.name === "我的剪辑面板" && k4.name === "第四个面板" && k1.items.length === 3, JSON.stringify([k1.name, k4.name, k1.items.length]));
         check("清空本机缓存后：两个面板的片段都还在", names(s4).includes("面板1的片段") && names(s4).includes("面板4的片段"), JSON.stringify(names(s4)));
         check("清空本机缓存后：曲线预设和隐藏设置都还在", (await q4.page.evaluate(() => window.MHDebug.curves())).length === 2 && (await q1.page.evaluate(() => window.MHDebug.hidden())).includes("builtin:loop"));
@@ -212,7 +231,7 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         await p2.close();
         check("一直写不进去：磁盘上还是旧的", !names(J(disk2, SNIP)).includes("一直没写进去的"));
         const p3 = await openPanel(browser, { ctx, panel: 1, disk: disk2, canWrite: false, node: true, local: null });
-        const d3 = await p3.disk();
+        const d3 = await until(p3.disk, d => names(J(d, SNIP)).includes("一直没写进去的"));
         check("下次启动：本机缓存里没写进去的片段合并回磁盘，磁盘上原有的也在", names(J(d3, SNIP)).includes("一直没写进去的") && names(J(d3, SNIP)).includes("磁盘上的"), d3[SNIP]);
         await p3.close(); await ctx.close();
 
@@ -232,7 +251,8 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const dl2 = await L.disk();
         await L.close();
         const L2 = await openPanel(browser, { ctx: ctxL, panel: 1, disk: dl2, canWrite: false, node: true, local: null });
-        check("最后一次没写进去就关了 AE：下次启动以本机缓存为准，并写回磁盘", (await L2.config()).name === "名字四" && J(await L2.disk(), CFG + "panel1.json").name === "名字四", JSON.stringify([(await L2.config()).name, (await L2.disk())[CFG + "panel1.json"]]));
+        const dL2 = await until(L2.disk, d => (J(d, CFG + "panel1.json") || {}).name === "名字四");
+        check("最后一次没写进去就关了 AE：下次启动以本机缓存为准，并写回磁盘", (await L2.config()).name === "名字四" && J(dL2, CFG + "panel1.json").name === "名字四", JSON.stringify([(await L2.config()).name, dL2[CFG + "panel1.json"]]));
         await L2.close(); await ctxL.close();
     }
 
@@ -383,6 +403,61 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const dj = await j.disk();
         check("全新用户：默认片段写进磁盘一份，曲线和隐藏设置没有建空文件", names(J(dj, SNIP)).filter(n => n === "匀速旋转").length === 1 && !((CFG + "curves.json") in dj) && !((CFG + "snippet_prefs.json") in dj), JSON.stringify(Object.keys(dj)));
         await j.close();
+    }
+
+    console.log("第三轮审查的场景：");
+    {
+        // 锁：上次异常退出留下的锁文件（很久以前的）→ 接管，照常写进去
+        const lockName = (f) => { let h = 5381; for (let i = 0; i < f.length; i++) h = ((h * 33) ^ f.charCodeAt(i)) >>> 0; return CFG + ".locks/" + f.replace(/^.*\//, "").replace(/[^\w.\-]/g, "_") + "-" + h.toString(36) + ".lock"; };
+        const lk = await openPanel(browser, { panel: 1, disk: { [SNIP]: "[]", [lockName(SNIP)]: "12345-dead-token" }, canWrite: false, node: true, local: {} });
+        await addSnippet(lk, "锁残留时新建", "value + 1");
+        const dlk = await lk.disk();
+        check("上次异常退出留下的旧锁：接管它，改动照常写进磁盘，不留锁文件", names(J(dlk, SNIP)).includes("锁残留时新建") && !Object.keys(dlk).some(k => /\.lock$/.test(k) || /\.stale$/.test(k)), JSON.stringify(Object.keys(dlk)));
+        await lk.close();
+
+        // 换回备份前，当前布局的备份写不进去：不换，说明原因，当前布局还在
+        const cur = { schema: 2, name: "我现在的布局", accent: "#FF5900", items: [{ id: "a", type: "anchor" }, { id: "b", type: "graph" }] };
+        const old = { schema: 2, name: "备份里的布局", accent: "#FF5900", items: [{ id: "c", type: "keys" }] };
+        const rb = await openPanel(browser, { panel: 1, disk: { [CFG + "panel1.json"]: JSON.stringify(cur), [CFG + "panel1-backup-1.json"]: JSON.stringify(old) }, canWrite: false, node: true, failRenameRe: ["^panel1-backup-\\d{8}"],
+            local: { panel1: cur, cfgOnDisk1: true, cfgBackups1: [{ name: "panel1-backup-1", label: "备份里的布局" }], seeded: true } });
+        await rb.page.click(".tab[data-tab=settings]");
+        await rb.page.click("#set-preset");
+        await rb.page.click("#dlg-btns .btn.accent");   // 备份排在最前面、默认选中
+        await rb.page.waitForTimeout(400);
+        const rbb = await rb.bubble(), rbc = await rb.config();
+        check("当前布局的备份写不进去时不换回备份，并说明原因", rbc.name === "我现在的布局" && /没有换/.test(rbb), rbb + " | " + rbc.name);
+        await rb.close();
+
+        // 布局文件损坏：挪到旁边留着，用缓存里的布局重新写好，并说一声
+        const tr = await openPanel(browser, { panel: 1, disk: { [CFG + "panel1.json"]: '{"schema":2,"name":"写了一半', [CFG + "state.json"]: '{"seeded":true}' }, canWrite: true, node: true, local: { panel1: cur } });
+        const dtr = await until(tr.disk, d => /我现在的布局/.test(d[CFG + "panel1.json"] || ""));
+        const trh = await tr.hint();
+        check("布局文件损坏：原文件改名留着，布局用缓存重新写好，提示栏说明", /我现在的布局/.test(dtr[CFG + "panel1.json"]) && Object.keys(dtr).some(k => /panel1\.json\.bad-/.test(k)) && /面板布局文件损坏/.test(trh), trh + " " + JSON.stringify(Object.keys(dtr)));
+        await tr.close();
+
+        // 记事本存的「带 BOM 的 UTF-8」片段文件：照常读，不报损坏
+        const bom = await openPanel(browser, { panel: 2, disk: { [SNIP]: "﻿" + JSON.stringify([{ id: "u", kind: "expr", name: "带BOM的片段", code: "1" }]), [CFG + "state.json"]: '{"seeded":true}' }, canWrite: true, node: true, local: {} });
+        const bn = await until(bom.snippets, l => names(l).includes("带BOM的片段"));
+        check("带 BOM 的片段文件照常读出来，不报损坏", names(bn).includes("带BOM的片段") && !/损坏/.test(await bom.hint()), JSON.stringify(names(bn)));
+        await bom.close();
+
+        // 共用片段文件被删掉了（同步盘出错、手动清理）：拿到焦点时用面板里的列表写回去，不把大家的列表清空
+        const gone = await openPanel(browser, { panel: 1, disk: { [SNIP]: JSON.stringify([{ id: "u", kind: "expr", name: "还在的片段", code: "1" }]) }, canWrite: true, node: true, local: {} });
+        await gone.page.evaluate(() => { delete window.__mem["/lib/_snippets.json"]; window.dispatchEvent(new Event("focus")); });
+        const dg2 = await until(gone.disk, d => "/lib/_snippets.json" in d);
+        check("片段文件被删掉后：用面板里的列表写回去，列表没被清空", names(J(dg2, SNIP)).includes("还在的片段") && names(await gone.snippets()).includes("还在的片段"), JSON.stringify(dg2[SNIP]));
+        await gone.close();
+
+        // 要删的片段刚在别的面板改过：不删，气泡说明（不说「已删除」）
+        const kd = await openPanel(browser, { panel: 1, disk: { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1" }]) }, canWrite: true, node: true, local: {} });
+        await gotoSnippets(kd);
+        const kr = kd.page.locator("#lib-snippets .lib-item", { has: kd.page.locator(".nm", { hasText: "片段甲" }) }).first();
+        await kr.hover(); await kr.locator(".acts .act").nth(2).click();
+        await kd.page.evaluate(() => { window.__mem["/lib/_snippets.json"] = JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1 // 别的面板改过" }]); });
+        await kd.page.click("#dlg-btns .btn.accent"); await kd.page.waitForTimeout(400);
+        const kb = await kd.bubble(), kdd = J(await kd.disk(), SNIP);
+        check("要删的片段刚在别的面板改过：没有删，气泡报「没有删除」而不是「已删除」", kdd.length === 1 && /没有删除/.test(kb) && !/已删除/.test(kb), kb + " " + JSON.stringify(kdd));
+        await kd.close();
     }
 
     await browser.close();
