@@ -1616,7 +1616,8 @@ var MH = (function () {
         var s = null;
         try {
             f.encoding = "BINARY";
-            if (f.open("r")) { s = f.read(); f.close(); }
+            // open() 读到 BOM 会自己改编码并跳过 BOM：打开后再设一次 BINARY、回到开头，读到的才是原始字节
+            if (f.open("r")) { f.encoding = "BINARY"; f.seek(0, 0); s = f.read(); f.close(); }
         } catch (e) { try { f.close(); } catch (e1) {} s = null; }
         return s;
     }
@@ -1625,25 +1626,46 @@ var MH = (function () {
         var x = readBinary(a), y = readBinary(b);
         return x !== null && y !== null && x === y;
     }
-    // 弹跳.jsx → 弹跳 (2).jsx → 弹跳 (3).jsx …（name 是解码后的文件名）
-    function freeFile(folder, name) {
+    // 弹跳.jsx → 弹跳 (2).jsx → 弹跳 (3).jsx …（name 是解码后的文件名）沿着这串名字往下找：
+    // 遇到 isSame(已有的文件) 为真 → {file: 那个文件, same: true}；都不是 → {file: 第一个空着的名字, same: false}
+    function findPlace(folder, name, isSame) {
         var m = /^(.*?)(\.[^.]*)?$/.exec(name), base = m[1], ext = m[2] || "";
         var f = new File(folder.fsName + "/" + name), n = 2;
-        while (f.exists) { f = new File(folder.fsName + "/" + base + " (" + n + ")" + ext); n++; }
-        return f;
+        while (f.exists) {
+            if (isSame && isSame(f)) return { file: f, same: true };
+            f = new File(folder.fsName + "/" + base + " (" + n + ")" + ext);
+            n++;
+        }
+        return { file: f, same: false };
     }
-    // 把 src 放进 folder，不覆盖：返回 {file, state}，state = new / exists（内容一样，没复制）/ renamed（另起了名字）
+    function freeFile(folder, name) { return findPlace(folder, name, null).file; }
+    // Windows / macOS 的磁盘默认不分大小写：new File(".../Bounce.JSX") 也能找到 bounce.jsx，但 fsName 还是 Bounce.JSX。
+    // 换成目录里真实的那一项，key 才和 scan 报告的一致。先找完全同名的：大小写敏感的磁盘上不会认错文件
+    function onDisk(folder, f) {
+        var items = listFiles(folder), name = File.decode(f.name), want = name.toLowerCase(), hit = null;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i] instanceof Folder) continue;
+            var nm = File.decode(items[i].name);
+            if (nm === name) return items[i];
+            if (!hit && nm.toLowerCase() === want) hit = items[i];
+        }
+        return hit || f;
+    }
+    // 把 src 放进 folder，不覆盖：返回 {file, state}，state = new / exists（库里已经有内容一样的，没复制）/ renamed（另起了名字）
+    // 内容一样的可能就是同名文件，也可能是以前另起名字存下的「弹跳 (2).jsx」
     function placeInto(src, folder) {
         var name = File.decode(src.name), dest = new File(folder.fsName + "/" + name);
-        if (dest.fsName === src.fsName) return { file: dest, state: "exists" };
-        if (dest.exists) {
-            if (sameContent(src, dest)) return { file: dest, state: "exists" };
-            dest = freeFile(folder, name);
-            if (!src.copy(dest.fsName)) fail("没能复制「" + name + "」（" + src.error + "）：检查脚本库文件夹是否可写");
-            return { file: dest, state: "renamed", from: name };
+        if (dest.fsName === src.fsName) return { file: onDisk(folder, dest), state: "exists" };
+        var p = findPlace(folder, name, function (d) { return sameContent(src, d); });
+        if (p.same) return { file: onDisk(folder, p.file), state: "exists" };
+        dest = p.file;
+        if (!src.copy(dest.fsName)) {
+            // dest 刚确认是空着的名字：复制到一半留下的残缺文件可以放心删掉，重试时还能用原来的名字
+            var why = src.error;
+            try { if (dest.exists) dest.remove(); } catch (e) {}
+            fail("没能复制「" + name + "」（" + why + "）：检查脚本库文件夹是否可写");
         }
-        if (!src.copy(dest.fsName)) fail("没能复制「" + name + "」（" + src.error + "）：检查脚本库文件夹是否可写");
-        return { file: dest, state: "new" };
+        return File.decode(dest.name) === name ? { file: dest, state: "new" } : { file: dest, state: "renamed", from: name };
     }
     // 添加 / 拖入的结果说明
     function placedMsg(n, renamed, existing) {
@@ -1738,7 +1760,8 @@ var MH = (function () {
     LIB.init = function (a) {
         if (a.libPath && !state.libPath) state.libPath = a.libPath;
         var root = ensureFolder(new Folder(libPath()));
-        return { libPath: root ? root.fsName : libPath(), libReady: !!root, version: VERSION, ae: app.version, canWrite: canWriteFiles(), os: IS_WIN ? "win" : "mac" };
+        // 文件夹建不了时也用 Folder 的 fsName（Windows 上是统一的 \ 写法），和 loadSnippets 报告的 libPath 一致，面板可以直接比较
+        return { libPath: root ? root.fsName : new Folder(libPath()).fsName, libReady: !!root, version: VERSION, ae: app.version, canWrite: canWriteFiles(), os: IS_WIN ? "win" : "mac" };
     };
 
     LIB.scan = function () {
@@ -1795,7 +1818,7 @@ var MH = (function () {
         var root = libRoot(), target = root;
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
         if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
-        var keys = [], panels = 0, panelSkip = [], renamed = [], existing = 0, added = 0;
+        var keys = [], panels = 0, panelSkip = [], panelFail = [], renamed = [], existing = 0, added = 0;
         for (var i = 0; i < a.paths.length; i++) {
             var f = new File(a.paths[i]);
             if (!f.exists) continue;
@@ -1809,11 +1832,17 @@ var MH = (function () {
                 var pd = new File(pf.fsName + "/" + File.decode(f.name));
                 if (pd.exists && !sameContent(f, pd)) panelSkip.push(File.decode(f.name));
                 else if (pd.exists || f.copy(pd.fsName)) panels++;
+                else {
+                    // pd 原来不存在：复制失败留下的残缺文件删掉，免得 AE 下次启动时加载半个面板
+                    panelFail.push("「" + File.decode(f.name) + "」（" + f.error + "）");
+                    try { if (pd.exists) pd.remove(); } catch (e) {}
+                }
             }
         }
         var msg = placedMsg(added, renamed, existing);
-        if (a.toPanels) msg += "。" + panels + " 个已装到 ScriptUI Panels（重启 AE 生效）";
-        if (panelSkip.length) msg += "。ScriptUI Panels 里已经有内容不同的「" + panelSkip.join("」「") + "」，没有覆盖";
+        if (panels) msg += "。" + panels + " 个已装到 ScriptUI Panels（重启 AE 生效）";
+        if (panelSkip.length) msg += "。没有覆盖 ScriptUI Panels 里内容不同的「" + panelSkip.join("」「") + "」：要换成新版，点设置页的「ScriptUI Panels」打开文件夹，删掉旧文件后再添加一次";
+        if (panelFail.length) msg += "。" + panelFail.join("、") + "没能装到 ScriptUI Panels：点设置页的「ScriptUI Panels」打开文件夹，检查它是否可写后再添加一次";
         return { keys: keys, renamed: renamed, existing: existing, msg: msg };
     };
 
@@ -1845,13 +1874,23 @@ var MH = (function () {
         var f = new File(a.path);
         if (!f.exists) fail("文件不存在");
         var root = libRoot(), trashPath = root.fsName + "/_已移除", where = "_已移除";
+        // 列表可能是旧的：脚本库在别的面板换过，这个面板还列着原来那个库里的文件。不在当前库里的一律不动。
+        // 路径前缀不分大小写比较，前缀后面必须紧跟路径分隔符；先去掉根目录末尾的分隔符，D:\ 这样的盘符根目录也适用
+        var rp = root.fsName.replace(/[\\\/]+$/, ""), fp = f.fsName;
+        if (!(fp.length > rp.length && fp.substring(0, rp.length).toLowerCase() === rp.toLowerCase() && /[\\\/]/.test(fp.charAt(rp.length))))
+            fail("没能移除「" + File.decode(f.name) + "」：它不在当前脚本库「" + root.fsName + "」里（脚本库在别的面板换过）。列表已经刷新，重新选择要移除的脚本");
         // 原来在哪个分类，就放进 _已移除 里的同名子文件夹，方便找回
         var rel = f.parent.fsName.substring(root.fsName.length).replace(/\\/g, "/").replace(/^\/+/, "");
         var cat = rel.split("/")[0];
         if (cat) { trashPath += "/" + cat; where += "/" + cat; }
         var trash = needFolder(new Folder(trashPath), "「_已移除」文件夹");
         var dest = freeFile(trash, File.decode(f.name));
-        if (!f.copy(dest.fsName)) fail("没能移除「" + File.decode(f.name) + "」（" + f.error + "）：检查脚本库文件夹是否可写");
+        if (!f.copy(dest.fsName)) {
+            // dest 刚确认是空着的名字：复制到一半留下的残缺副本删掉，免得看起来像一份备份
+            var why = f.error;
+            try { if (dest.exists) dest.remove(); } catch (e0) {}
+            fail("没能移除「" + File.decode(f.name) + "」（" + why + "）：检查脚本库文件夹是否可写");
+        }
         if (!f.remove()) {
             try { dest.remove(); } catch (e) {}
             fail("没能移除「" + File.decode(f.name) + "」（" + f.error + "）：文件可能正被占用，关掉用到它的程序再试");
@@ -1902,8 +1941,9 @@ var MH = (function () {
     LIB.loadConfig = function (a) { return { text: readText(configFile(a.name)) }; };
     LIB.saveConfig = function (a) { writeText(configFile(a.name, true), a.text); return { saved: true }; };
 
-    // 代码片段存在脚本库根目录，跟着脚本库一起同步
-    LIB.loadSnippets = function () { return { text: readText(new File(libPath() + "/_snippets.json")) }; };
+    // 代码片段存在脚本库根目录，跟着脚本库一起同步。
+    // 同时报告这次读的是哪个脚本库：面板拿它和自己记的比，就知道脚本库是不是在别的面板换过
+    LIB.loadSnippets = function () { return { text: readText(new File(libPath() + "/_snippets.json")), libPath: new Folder(libPath()).fsName }; };
     LIB.saveSnippets = function (a) { writeText(new File(libRoot().fsName + "/_snippets.json"), a.text); return { saved: true }; };
 
     var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -1926,17 +1966,24 @@ var MH = (function () {
         var cat = (a.cat || "").replace(/^\s+|\s+$/g, "").replace(/[\\\/:*?"<>|]/g, "_");
         if (cat && cat !== "未分类") target = needFolder(new Folder(root.fsName + "/" + cat), "分类文件夹");
         var name = a.name.replace(/[\\\/:*?"<>|]/g, "_"), bytes = b64decode(a.b64);
-        var f = new File(target.fsName + "/" + name), st = "new";
-        if (f.exists) {
-            if (readBinary(f) === bytes) return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: "exists", name: name, savedAs: name };
-            f = freeFile(target, name);
-            st = "renamed";
+        // 和「添加」一样：库里已经有字节完全一样的（同名的，或以前另起名字存下的）→ 算已经有了
+        var p = findPlace(target, name, function (d) { return d.length === bytes.length && readBinary(d) === bytes; });
+        if (p.same) {
+            var g = onDisk(target, p.file);
+            return { key: g.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: "exists", name: name, savedAs: File.decode(g.name) };
         }
+        var f = p.file, st = File.decode(f.name) === name ? "new" : "renamed";
         f.encoding = "BINARY";
         if (!f.open("w")) fail("没能写入「" + name + "」（" + f.error + "）：检查脚本库文件夹是否可写");
         var wrote = f.write(bytes);
-        f.close();
-        if (wrote === false) { try { f.remove(); } catch (e) {} fail("没能写完「" + name + "」（" + f.error + "）：检查磁盘空间和脚本库文件夹是否可写"); }
+        // 很多写入错误要到 close() 把缓存写进磁盘时才出现（比如磁盘满了）
+        if (f.close() === false) wrote = false;
+        if (wrote === false) {
+            // f 刚确认是空着的名字：写坏的文件删掉，重试时还能用原来的名字
+            var why = f.error;
+            try { f.remove(); } catch (e) {}
+            fail("没能写完「" + name + "」（" + why + "）：检查磁盘空间和脚本库文件夹是否可写");
+        }
         return { key: f.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: st, name: name, savedAs: File.decode(f.name) };
     };
 
