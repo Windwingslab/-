@@ -48,15 +48,24 @@ async function openPanel(browser, o) {
                     if (fail[name] === "always" || fail[name] > 0) { if (fail[name] !== "always") fail[name]--; throw err("EPERM"); }
                     mem[b] = mem[a]; delete mem[a];
                 },
-                readFileSync: p => { if (!(p in mem)) throw err("ENOENT"); return mem[p]; }
+                readFileSync: p => {
+                    const name = p.split("/").pop();
+                    if (window.__failRead && window.__failRead[name] > 0) { window.__failRead[name]--; throw err("EBUSY"); }
+                    if (!(p in mem)) throw err("ENOENT"); return mem[p];
+                },
+                // 跨面板锁：wx = 文件已存在就失败
+                openSync: (p, flag) => { window.__ops.push(["open", p, flag]); if (!dirs.has(dirOf(p))) throw err("ENOENT"); if (flag === "wx" && p in mem) throw err("EEXIST"); mem[p] = ""; window.__mtime = window.__mtime || {}; window.__mtime[p] = Date.now(); return 3; },
+                closeSync: () => {},
+                statSync: p => { if (!(p in mem)) throw err("ENOENT"); return { mtimeMs: (window.__mtime && window.__mtime[p]) || Date.now() }; }
             };
-            if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: dirOf };
+            if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: dirOf, basename: p => p.replace(/^.*\//, "") };
             if (m === "os") return { homedir: () => o.HOME };
             throw err("MODULE_NOT_FOUND");
         };
         window.__alive = !o.down;
         window.__revive = () => { window.__alive = true; };
         window.__canWrite = !!o.canWrite;
+        window.__lib = o.LIB;   // 后台现在的脚本库（测试里可以改，模拟别的面板换了脚本库）
         window.__adobe_cep__ = {
             getExtensionId: () => "com.windwings.motionhub.panel" + o.panel, getSystemPath: () => "", registerKeyEventsInterest() {},
             evalScript(code, cb) {
@@ -70,13 +79,14 @@ async function openPanel(browser, o) {
                 // 后台（ExtendScript）读得到 Node 写的同一个文件；没开写入权限时写不进去
                 if (m[1] === "loadConfig") r.data = { text: (o.CFG + a.name + ".json") in mem ? mem[o.CFG + a.name + ".json"] : null };
                 if (m[1] === "saveConfig") { if (cw) mem[o.CFG + a.name + ".json"] = a.text; else r = { ok: false, msg: "无法写入：" + a.name }; }
-                if (m[1] === "loadSnippets") r.data = { text: o.SNIP in mem ? mem[o.SNIP] : null, libPath: o.LIB };
-                if (m[1] === "saveSnippets") { if (cw) mem[o.SNIP] = a.text; else r = { ok: false, msg: "无法写入：_snippets.json" }; }
-                if (m[1] === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: cw, os: "mac", libPath: o.LIB, libReady: true };
+                const SN = window.__lib + "/_snippets.json";
+                if (m[1] === "loadSnippets") r.data = { text: SN in mem ? mem[SN] : null, libPath: window.__lib };
+                if (m[1] === "saveSnippets") { if (cw) mem[SN] = a.text; else r = { ok: false, msg: "无法写入：_snippets.json" }; }
+                if (m[1] === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: cw, os: "mac", libPath: window.__lib, libReady: true };
                 if (m[1] === "status") r.data = { canWrite: cw };
-                if (m[1] === "scan") r.data = { items: [], categories: [], libPath: o.LIB };
+                if (m[1] === "scan") r.data = { items: [], categories: [], libPath: window.__lib };
                 if (m[1] === "importSamples") r.data = o.importCopies ? { copied: o.importCopies, existing: 0 } : { copied: 0, existing: 0, skipped: true };
-                if (m[1] === "ctx") r.data = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
+                if (m[1] === "ctx") r.data = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0, lib: window.__lib };
                 setTimeout(() => cb(JSON.stringify(r)), 2);
             }
         };
@@ -270,6 +280,109 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         check("从不直接写正式文件（写到一半断电也不会留下半个文件）", !ops.some(o => o[0] === "write" && o[1] === target), JSON.stringify(ops.filter(o => o[0] === "write")));
         check("没有留下临时文件", !Object.keys(await p.disk()).some(k => /\.tmp$/.test(k)), JSON.stringify(Object.keys(await p.disk())));
         await p.close();
+    }
+
+
+    console.log("第二轮审查的场景：");
+    {
+        // A. 老用户第一次启动时已经开了写入权限：照样把本机缓存里的合并进磁盘（之前只在没权限时合并）
+        const a1 = await openPanel(browser, { panel: 1, disk: {}, canWrite: true, node: true, local: { snippets: oldSnippets("p1", "面板1的片段"), curves: [["面板1的曲线", [0.1, 0, 0.2, 1]]], seeded: true } });
+        const a4 = await openPanel(browser, { panel: 4, disk: await a1.disk(), canWrite: true, node: true, local: { snippets: oldSnippets("p4", "面板4的片段"), curves: [["面板4的曲线", [0.3, 0, 0.4, 1]]], seeded: true } });
+        const da = await a4.disk();
+        check("开着写入权限的老用户：两个面板的片段和曲线都合并进磁盘", names(J(da, SNIP)).includes("面板1的片段") && names(J(da, SNIP)).includes("面板4的片段") && (J(da, CFG + "curves.json") || []).length === 2, JSON.stringify([names(J(da, SNIP)), da[CFG + "curves.json"]]));
+        await a1.close(); await a4.close();
+
+        // B. 第一次启动时后台没连上（写入权限还不知道）：曲线照样合并，不被磁盘上的覆盖
+        const disk0 = { [CFG + "curves.json"]: JSON.stringify([["别的面板的曲线", [0.5, 0, 0.5, 1]]]) };
+        const b = await openPanel(browser, { panel: 4, disk: disk0, canWrite: false, node: true, down: true, local: { curves: [["面板4的曲线", [0.3, 0, 0.4, 1]]], seeded: true } });
+        const cb = J(await b.disk(), CFG + "curves.json") || [];
+        check("后台没连上的第一次启动：本机的曲线也合并进磁盘", cb.some(c => c[0] === "面板4的曲线") && cb.some(c => c[0] === "别的面板的曲线"), JSON.stringify(cb));
+        await b.close();
+
+        // C. 删除对话框开着时，列表被别的面板的改动更新：确认后删的是对的那一条
+        const base = { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1" }, { id: "b", kind: "expr", name: "片段乙", code: "2" }]) };
+        const c = await openPanel(browser, { panel: 1, disk: base, canWrite: true, node: true, local: {} });
+        await gotoSnippets(c);
+        const row = c.page.locator("#lib-snippets .lib-item", { has: c.page.locator(".nm", { hasText: "片段甲" }) }).first();
+        await row.hover(); await row.locator(".acts .act").nth(2).click();   // 打开删除确认
+        await c.page.evaluate(() => {   // 别的面板加了一条；这个面板拿到焦点，列表跟着更新
+            const p = "/lib/_snippets.json", l = JSON.parse(window.__mem[p]); l.push({ id: "z", kind: "expr", name: "别的面板加的", code: "9" }); window.__mem[p] = JSON.stringify(l);
+            window.dispatchEvent(new Event("focus"));
+        });
+        await c.page.waitForTimeout(200);
+        await c.page.click("#dlg-btns .btn.accent");
+        await c.page.waitForTimeout(400);
+        const dc = names(J(await c.disk(), SNIP));
+        check("对话框开着时列表更新过：删掉的是「片段甲」，别的面板加的还在", !dc.includes("片段甲") && dc.includes("别的面板加的") && dc.includes("片段乙"), JSON.stringify(dc));
+        await c.close();
+
+        // D. 0 字节的共用文件（写到一半中断）：当成「还没有」，用本机缓存写回去，不报损坏
+        const d = await openPanel(browser, { panel: 1, disk: { [SNIP]: "", [CFG + "curves.json"]: "" }, canWrite: true, node: true, local: { snippets: [{ id: "m", kind: "expr", name: "我的片段", code: "value" }], curves: [["我的曲线", [0.1, 0, 0.2, 1]]], snippetsMerged: true, curvesMerged: true, seeded: true } });
+        const dd = await d.disk(), dh = await d.hint();
+        check("0 字节文件：不报损坏，本机缓存里的片段和曲线写回了磁盘", !/损坏/.test(dh) && names(J(dd, SNIP)).includes("我的片段") && (J(dd, CFG + "curves.json") || []).length === 1, dh + " " + dd[SNIP]);
+        await d.close();
+
+        // E. 正常启动后，面板上的自建片段按钮显示片段名（之前会显示「已删除的片段」）
+        const e = await openPanel(browser, { panel: 1, disk: { [SNIP]: JSON.stringify([{ id: "m", kind: "expr", name: "我的片段", code: "value" }]), [CFG + "panel1.json"]: JSON.stringify({ schema: 2, name: "面板", accent: "#FF5900", items: [{ id: "t", type: "snippet", sid: "m" }] }), [CFG + "state.json"]: JSON.stringify({ seeded: true }) }, canWrite: true, node: true, local: {} });
+        const et = await e.page.evaluate(() => document.querySelector("#layout").textContent);
+        check("启动后片段按钮显示「我的片段」，不显示「已删除的片段」", /我的片段/.test(et) && !/已删除的片段/.test(et), et.slice(0, 120));
+        await e.close();
+
+        // F. 两个面板改了同一条片段：两个版本都留下，并在气泡里说明
+        const f0 = { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "value" }]) };
+        const fa = await openPanel(browser, { panel: 1, disk: f0, canWrite: true, node: true, local: {} });
+        const fb = await openPanel(browser, { panel: 4, disk: f0, canWrite: true, node: true, local: {} });
+        await gotoSnippets(fa);
+        const ra = fa.page.locator("#lib-snippets .lib-item", { has: fa.page.locator(".nm", { hasText: "片段甲" }) }).first();
+        await ra.hover(); await ra.locator(".acts .act").nth(1).click();
+        await fa.page.fill("#dlg-body textarea", "value + 100 // 面板1改的");
+        await fa.page.click("#dlg-btns .btn.accent"); await fa.page.waitForTimeout(300);
+        await fb.page.evaluate((m) => { Object.assign(window.__mem, m); }, await fa.disk());
+        await gotoSnippets(fb);
+        const rb = fb.page.locator("#lib-snippets .lib-item", { has: fb.page.locator(".nm", { hasText: "片段甲" }) }).first();
+        await rb.hover(); await rb.locator(".acts .act").nth(1).click();
+        await fb.page.fill("#dlg-body input[type=text]", "片段甲（面板4改名）");
+        await fb.page.click("#dlg-btns .btn.accent"); await fb.page.waitForTimeout(400);
+        const df = J(await fb.disk(), SNIP), bf = await fb.bubble();
+        check("同一条片段两边都改了：面板 1 的代码修改还在，面板 4 的改名另存了一份", df.some(x => x.code === "value + 100 // 面板1改的") && df.some(x => /面板4改名/.test(x.name)), JSON.stringify(df));
+        check("气泡说明两份都留下了", /两份都留下了/.test(bf), bf);
+        await fa.close(); await fb.close();
+
+        // G. 保存前读不到磁盘上现在的版本：不写，提示并稍后重试（不会盖掉别的面板加的）
+        const g0 = { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1" }, { id: "z", kind: "expr", name: "别的面板加的", code: "9" }]) };
+        const g = await openPanel(browser, { panel: 1, disk: g0, canWrite: false, node: true, local: {} });
+        await g.page.evaluate(() => { window.__failRead = { "_snippets.json": 1 }; });
+        await addSnippet(g, "读不到时新建的", "value + 2");
+        const gb = await g.bubble();
+        await g.page.waitForTimeout(1500);
+        const dg = names(J(await g.disk(), SNIP));
+        check("保存前读不到磁盘：气泡报错，不覆盖文件", /err/.test(gb) && /没写进磁盘/.test(gb), gb);
+        check("稍后自动重试：新建的写进去了，别的面板加的也还在", dg.includes("读不到时新建的") && dg.includes("别的面板加的") && dg.includes("片段甲"), JSON.stringify(dg));
+        await g.close();
+
+        // H. 别的面板换了脚本库：这个面板一刷新选区状态就知道，片段换成新库的，并说一声
+        const h0 = { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "旧库的片段", code: "1" }]), "/lib2/_snippets.json": JSON.stringify([{ id: "n", kind: "expr", name: "新库的片段", code: "2" }]) };
+        const h = await openPanel(browser, { panel: 4, disk: h0, canWrite: true, node: true, local: {} });
+        await h.page.evaluate(() => { window.__lib = "/lib2"; window.dispatchEvent(new Event("focus")); });
+        await h.page.waitForTimeout(500);
+        const hn = names(await h.snippets()), hh = await h.hint();
+        check("别的面板换了脚本库：片段列表换成了新库里的", hn.includes("新库的片段") && !hn.includes("旧库的片段"), JSON.stringify(hn));
+        check("提示栏说明脚本库在别的面板换过", /脚本库已在别的面板换成「\/lib2」/.test(hh), hh);
+        await h.close();
+
+        // I. 启动时几处都写不进去：提示栏一句话说完，怎么办只说一次
+        const fails = { "_snippets.json": "always", "curves.json": "always", "snippet_prefs.json": "always", "panel1.json": "always" };
+        const i = await openPanel(browser, { panel: 1, disk: {}, canWrite: false, node: true, failRename: fails, local: { panel1: oldLayout("p1", "老布局"), snippets: oldSnippets("p1", "面板1的片段"), curves: [["曲线", [0.1, 0, 0.2, 1]]], seeded: true } });
+        const ih = await i.hint();
+        check("几处写不进去：合成一句「这些没写进磁盘：…」，并列出每个文件", /这些没写进磁盘：/.test(ih) && /代码片段（/.test(ih) && /曲线预设（/.test(ih) && /面板布局（/.test(ih), ih);
+        check("「会自动重试；一直不行就检查文件夹是否可写」只出现一次", (ih.match(/一直不行就检查文件夹是否可写/g) || []).length === 1, ih);
+        await i.close();
+
+        // J. 全新用户：默认片段写一份；没有内容的曲线 / 隐藏设置不建空文件
+        const j = await openPanel(browser, { panel: 1, disk: {}, canWrite: false, node: true, local: {} });
+        const dj = await j.disk();
+        check("全新用户：默认片段写进磁盘一份，曲线和隐藏设置没有建空文件", names(J(dj, SNIP)).filter(n => n === "匀速旋转").length === 1 && !((CFG + "curves.json") in dj) && !((CFG + "snippet_prefs.json") in dj), JSON.stringify(Object.keys(dj)));
+        await j.close();
     }
 
     await browser.close();

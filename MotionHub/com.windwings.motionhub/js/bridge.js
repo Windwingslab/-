@@ -246,7 +246,7 @@
                 return { ok: true, path: file };
             } catch (e) {
                 try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (e2) {}
-                return { ok: false, msg: "写不进 " + file + "（" + why(e) + "）：检查这个文件夹是否可写" };
+                return { ok: false, path: file, code: why(e), msg: file + "，" + why(e) };
             }
         }
         // text = null 表示文件不存在
@@ -259,8 +259,33 @@
                 return { ok: false, msg: "读不了 " + file + "（" + why(e) + "）" };
             }
         }
+        // 跨面板的文件锁：4 个面板是 4 个进程，改共用文件时先拿锁，锁里同步地读、改、写，只要几毫秒。
+        // 别的面板正拿着 → 返回 { busy: true }，调用方过几十毫秒再试；锁文件放了 2 秒还在，就当成上次异常退出留下的，接管它。
+        // 锁文件放在本机的 userData/MotionHub/.locks 里（不会出现在同步盘上的脚本库里）；建不了锁文件就不加锁照常做，总比存不进去好
+        function withLock(file, fn) {
+            if (!ok()) return fn();
+            var s = String(file), h = 5381, i, fd = null;
+            for (i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+            var dir = path.join(userDataDir(), "MotionHub", ".locks");
+            var lp = path.join(dir, s.replace(/^.*[\\\/]/, "").replace(/[^\w.\-]/g, "_") + "-" + h.toString(36) + ".lock");
+            try { fs.mkdirSync(dir, { recursive: true }); } catch (e0) {}
+            try { fd = fs.openSync(lp, "wx"); }
+            catch (e) {
+                if (!e || e.code !== "EEXIST") fd = null;
+                else {
+                    var age = 0;
+                    try { age = Date.now() - fs.statSync(lp).mtimeMs; } catch (e1) { age = 0; }
+                    if (age < 2000) return { ok: false, busy: true };
+                    try { fs.unlinkSync(lp); fd = fs.openSync(lp, "wx"); } catch (e2) { return { ok: false, busy: true }; }
+                }
+            }
+            try { return fn(); }
+            finally {
+                if (fd !== null) { try { fs.closeSync(fd); } catch (e3) {} try { fs.unlinkSync(lp); } catch (e4) {} }
+            }
+        }
         return {
-            ok: ok, userDataDir: userDataDir, configPath: configPath, writeText: writeText, readText: readText,
+            ok: ok, userDataDir: userDataDir, configPath: configPath, writeText: writeText, readText: readText, withLock: withLock,
             join: function () { return ok() ? path.join.apply(path, arguments) : ""; }
         };
     })();

@@ -1628,6 +1628,7 @@ var MH = (function () {
     }
     // 弹跳.jsx → 弹跳 (2).jsx → 弹跳 (3).jsx …（name 是解码后的文件名）沿着这串名字往下找：
     // 遇到 isSame(已有的文件) 为真 → {file: 那个文件, same: true}；都不是 → {file: 第一个空着的名字, same: false}
+    // first = 第一个名字就是空着的（没有改名）：用它判断 new / renamed，不再拿解码后的名字比（名字里本来就有 %20 时会比错）
     function findPlace(folder, name, isSame) {
         var m = /^(.*?)(\.[^.]*)?$/.exec(name), base = m[1], ext = m[2] || "";
         var f = new File(folder.fsName + "/" + name), n = 2;
@@ -1636,7 +1637,18 @@ var MH = (function () {
             f = new File(folder.fsName + "/" + base + " (" + n + ")" + ext);
             n++;
         }
-        return { file: f, same: false };
+        // 编号中间有空缺（比如删掉过「弹跳.jsx」，「弹跳 (2).jsx」还在）：再按文件夹列表把后面的编号副本也比一遍
+        if (isSame) {
+            var lb = base.toLowerCase(), le = ext.toLowerCase(), items = listFiles(folder);
+            for (var i = 0; i < items.length; i++) {
+                if (items[i] instanceof Folder) continue;
+                var lo = File.decode(items[i].name).toLowerCase();
+                if (lo.length <= lb.length + le.length || lo.substring(0, lb.length) !== lb || lo.substring(lo.length - le.length) !== le) continue;
+                if (!/^ \(\d+\)$/.test(lo.substring(lb.length, lo.length - le.length))) continue;
+                if (isSame(items[i])) return { file: items[i], same: true };
+            }
+        }
+        return { file: f, same: false, first: n === 2 };
     }
     function freeFile(folder, name) { return findPlace(folder, name, null).file; }
     // Windows / macOS 的磁盘默认不分大小写：new File(".../Bounce.JSX") 也能找到 bounce.jsx，但 fsName 还是 Bounce.JSX。
@@ -1665,7 +1677,7 @@ var MH = (function () {
             try { if (dest.exists) dest.remove(); } catch (e) {}
             fail("没能复制「" + name + "」（" + why + "）：检查脚本库文件夹是否可写");
         }
-        return File.decode(dest.name) === name ? { file: dest, state: "new" } : { file: dest, state: "renamed", from: name };
+        return p.first ? { file: dest, state: "new" } : { file: dest, state: "renamed", from: name };
     }
     // 添加 / 拖入的结果说明
     function placedMsg(n, renamed, existing) {
@@ -1972,7 +1984,7 @@ var MH = (function () {
             var g = onDisk(target, p.file);
             return { key: g.fsName.substring(root.fsName.length).replace(/\\/g, "/"), state: "exists", name: name, savedAs: File.decode(g.name) };
         }
-        var f = p.file, st = File.decode(f.name) === name ? "new" : "renamed";
+        var f = p.file, st = p.first ? "new" : "renamed";
         f.encoding = "BINARY";
         if (!f.open("w")) fail("没能写入「" + name + "」（" + f.error + "）：检查脚本库文件夹是否可写");
         var wrote = f.write(bytes);
@@ -2335,7 +2347,8 @@ var MH = (function () {
 
     // 选区快照：面板据此把条件不满足的按钮变暗。只读、不开撤销组、任何一项出错都不影响其他项
     LIB.ctx = function () {
-        var out = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }, i;
+        var out = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0, lib: "" }, i;
+        try { out.lib = new Folder(libPath()).fsName; } catch (eL) {}
         try {
             var sel = app.project.selection;
             for (i = 0; i < sel.length; i++) if (sel[i] instanceof CompItem) out.projComps++;

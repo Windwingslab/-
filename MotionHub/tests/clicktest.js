@@ -22,7 +22,7 @@ const OUT = path.join(__dirname, "out");
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/Users/test/Documents/MotionHub/Library", version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/lib", version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
         case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
         case "selfCheck": return ok({ version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });

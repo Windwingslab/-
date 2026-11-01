@@ -25,7 +25,12 @@ function loadHost(opts) {
     const ro = !!opts.readonly;
     const undo = [], presets = [];
     // 「~」开头的路径落到假的 home 里，不会在当前目录建出一个叫 ~ 的文件夹
-    const home = p => (typeof p === "string" && p.charAt(0) === "~" ? path.join(root, "home", p.slice(1)) : p);
+    // uriPaths：和 ExtendScript 一样，把路径里的 %XX 当成 URI 转义（"Fade%20In.jsx" 指的是 "Fade In.jsx"）
+    const home = p => {
+        if (typeof p === "string" && p.charAt(0) === "~") p = path.join(root, "home", p.slice(1));
+        if (opts.uriPaths && typeof p === "string") { try { p = decodeURI(p); } catch (e) {} }
+        return p;
+    };
     // BINARY 编码按字节读写（每个字符 0–255），和 ExtendScript 一样
     const enc = f => (f.encoding === "BINARY" ? "latin1" : "utf8");
     // caseless：按路径找文件时每一段都不分大小写（先找完全同名的）。File 对象的 fsName 保持构造时的写法
@@ -520,6 +525,35 @@ const ls = p => (fs.existsSync(p) ? fs.readdirSync(p) : []);
         check(R.label + "：Node 写进脚本库的 _snippets.json（库文件夹原来不存在），host 的 loadSnippets 读得到", init.ok && init.data.libReady === false && ws.ok && rs.ok && rs.data.text === st && rs.data.libPath === init.data.libPath, JSON.stringify({ init: init.data, ws: ws, rs: rs }));
         check(R.label + "：脚本库文件夹里没有留下 .tmp", !!libDir && tmpLeft(libDir).length === 0, tmpLeft(libDir).join(","));
     }
+}
+
+// 3.7.1 第二轮审查：编号有空缺时也不重复保存；名字里本来就有 %20 的文件不算改名
+{
+    const h = loadHost({});
+    h.call("init", {});
+    const lib = path.join(LIB_DIR(h), "动画");
+    const src = path.join(h.root, "Downloads/弹跳.jsx");
+    put(src, "// v1"); h.call("install", { paths: [src], cat: "动画" });
+    put(src, "// v2"); h.call("install", { paths: [src], cat: "动画" });
+    put(src, "// v3"); h.call("install", { paths: [src], cat: "动画" });
+    fs.unlinkSync(path.join(lib, "弹跳.jsx"));             // 用户整理时删掉了最早的那份
+    put(src, "// v2");
+    const a = h.call("install", { paths: [src], cat: "动画" });
+    check("编号开头有空缺：再加一次 v2 → 认出「弹跳 (2).jsx」已经有了，不另存", a.ok && a.data.existing === 1 && a.data.keys[0] === "/动画/弹跳 (2).jsx" && !fs.existsSync(path.join(lib, "弹跳.jsx")), JSON.stringify(a.data) + " " + fs.readdirSync(lib).join(","));
+    fs.unlinkSync(path.join(lib, "弹跳 (2).jsx"));          // 中间也空出来
+    put(src, "// v3");
+    const b = h.call("install", { paths: [src], cat: "动画" });
+    check("编号中间有空缺：再加一次 v3 → 认出「弹跳 (3).jsx」，不在空位上再存一份", b.ok && b.data.existing === 1 && b.data.keys[0] === "/动画/弹跳 (3).jsx" && fs.readdirSync(lib).length === 1, JSON.stringify(b.data) + " " + fs.readdirSync(lib).join(","));
+    const d = h.call("writeDropped", { name: "弹跳.jsx", cat: "动画", b64: Buffer.from("// v3").toString("base64") });
+    check("拖入同样内容（编号有空缺）→ exists，指向「弹跳 (3).jsx」", d.ok && d.data.state === "exists" && d.data.savedAs === "弹跳 (3).jsx", JSON.stringify(d.data));
+    const e = h.call("install", { paths: [src.replace("弹跳.jsx", "弹跳.jsx")], cat: "动画" });
+    check("编号副本的识别不会误把别的文件当成同一系列（只认「名字 (数字).扩展名」）", e.ok && e.data.existing === 1, JSON.stringify(e.data));
+}
+{
+    const h = loadHost({ uriPaths: true });
+    h.call("init", {});
+    const r = h.call("writeDropped", { name: "Fade%20In.jsx", cat: "", b64: Buffer.from("// fade").toString("base64") });
+    check("名字里本来就有 %20 的文件拖进空库：算新加的（state=new），不说成「库里已经有一个」", r.ok && r.data.state === "new", JSON.stringify(r.data));
 }
 
 console.log(failures ? "✗ host 测试：" + failures + " 项没通过" : "✓ host 测试全部通过");

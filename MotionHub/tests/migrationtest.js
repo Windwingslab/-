@@ -220,7 +220,7 @@ async function load(browser, text) {
                         renameSync: (a, b) => { if (!(a in mem)) throw err("ENOENT"); mem[b] = mem[a]; delete mem[a]; },
                         readFileSync: p => { if (!(p in mem)) throw err("ENOENT"); return mem[p]; }
                     };
-                    if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: p => p.replace(/\/[^\/]*$/, "") };
+                    if (m === "path") return { join: (...a) => a.join("/").replace(/\/+/g, "/"), dirname: p => p.replace(/\/[^\/]*$/, ""), basename: p => p.replace(/^.*\//, "") };
                     if (m === "os") return { homedir: () => HOME };
                     throw err("MODULE_NOT_FOUND");
                 };
