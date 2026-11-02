@@ -390,19 +390,32 @@
     // 色块上的文字：近黑和白里对比度更高的那个（品牌橙上是近黑 5.66:1）
     function onColor(hex) { return contrast(hex, INK) >= contrast(hex, "#FFFFFF") ? INK : "#FFFFFF"; }
 
+    // 偏灰的品牌色：把强调色按比例混进中性深灰。选中的胶囊、主按钮、上了色的方块都用它，不用亮色大块；
+    // 主按钮的图标用强调色本身（小面积），太暗看不清时用正文色
+    var HL_BASE = "#262728", HL_LINE_BASE = "#3A3B3C";
+    function hlVars(hex) {
+        var hl = mix(HL_BASE, hex, 0.10);
+        return {
+            "--hl": hl, "--hl-hover": mix(HL_BASE, hex, 0.15), "--hl-press": mix(HL_BASE, hex, 0.22),
+            "--hl-line": mix(HL_LINE_BASE, hex, 0.20), "--hl-icon": contrast(hex, hl) >= 3 ? hex : "#F4F4F2"
+        };
+    }
+    function setVars(style, vars) { for (var k in vars) style.setProperty(k, vars[k]); }
+
     function applyAccent(hex) {
         var r = document.documentElement.style;
         r.setProperty("--accent", hex);
         r.setProperty("--accent-hover", mix(hex, "#FFFFFF", 0.18));
         r.setProperty("--on-accent", onColor(hex));
+        setVars(r, hlVars(hex));
     }
 
+    // 给单个组件上的颜色：组件左边一条细色条、主按钮用这个颜色的偏灰版本，不再整块染色
     function paintCell(cell, hex) {
         if (!hex) return;
         cell.style.setProperty("--c", hex);
         cell.style.setProperty("--on-c", onColor(hex));
-        cell.style.setProperty("--tint-bg", mix(hex, INK, 0.86));
-        cell.style.setProperty("--tint-line", mix(hex, INK, 0.55));
+        setVars(cell.style, hlVars(hex));
         cell.classList.add("tinted");
     }
 
@@ -1022,7 +1035,7 @@
                 for (var x = 0; x < 3; x++) {
                     (function (fx, fy, name, ix, iy) {
                         g.appendChild(tile({
-                            icon: "anchor" + ix + iy, filled: true,
+                            icon: "anchor" + ix + iy,
                             hint: { title: "锚点 · " + name, click: "把锚点移到图层的" + name + "，图层位置不变", alt: "同时把图层贴到合成的" + name },
                             run: call("anchor", { fx: fx, fy: fy })
                         }));
@@ -1091,7 +1104,8 @@
     }
     function row(parent) { var r = el("div", "w-row"); parent.appendChild(r); return r; }
 
-    function sliderRow(parent, label, item, key, def, hint) {
+    // onCommit：松开滑块或改完数字时调用（拿到这一行做气泡的位置）
+    function sliderRow(parent, label, item, key, def, hint, onCommit) {
         var r = row(parent);
         r.appendChild(el("span", "k", label));
         var range = el("input");
@@ -1100,9 +1114,10 @@
         var num = numInput(range.value, function (n) {
             var v = Math.max(1, Math.min(100, parseFloat(n.value) || def));
             n.value = v; range.value = v; item[key] = v; saveConfig();
+            if (onCommit) onCommit(r);
         });
         range.addEventListener("input", function () { num.value = range.value; item[key] = +range.value; });
-        range.addEventListener("change", saveConfig);
+        range.addEventListener("change", function () { saveConfig(); if (onCommit) onCommit(r); });
         r.appendChild(range);
         r.appendChild(num);
         bindHint(r, hint);
@@ -1112,12 +1127,29 @@
         name: "缓动", cat: "智能组件", icon: "easeBoth", desc: "IN / OUT 影响滑块 + 缓动、线性、定格", size: "full",
         render: function (cell, item) {
             var w = widgetBox(cell, "EASE · 缓动", "影响 %");
-            var h = { title: "缓动影响 %", click: "数值越大曲线越陡，AE 默认 33", note: "IN 控制进入关键帧，OUT 控制离开关键帧" };
-            sliderRow(w, "IN", item, "inInfl", 33, h);
-            sliderRow(w, "OUT", item, "outInfl", 33, h);
-            var r = row(w);
             var args = function (mode, m) { return { mode: mode, inInfl: item.inInfl || 33, outInfl: item.outInfl || 33, mods: m }; };
-            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的影响值应用（相当于 F9）", alt: "只缓入", shift: "只缓出" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("both", m)); } }));
+            // 拖动滑块松手（或改完数字）就直接应用到选中的关键帧，一次松手一步撤销；没选关键帧时只记下数值，不打扰。
+            // 连续拖的时候上一次还没做完：做完后按最新的数值再应用一次
+            var running = false, again = false;
+            var live = function (anchor) {
+                if (running) { again = true; return; }
+                running = true;
+                B.run(anchor, function () {
+                    return host("easeIfKeys", args("both", {})).then(function (r) {
+                        if (r && r.ok && r.data && !r.data.applied) return null;
+                        if (r && r.ok) bumpUsage("ease");
+                        return r;
+                    });
+                }, { toast: toast }).then(function () {
+                    running = false;
+                    if (again) { again = false; live(anchor); }
+                });
+            };
+            var h = { title: "缓动影响 %", click: "拖动后松手，直接应用到选中的关键帧（没选关键帧时只记下数值）", note: "IN 控制进入关键帧，OUT 控制离开关键帧；数值越大曲线越陡，AE 默认 33" };
+            sliderRow(w, "IN", item, "inInfl", 33, h, live);
+            sliderRow(w, "OUT", item, "outInfl", 33, h, live);
+            var r = row(w);
+            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的影响值应用到选中的关键帧（相当于 F9）", alt: "只缓入", shift: "只缓出", note: "调滑块时松手就会直接应用，这个按钮用来给新选中的关键帧套用同样的数值" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("both", m)); } }));
             r.appendChild(tile({ icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("linear", m)); } }));
             r.appendChild(tile({ icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("hold", m)); } }));
         }
@@ -2729,7 +2761,7 @@
 
     // =====================================================================
     // 选区状态：条件不满足的按钮变暗（仍可点），悬停写明缺什么
-    // 只在三种时机查询：鼠标在面板里移动（节流 900ms）、面板获得焦点、每次操作完成后
+    // 只在三种时机查询：鼠标在面板里移动（节流 0.15 秒，最后一次移动也会补查）、面板获得焦点、每次操作完成后
     // =====================================================================
     var ctx = null, ctxBusy = false, ctxAt = 0, ctxPending = false, ctxTrail = 0;
     function missing(needs, c) {
@@ -2757,8 +2789,8 @@
         if (B.isBackendDown()) return;
         if (ctxBusy) { ctxPending = true; return; }          // 上一次还没回来：回来后再查一次
         var now = Date.now();
-        if (!force && now - ctxAt < 900) {                     // 节流窗口内：窗口结束时补一次，不丢掉最后一次移动
-            if (!ctxTrail) ctxTrail = setTimeout(function () { ctxTrail = 0; refreshCtx(true); }, 900 - (now - ctxAt));
+        if (!force && now - ctxAt < 150) {                     // 节流窗口内（0.15 秒）：窗口结束时补一次，不丢掉最后一次移动
+            if (!ctxTrail) ctxTrail = setTimeout(function () { ctxTrail = 0; refreshCtx(true); }, 150 - (now - ctxAt));
             return;
         }
         clearTimeout(ctxTrail); ctxTrail = 0;
@@ -2969,7 +3001,9 @@
     window.MHDebug = {
         config: function () { return copy(cfg); }, types: function () { return Object.keys(W); },
         migrate: function (c) { var x = copy(c); var m = migrateConfig(x); return { cfg: x, moves: m }; },
-        snippets: function () { return copy(snippets); }, curves: function () { return copy(userCurves); }, hidden: function () { return copy(snipPrefs.hidden); }
+        snippets: function () { return copy(snippets); }, curves: function () { return copy(userCurves); }, hidden: function () { return copy(snipPrefs.hidden); },
+        // 测试用：换主题色看效果（和设置页点色块一样，但不保存）
+        accent: function (hex) { cfg.accent = hex; applyAccent(hex); renderLayout(); }
     };
 
     B.registerKeys(["cmdK", "esc"]);

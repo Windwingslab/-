@@ -1,7 +1,7 @@
-// 共用磁盘模拟（来自 3.7.1 第二轮审查）：4 个面板（各自一个浏览器上下文 = 各自的本机缓存）同时启动，读写同一块磁盘。
+// 共用磁盘模拟（来自 3.7.2 第二轮审查）：4 个面板（各自一个浏览器上下文 = 各自的本机缓存）同时启动，读写同一块磁盘。
 // · 页面里的 Node fs = 同步 XHR 到这个服务器（和 tests/disktest.js 一样严：目录要先建好、wx 打开已存在的文件会失败）
 // · evalScript = 异步请求到这个服务器；后台调用一个一个执行（AE 只有一个 ExtendScript 引擎），每次随机延迟
-// · 场景：3.7.0 没开写入权限的老用户第一次启动 3.7.1，4 个面板各有自己的片段、曲线、隐藏设置、布局；可以随机让改名失败（文件被占用）
+// · 场景：3.7.0 没开写入权限的老用户第一次启动 3.7.2，4 个面板各有自己的片段、曲线、隐藏设置、布局；可以随机让改名失败（文件被占用）
 // 断言：第一次启动（含自动重试）后、以及关掉 AE 重开后，谁的东西都在，默认片段只有一份，面板上的片段按钮都指得到片段
 // 用法：node sharedsim.js [次数] [canWrite 0|1] [改名失败概率] [随机种子]
 "use strict";
@@ -75,7 +75,7 @@ function startServer(state) {
                     if (name === "saveConfig") { if (cw) { D.mem[CFG + args.name + ".json"] = args.text; D.log.push(["hostWrite", CFG + args.name + ".json", panel]); } else r = { ok: false, msg: "无法写入：" + args.name }; }
                     if (name === "loadSnippets") r.data = { text: SNIP in D.mem ? D.mem[SNIP] : null, libPath: LIB };
                     if (name === "saveSnippets") { if (cw) { D.mem[SNIP] = args.text; D.log.push(["hostWrite", SNIP, panel]); } else r = { ok: false, msg: "无法写入：_snippets.json" }; }
-                    if (name === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: cw, os: "mac", libPath: LIB, libReady: true };
+                    if (name === "init") r.data = { version: "3.7.2", ae: "24.3.0", canWrite: cw, os: "mac", libPath: LIB, libReady: true };
                     if (name === "status") r.data = { canWrite: cw };
                     if (name === "scan") r.data = { items: [], categories: [], libPath: LIB };
                     if (name === "importSamples") r.data = { copied: 0, existing: 0, skipped: true };

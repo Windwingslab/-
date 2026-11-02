@@ -22,10 +22,10 @@ const OUT = path.join(__dirname, "out");
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/lib", version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/lib", version: "3.7.2", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
         case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
-        case "selfCheck": return ok({ version: "3.7.1", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
+        case "selfCheck": return ok({ version: "3.7.2", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
         case "scan": return ok({
             items: [
                 { path: "/lib/动画/弹跳.jsx", key: "/动画/弹跳.jsx", name: "弹跳", file: "弹跳.jsx", cat: "动画", ext: "jsx", desc: "测试脚本", author: "", type: "脚本" },
@@ -49,6 +49,7 @@ function fakeHost(name, args, state) {
             return ok({ key: "/动画/" + saved, state: st, name: n, savedAs: saved });
         }
         case "bezierRead": return ok({ bezier: [0.3, 0, 0.2, 1] }, "已读取曲线");
+        case "easeIfKeys": return ok({ applied: true, msg: "缓入缓出：4 个关键帧" }, "缓入缓出：4 个关键帧");
         default: return ok({}, "（测试）" + name + " 完成");
     }
 }
@@ -245,7 +246,7 @@ async function runRegressions(browser) {
     await page.waitForTimeout(100);
     out.push({ name: "对话框开着时不显示「处理中」气泡", ok: st.modal && !st.busyBubble, detail: JSON.stringify(st) });
 
-    // 3.7.1 拖入：说明哪个另存了、哪个已经在库里、哪个没加进去；没加进去的不连累其他文件
+    // 3.7.2 拖入：说明哪个另存了、哪个已经在库里、哪个没加进去；没加进去的不连累其他文件
     await page.evaluate(() => {
         const dt = new DataTransfer();
         ["弹跳.jsx", "对齐.jsx", "新.jsx", "坏.jsx", "说明.txt"].forEach(n => dt.items.add(new File(["// " + n], n)));
@@ -265,6 +266,42 @@ async function runRegressions(browser) {
     out.push({ name: "拖入：写不进去的那个不连累其他文件，成功的照常放到当前面板", ok: ["/动画/弹跳 (2).jsx", "/动画/对齐.jsx", "/动画/新.jsx"].every(k => dr.keys.indexOf(k) !== -1) && dr.keys.indexOf("/动画/坏.jsx") === -1, detail: JSON.stringify(dr.keys) });
 
     out.push({ name: "回归场景里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
+    await page.close();
+    return out;
+}
+
+// 3.7.2：缓动滑块松手就直接应用到选中的关键帧（不用再点「缓入缓出」）
+async function runEase(browser) {
+    const page = await browser.newPage({ viewport: { width: 340, height: 1400 } });
+    const errors = [], out = [];
+    page.on("pageerror", e => errors.push(e.message));
+    await page.exposeFunction("__mhHost", (name, argsJSON) => JSON.stringify(fakeHost(name, JSON.parse(argsJSON || "{}"), { canWrite: true })));
+    await page.addInitScript(() => {
+        try { localStorage.clear(); } catch (e) {}
+        window.__calls = []; window.__args = [];
+        window.__adobe_cep__ = {
+            getExtensionId: () => "com.windwings.motionhub.panel2", getSystemPath: () => "file:///ext", registerKeyEventsInterest() {},
+            evalScript(code, cb) {
+                if (code === "typeof MH") return setTimeout(() => cb("object"), 2);
+                const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
+                window.__calls.push(m[1]); window.__args.push([m[1], m[2]]);
+                window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 2));
+            }
+        };
+    });
+    await page.goto("file://" + EXT + "/index.html");
+    await page.waitForTimeout(500);
+    const range = page.locator(".cell", { has: page.locator(".w-head", { hasText: "EASE" }) }).locator("input[type=range]").first();
+    const has = await range.count();
+    out.push({ name: "面板 2 有缓动组件（这条测试不是空跑）", ok: has > 0, detail: String(has) });
+    if (has) {
+        await page.evaluate(() => { window.__calls = []; window.__args = []; });
+        await range.evaluate((r) => { r.value = 74; r.dispatchEvent(new Event("input")); r.dispatchEvent(new Event("change")); });
+        await page.waitForTimeout(300);
+        const ec = await page.evaluate(() => ({ calls: window.__calls.slice(), args: window.__args.filter(a => a[0] === "easeIfKeys").map(a => a[1]), bubble: (function () { const f = document.querySelector(".fb"); return f && !f.hidden ? f.textContent : ""; })() }));
+        out.push({ name: "缓动滑块松手直接应用（只调一次后台，带上新的数值 74），并在旁边说明结果", ok: ec.calls.filter(c => c === "easeIfKeys").length === 1 && /"inInfl":74/.test(ec.args[0] || "") && /4 个关键帧/.test(ec.bubble), detail: JSON.stringify(ec) });
+    }
+    out.push({ name: "缓动测试里没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
     await page.close();
     return out;
 }
@@ -321,13 +358,22 @@ async function runNeeds(browser) {
     const idle = await page.evaluate(() => window.__calls.filter(c => c === "ctx").length);
     out.push({ name: "鼠标不在面板里移动时，2 秒内不查询选区", ok: idle === 0, detail: "ctx 调用 " + idle + " 次" });
 
-    // 打开合成、选中 1 个图层：图层类按钮恢复，关键帧类仍然暗
+    // 打开合成、选中 1 个图层：0.2 秒内图层类按钮恢复（鼠标一进面板就查），关键帧类仍然暗
     await page.evaluate(() => window.__setCtx({ comp: "主合成", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 }));
+    await page.evaluate(() => { window.__calls = []; });
+    const t0 = Date.now();
+    await page.mouse.move(40, 300);
+    let undimMs = -1;
+    for (let k = 0; k < 40; k++) {
+        if (await page.evaluate(() => document.querySelectorAll('#layout [data-needs="layer"].na').length === 0)) { undimMs = Date.now() - t0; break; }
+        await page.waitForTimeout(10);
+    }
+    out.push({ name: "选区变了以后，鼠标一进面板 0.2 秒内按钮就恢复（不再等 0.9 秒）", ok: undimMs >= 0 && undimMs <= 200, detail: undimMs + "ms" });
     await page.evaluate(() => { window.__calls = []; });
     for (let i = 0; i < 20; i++) { await page.mouse.move(40 + i * 5, 300 + (i % 3) * 7); await page.waitForTimeout(50); }   // 约 1 秒内移动 20 次
     await page.waitForTimeout(300);
     const moved = await page.evaluate(() => window.__calls.filter(c => c === "ctx").length);
-    out.push({ name: "鼠标在面板里连续移动 1 秒，选区查询被节流到 ≤ 2 次", ok: moved >= 1 && moved <= 2, detail: "ctx 调用 " + moved + " 次" });
+    out.push({ name: "鼠标在面板里连续移动 1 秒（20 次）：选区查询仍然节流（每 0.15 秒最多一次，≤ 9 次）", ok: moved >= 1 && moved <= 9, detail: "ctx 调用 " + moved + " 次" });
     const st1 = await page.evaluate(() => ({
         layerNa: document.querySelectorAll('#layout [data-needs="layer"].na').length,
         layer: document.querySelectorAll('#layout [data-needs="layer"]').length,
@@ -477,6 +523,7 @@ async function runStudio(browser, opts) {
     const studio = await runStudio(browser, opts);
     const regress = await runRegressions(browser);
     const needs = await runNeeds(browser);
+    const ease = await runEase(browser);
     await browser.close();
 
     let fail = 0;
@@ -511,7 +558,9 @@ async function runStudio(browser, opts) {
     needs.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
     lines.push("回归场景：");
     regress.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
-    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress, needs }, null, 2));
+    lines.push("缓动滑块（松手直接应用）：");
+    ease.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
+    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress, needs, ease }, null, 2));
     console.log(lines.join("\n"));
     console.log(fail ? "✗ 点击测试：" + fail + " 项没通过（详情见 tests/out/clicktest.json）" : "✓ 点击测试通过（详情见 tests/out/clicktest.json）");
     process.exit(fail ? 1 : 0);

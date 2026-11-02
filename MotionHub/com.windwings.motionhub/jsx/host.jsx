@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.7.1";
+    var VERSION = "3.7.2";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;
@@ -1874,6 +1874,19 @@ var MH = (function () {
         }
         $.evalFile(f);
         return "已运行：" + File.decode(f.name);
+    };
+
+    // 缓动滑块松手时直接应用：选中了关键帧才应用，整次只开一个撤销组；
+    // 没选中就什么都不做——不报错，也不在「编辑 → 撤销」里留下空记录
+    LIB.easeIfKeys = function (a) {
+        var c = null;
+        try { c = app.project.activeItem; } catch (e) {}
+        if (!(c && c instanceof CompItem)) return { applied: false };
+        if (!selectedKeyedProps(c).length) return { applied: false };
+        var msg;
+        app.beginUndoGroup("MotionHub：缓动");
+        try { msg = T.ease(a); } finally { app.endUndoGroup(); }
+        return { applied: true, msg: msg };
     };
 
     LIB.reveal = function (a) {

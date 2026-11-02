@@ -112,7 +112,9 @@ function loadHost(opts) {
             beginUndoGroup: (n) => undo.push("begin:" + n), endUndoGroup: () => undo.push("end"),
             project: { activeItem: null, selection: [] }
         },
-        PropertyType: { PROPERTY: 6212, INDEXED_GROUP: 6213, NAMED_GROUP: 6214 }
+        PropertyType: { PROPERTY: 6212, INDEXED_GROUP: 6213, NAMED_GROUP: 6214 },
+        KeyframeInterpolationType: { LINEAR: 6612, BEZIER: 6613, HOLD: 6614 },
+        KeyframeEase: function (speed, infl) { this.speed = speed; this.influence = infl; }
     };
     // 假合成：图层 / 属性 / 关键帧按 opts.comp 生成
     if (opts.comp) {
@@ -554,6 +556,19 @@ const ls = p => (fs.existsSync(p) ? fs.readdirSync(p) : []);
     h.call("init", {});
     const r = h.call("writeDropped", { name: "Fade%20In.jsx", cat: "", b64: Buffer.from("// fade").toString("base64") });
     check("名字里本来就有 %20 的文件拖进空库：算新加的（state=new），不说成「库里已经有一个」", r.ok && r.data.state === "new", JSON.stringify(r.data));
+}
+
+// 3.7.2：缓动滑块松手直接应用——选中了关键帧才应用（一个撤销组），没选中什么都不做（不报错、没有空的撤销记录）
+{
+    const none = loadHost({ comp: { layers: 1, props: [{ keys: 0 }] } });
+    const a = none.call("easeIfKeys", { mode: "both", inInfl: 70, outInfl: 40 });
+    check("缓动滑块：没选关键帧时不应用、不报错、不开撤销组", a.ok && a.data.applied === false && none.undo.length === 0, JSON.stringify(a) + " " + none.undo.join(","));
+    const noComp = loadHost({});
+    const b = noComp.call("easeIfKeys", { mode: "both", inInfl: 70, outInfl: 40 });
+    check("缓动滑块：没打开合成时也不报错", b.ok && b.data.applied === false && noComp.undo.length === 0, JSON.stringify(b));
+    const some = loadHost({ comp: { layers: 1, props: [{ keys: 3 }] } });
+    const c = some.call("easeIfKeys", { mode: "both", inInfl: 70, outInfl: 40 });
+    check("缓动滑块：选中关键帧时应用，正好一个撤销组「MotionHub：缓动」", c.ok && c.data.applied === true && some.undo.length === 2 && some.undo[0] === "begin:MotionHub：缓动" && some.undo[1] === "end", JSON.stringify(c) + " " + some.undo.join(","));
 }
 
 console.log(failures ? "✗ host 测试：" + failures + " 项没通过" : "✓ host 测试全部通过");

@@ -53,6 +53,14 @@
         r.setProperty("--accent", hex);
         r.setProperty("--accent-hover", mixHex(hex, "#FFFFFF", 0.18));
         r.setProperty("--on-accent", onColor(hex));
+        // 偏灰的品牌色（和面板同一个算法）：高亮填充用它，强调色只用在小面积的标记上
+        var base = "#262728", hl = mixHex(base, hex, 0.10);
+        var cr = function (a, b) { var x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+        r.setProperty("--hl", hl);
+        r.setProperty("--hl-hover", mixHex(base, hex, 0.15));
+        r.setProperty("--hl-press", mixHex(base, hex, 0.22));
+        r.setProperty("--hl-line", mixHex("#3A3B3C", hex, 0.20));
+        r.setProperty("--hl-icon", cr(hex, hl) >= 3 ? hex : "#F4F4F2");
     }
 
     // =====================================================================

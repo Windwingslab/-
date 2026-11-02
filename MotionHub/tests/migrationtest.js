@@ -39,7 +39,7 @@ async function load(browser, text) {
                 const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
                 const name = m[1], a = JSON.parse(m[2]);
                 let r = { ok: true, msg: "", data: {} };
-                if (name === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: true, os: "mac", libPath: "/lib" };
+                if (name === "init") r.data = { version: "3.7.2", ae: "24.3.0", canWrite: true, os: "mac", libPath: "/lib" };
                 if (name === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
                 if (name === "saveConfig") window.__save(a.name, a.text);
                 if (name === "loadSnippets") r.data = { text: null };
@@ -156,7 +156,7 @@ async function load(browser, text) {
                         let r = { ok: true, data: {} };
                         if (m[1] === "loadConfig") r.data = { text: a.name === "panel1" ? text : null };
                         if (m[1] === "saveConfig") r = { ok: false, msg: "无法写入" };
-                        if (m[1] === "init") r.data = { version: "3.7.1", ae: "24", canWrite: false, os: "mac" };
+                        if (m[1] === "init") r.data = { version: "3.7.2", ae: "24", canWrite: false, os: "mac" };
                         if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
                         setTimeout(() => cb(JSON.stringify(r)), 2);
                     } };
@@ -187,7 +187,7 @@ async function load(browser, text) {
                     let r = { ok: true, msg: "完成", data: {} }, delay = 2;
                     if (m[1] === "loadConfig") { r.data = { text: a.name === "usage_panel3" ? JSON.stringify({ anchor: 5 }) : null }; if (a.name === "usage_panel3") delay = 600; }
                     if (m[1] === "saveConfig" && a.name === "usage_panel3") window.__saveUsage(a.text);
-                    if (m[1] === "init") r.data = { version: "3.7.1", ae: "24", canWrite: true, os: "mac" };
+                    if (m[1] === "init") r.data = { version: "3.7.2", ae: "24", canWrite: true, os: "mac" };
                     if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
                     if (m[1] === "ctx") r.data = { comp: "C", layers: 1, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };
                     setTimeout(() => cb(JSON.stringify(r)), delay);
@@ -202,7 +202,7 @@ async function load(browser, text) {
         check("读到历史之前点的一次，和磁盘上的 5 次合并成 6 次（不覆盖、不重复）", last && last.anchor === 6, JSON.stringify(saves));
         await page.close();
     }
-    // 3.7.1 H1：没开写入权限 + 清空本机缓存后重新打开，布局还在（ExtendScript 写不进去时改用 Node 直接写盘）
+    // 3.7.2 H1：没开写入权限 + 清空本机缓存后重新打开，布局还在（ExtendScript 写不进去时改用 Node 直接写盘）
     {
         const HOME = "/Users/test", CFG = HOME + "/Library/Application Support/MotionHub/";
         const run = async (disk, withNode) => {
@@ -234,7 +234,7 @@ async function load(browser, text) {
                         if (m[1] === "loadConfig") r.data = { text: (CFG + a.name + ".json") in mem ? mem[CFG + a.name + ".json"] : null };
                         if (m[1] === "saveConfig" || m[1] === "saveSnippets") { window.__hostWrites++; r = { ok: false, msg: "无法写入：" + a.name }; }
                         if (m[1] === "loadSnippets") r.data = { text: null };
-                        if (m[1] === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: false, os: "mac", libPath: "/lib", libReady: true };
+                        if (m[1] === "init") r.data = { version: "3.7.2", ae: "24.3.0", canWrite: false, os: "mac", libPath: "/lib", libReady: true };
                         if (m[1] === "scan") r.data = { items: [], categories: [], libPath: "/lib" };
                         if (m[1] === "importSamples") r.data = { copied: 0, existing: 0, skipped: true };
                         if (m[1] === "ctx") r.data = { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 };

@@ -1,4 +1,4 @@
-// 磁盘数据安全测试（3.7.1）：没开写入权限、老版本只存在本机缓存里的数据、4 个面板共用的文件、写盘失败
+// 磁盘数据安全测试（3.7.2）：没开写入权限、老版本只存在本机缓存里的数据、4 个面板共用的文件、写盘失败
 // 每个面板一个独立的浏览器上下文（CEP 里每个面板的本机缓存是分开的），磁盘是一份共享的内存表：
 // 一个面板做完操作，把磁盘内容交给下一个面板（模拟同一块磁盘）。
 // 文件系统模拟得比较严：目录要先建好才能写；写入先写 .tmp 再改名；可以让某个文件的改名失败（模拟 Windows 上文件被占用）
@@ -93,7 +93,7 @@ async function openPanel(browser, o) {
                 const SN = window.__lib + "/_snippets.json";
                 if (m[1] === "loadSnippets") r.data = { text: SN in mem ? mem[SN] : null, libPath: window.__lib };
                 if (m[1] === "saveSnippets") { if (cw) mem[SN] = a.text; else r = { ok: false, msg: "无法写入：_snippets.json" }; }
-                if (m[1] === "init") r.data = { version: "3.7.1", ae: "24.3.0", canWrite: cw, os: "mac", libPath: window.__lib, libReady: true };
+                if (m[1] === "init") r.data = { version: "3.7.2", ae: "24.3.0", canWrite: cw, os: "mac", libPath: window.__lib, libReady: true };
                 if (m[1] === "status") r.data = { canWrite: cw };
                 if (m[1] === "scan") r.data = { items: [], categories: [], libPath: window.__lib };
                 if (m[1] === "importSamples") r.data = o.importCopies ? { copied: o.importCopies, existing: 0 } : { copied: 0, existing: 0, skipped: true };
@@ -163,7 +163,7 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
 (async () => {
     const browser = await chromium.launch();
 
-    console.log("老版本没开写入权限的用户升级到 3.7.1（什么都不改）：");
+    console.log("老版本没开写入权限的用户升级到 3.7.2（什么都不改）：");
     {
         const p1 = await openPanel(browser, { panel: 1, disk: {}, canWrite: false, node: true, local: {
             panel1: oldLayout("p1", "我的剪辑面板"), snippets: oldSnippets("p1", "面板1的片段"),

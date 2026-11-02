@@ -187,15 +187,18 @@
         if (!p.then) p = Promise.resolve(p);
         inflight++;
         if (btn) { btn._mhBusy = true; btn.classList.add("pending"); }
-        var slow = 0;
+        // 进行中：0.1 秒还没完成，按钮底部出现走动的细线；0.6 秒还没完成，再在旁边说「处理中…」（快的操作不闪气泡）
+        var slow = 0, waited = 0;
         (function wait(delay) {
             slow = setTimeout(function () {
+                waited += delay;
                 var modal = document.getElementById("modal");
-                if (modal && !modal.hidden) return wait(300);   // 对话框开着：是在等用户输入，不是在处理
+                if (modal && !modal.hidden) { waited = 0; return wait(100); }   // 对话框开着：是在等用户输入，不是在处理
                 if (btn) btn.classList.add("busy");
-                show(btn, "busy", opts.busyText || "处理中…", rect);
+                if (waited >= 600) show(btn, "busy", opts.busyText || "处理中…", rect);
+                else wait(600 - waited);
             }, delay);
-        })(300);
+        })(100);
         return p.then(null, function (err) {
             return { ok: false, msg: "出错了：" + (err && err.message ? err.message : err) };
         }).then(function (r) {
@@ -339,7 +342,7 @@
     })();
 
     window.MHBridge = {
-        version: "3.7.1",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
+        version: "3.7.2",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
         disk: disk,
         host: host,
         reconnect: reconnect,
