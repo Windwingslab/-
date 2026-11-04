@@ -89,7 +89,8 @@ async function openPanel(browser, o) {
                 let r = { ok: true, msg: "", data: {} };
                 // 后台（ExtendScript）读得到 Node 写的同一个文件；没开写入权限时写不进去
                 if (m[1] === "loadConfig") r.data = { text: (o.CFG + a.name + ".json") in mem ? mem[o.CFG + a.name + ".json"] : null };
-                if (m[1] === "saveConfig") { if (cw) mem[o.CFG + a.name + ".json"] = a.text; else r = { ok: false, msg: "无法写入：" + a.name }; }
+                // window.__failSave：AE 有写入权限，但这个文件写不进去（磁盘满了、文件被锁）
+                if (m[1] === "saveConfig") { if (window.__failSave) r = { ok: false, msg: "无法写入：" + o.CFG + a.name + ".json" }; else if (cw) mem[o.CFG + a.name + ".json"] = a.text; else r = { ok: false, msg: "无法写入：" + a.name }; }
                 const SN = window.__lib + "/_snippets.json";
                 if (m[1] === "loadSnippets") r.data = { text: SN in mem ? mem[SN] : null, libPath: window.__lib };
                 if (m[1] === "saveSnippets") { if (cw) mem[SN] = a.text; else r = { ok: false, msg: "无法写入：_snippets.json" }; }
@@ -463,6 +464,54 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const kb = await kd.bubble(), kdd = J(await kd.disk(), SNIP);
         check("要删的片段刚在别的面板改过：没有删，气泡报「没有删除」而不是「已删除」", kdd.length === 1 && /没有删除/.test(kb) && !/已删除/.test(kb), kb + " " + JSON.stringify(kdd));
         await kd.close();
+    }
+
+    console.log("第三轮复核（写盘失败的提示、重新连接）：");
+    {
+        // 写盘失败的横幅：路径只留最后两段（…/MotionHub/panel1.json），完整路径在悬停提示里；240 / 320 / 400px 宽时「会自动重试」都完整看得到
+        const bw = await openPanel(browser, { panel: 1, disk: {}, canWrite: false, node: true, local: {} });
+        await bw.page.evaluate(() => window.__setFail({ "panel1.json": "always" }));
+        await renamePanel(bw, "写不进去"); await bw.page.waitForTimeout(500);
+        const res = [];
+        for (const w of [240, 320, 400]) {
+            await bw.page.setViewportSize({ width: w, height: 700 });
+            await bw.page.waitForTimeout(60);
+            res.push(await bw.page.evaluate((w) => {
+                const s = document.querySelector("#banner-msg"), t = s.textContent, i = t.indexOf("会自动重试");
+                let visible = false;
+                if (i >= 0 && !document.querySelector("#banner").hidden) {
+                    const rg = document.createRange(); rg.setStart(s.firstChild, i); rg.setEnd(s.firstChild, i + 5);
+                    const bottom = s.getBoundingClientRect().top + s.clientHeight;
+                    visible = [...rg.getClientRects()].every(r => r.bottom <= bottom + 0.5);
+                }
+                return { w, text: t, title: s.title, visible };
+            }, w));
+        }
+        check("写盘失败的横幅：路径只留最后两段，完整路径在悬停提示里；240 / 320 / 400px 宽时「会自动重试」都完整看得到",
+            res.every(r => /…\/MotionHub\/panel1\.json/.test(r.text) && !/\/Users\/test/.test(r.text) && r.title.indexOf(CFG + "panel1.json") !== -1 && r.visible), JSON.stringify(res));
+        await bw.close();
+
+        // 没有 Node、AE 允许写文件，但写不进去（磁盘满了、文件被锁）：和 Node 写失败一样，提示栏说明、顶部横幅一直说着；自动重试写进去后横幅消失
+        const nn = await openPanel(browser, { panel: 1, disk: {}, canWrite: true, node: false, local: {} });
+        await nn.page.evaluate(() => { window.__failSave = true; });
+        await renamePanel(nn, "没有 Node 时"); await nn.page.waitForTimeout(600);
+        const nh = await nn.hint(), nb = await nn.page.evaluate(() => { const x = document.querySelector("#banner"); return x.hidden ? "" : x.textContent; });
+        await nn.page.evaluate(() => { window.__failSave = false; });
+        const nd = await until(nn.disk, d => (J(d, CFG + "panel1.json") || {}).name === "没有 Node 时");
+        const nb2 = await until(() => nn.page.evaluate(() => document.querySelector("#banner").hidden), v => v === true);
+        check("没有 Node 时 AE 写不进布局：提示栏说明原因，顶部横幅一直说着（路径只留最后两段）", /面板布局没写进磁盘/.test(nh) && /面板布局没写进磁盘/.test(nb) && /…\/MotionHub\/panel1\.json/.test(nb), JSON.stringify({ nh, nb }));
+        check("没有 Node 时 AE 写不进布局：自动重试写进去以后，横幅自己消失", (J(nd, CFG + "panel1.json") || {}).name === "没有 Node 时" && nb2 === true, JSON.stringify({ disk: nd[CFG + "panel1.json"], nb2 }));
+        await nn.close();
+
+        // 启动时后台没连上、布局文件又是坏的：重新连上以后只收起「后台没连上」的说明，布局文件损坏的说明照常留满时间
+        const cached = { schema: 2, name: "缓存里的布局", accent: "#FF5900", items: [{ id: "a", type: "anchor" }] };
+        const rc = await openPanel(browser, { panel: 1, disk: { [CFG + "panel1.json"]: '{"schema":2,"name":"写了一半', [CFG + "state.json"]: '{"seeded":true}' }, canWrite: true, node: true, local: { panel1: cached }, down: true, wait: 900 });
+        const h0 = await rc.hint();
+        await rc.page.evaluate(() => window.__revive());
+        await rc.page.click("#banner-btn"); await rc.page.waitForTimeout(400);
+        const h1 = await rc.hint();
+        check("重新连上后台：「后台没连上」的说明收起来，布局文件损坏的说明还在", /面板布局文件损坏/.test(h0) && /后台没有连上/.test(h0) && /面板布局文件损坏/.test(h1) && !/后台没有连上/.test(h1), JSON.stringify({ h0, h1 }));
+        await rc.close();
     }
 
     await browser.close();

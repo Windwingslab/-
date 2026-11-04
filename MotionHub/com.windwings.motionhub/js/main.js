@@ -456,7 +456,8 @@
         hintEl.className = "hint";
         hintEl.innerHTML = hintHTML(h);
     }
-    function clickToast(r) { return toast(r, false); }
+    // 点击的结果：B.run 已经在按钮旁边出了气泡，再交给这里记进提示栏
+    function clickToast(r) { return toast(r, { bubble: true }); }
     var errParts = [], errAt = 0;
     // 几个错误前后脚出现（比如启动时两个文件夹都写不进去）：合成一句显示，不互相覆盖；几处写盘失败只说一次怎么办
     function errText(parts) {
@@ -481,27 +482,71 @@
         }
         return texts.slice(-3).join("；");
     }
-    // sticky = 后台来的消息（启动失败、同步说明、写盘失败）：旁边没有气泡，留满时间，不被鼠标移动清掉
-    var toastSticky = false, toastFull = "";
-    function note(r) { return toast(r, true); }
-    function toast(r, sticky) {
+    // 提示栏里的消息，同一时间显示一条：
+    //  · 后台来的消息（o.sticky：启动失败、同步说明、写盘失败）：旁边没有气泡，留满时间，不被鼠标移动清掉；
+    //    kind = "conn" 是「后台没连上」这一类，重新连上以后就过时了，别的后台消息照常留满时间
+    //  · 点击的结果（o.bubble）：按钮旁边已经有气泡。后台消息还在显示时不顶掉它；换了悬停就让位给新按钮的用法
+    //  · 没有气泡的结果（拖进来的文件不对、从组件库加了组件、删了曲线预设）：一定显示出来，留满它自己的时间。
+    //    后台消息正在显示：两个都是错误就照旧合成一句（后台消息还在这一句里）；不然先把后台消息收起来（parked，后收起的先回来），
+    //    结果到时间后它再回来，留满它自己剩下的时间（至少 1.5 秒）
+    var toastSticky = false, toastFull = "", toastOk = true, toastKind = "", toastEnd = 0, toastKeep = false, parked = [];
+    function isConnMsg(r) { return !!r && (!!r.down || /后台没有?连上/.test(r.msg || "")); }
+    function note(r, kind) { return toast(r, { sticky: true, kind: kind || (isConnMsg(r) ? "conn" : "") }); }
+    function toast(r, o) {
+        o = o || {};
         if (!r || (!r.msg && r.ok)) return r;
-        // 后台消息还在显示：点击的结果已经在按钮旁的气泡里，不顶掉它
-        if (toastTimer && toastSticky && !sticky) return r;
+        var sticky = !!o.sticky, kind = o.kind || "", ms = (r.ok ? 2600 : 4200) + (sticky ? 1800 : 0);
+        if (toastTimer && toastSticky && !sticky) {
+            if (o.bubble) return r;
+            if (!r.ok && !toastOk && Date.now() - errAt <= 4000) { sticky = true; ms = Math.max(ms, toastEnd - Date.now()); }
+            else {
+                parked = parked.filter(function (p) { return p.end > Date.now(); });
+                parked.push({ msg: toastFull, ok: toastOk, kind: toastKind, end: toastEnd, parts: errParts.slice() });
+            }
+        }
         var msg = r.msg;
         if (!r.ok) {
             if (Date.now() - errAt > 4000) { errParts = []; errAt = Date.now(); }
-            if (!errParts.some(function (x) { return x.msg === r.msg; })) errParts.push({ msg: r.msg, disk: r.disk, done: r.done });
+            if (!errParts.some(function (x) { return x.msg === r.msg; })) errParts.push({ msg: r.msg, disk: r.disk, done: r.done, kind: o.sticky ? kind : "" });
             msg = errText(errParts);
+            // 合成的一句里全是「后台没连上」这一类，整句才算这一类
+            kind = errParts.every(function (x) { return x.kind === "conn"; }) ? "conn" : "";
         } else errParts = [];
-        clearTimeout(toastTimer);
-        toastSticky = !!sticky;
-        toastFull = msg;
-        hintEl.className = "hint " + (r.ok ? "ok" : "err");
-        hintEl.innerHTML = '<div class="h-row h-wrap ' + (r.ok ? "h-ok" : "h-err") + '"><span class="h-msg">' + esc(msg) + "</span></div>";
-        markMore();
-        toastTimer = setTimeout(function () { toastTimer = null; toastSticky = false; paintHover(); }, (r.ok ? 2600 : 4200) + (sticky ? 1800 : 0));
+        showToast(msg, !!r.ok, sticky, sticky ? kind : "", ms, !sticky && !o.bubble);
         return r;
+    }
+    // keep：没有气泡的结果，换了悬停也不让位（它只显示在这里）
+    function showToast(msg, ok, sticky, kind, ms, keep) {
+        clearTimeout(toastTimer);
+        toastSticky = sticky; toastFull = msg; toastOk = ok; toastKind = kind; toastKeep = keep; toastEnd = Date.now() + ms;
+        hintEl.className = "hint " + (ok ? "ok" : "err");
+        hintEl.innerHTML = '<div class="h-row h-wrap ' + (ok ? "h-ok" : "h-err") + '"><span class="h-msg">' + esc(msg) + "</span></div>";
+        markMore();
+        toastTimer = setTimeout(toastNext, ms);
+    }
+    // 一条消息到时间了（或者被鼠标移开、点开看了全文）：被它盖住的后台消息还有时间就回来；不然回到平常的提示
+    function toastNext() {
+        clearTimeout(toastTimer); toastTimer = null; toastSticky = false; toastKeep = false;
+        while (parked.length) {
+            var p = parked.pop();
+            if (p.end > Date.now()) { errParts = p.parts; errAt = Date.now(); showToast(p.msg, p.ok, true, p.kind, Math.max(1500, p.end - Date.now()), false); return; }
+        }
+        paintHover();
+    }
+    // 重新连上了：收起「后台没连上」这一类消息；和别的错误合成一句的，去掉这一部分，剩下的接着显示完自己的时间
+    function clearConnNotes() {
+        var conn = function (x) { return x.kind === "conn"; }, other = function (x) { return x.kind !== "conn"; };
+        parked = parked.filter(function (p) {
+            if (p.kind === "conn") return false;
+            if (p.ok || !p.parts.some(conn)) return true;
+            p.parts = p.parts.filter(other);
+            p.msg = errText(p.parts);
+            return p.parts.length > 0;
+        });
+        if (!toastTimer || !toastSticky) return;
+        if (toastKind === "conn") { toastNext(); return; }
+        var rest = errParts.filter(other);
+        if (!toastOk && rest.length && rest.length < errParts.length) { errParts = rest; showToast(errText(rest), false, true, "", Math.max(1500, toastEnd - Date.now()), false); }
     }
     // 3 行放不下（高度或宽度）：提示栏可以点开看全文，键盘也能 Tab 到它按 Enter
     function markMore() {
@@ -515,10 +560,11 @@
     hintEl.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && hintEl.classList.contains("more")) { e.preventDefault(); hintEl.click(); } });
     hintEl.addEventListener("click", function () {
         if (!toastTimer || !hintEl.classList.contains("more")) return;
-        var msg = toastFull, ok = hintEl.classList.contains("ok");
-        clearTimeout(toastTimer); toastTimer = null; toastSticky = false;
+        var msg = toastFull, ok = toastOk;
         dialog(ok ? "消息" : "出了点问题", [el("p", "full-msg", esc(msg))], [{ label: "知道了", accent: true, value: function () { return true; } }]);
-        paintHover();
+        // 看过全文了：这条消息收起来（被它盖住的后台消息还有时间就回来）。
+        // 关掉全文后焦点回到提示栏（它还显示着能点开的消息时，可以 Tab 到）；不然对话框会把焦点放到「搜索命令」上，不掉到 <body>
+        toastNext();
     });
     // 提示统一由一个监听器负责：元素 → 提示（对象，或返回对象的函数）记在 WeakMap 里。
     // 鼠标移到另一个按钮（或键盘焦点移过去）的同一帧就换；列表重绘后按鼠标现在的位置重新找，不会停在已经不存在的按钮上
@@ -548,8 +594,8 @@
     function hoverTo(node, keepToast) {
         if (node === hoverNode) return;
         hoverNode = node;
-        // 点击的结果：换了悬停就让位给新按钮的用法（结果还在气泡里）；后台消息：留满时间
-        if (!keepToast && toastTimer && !toastSticky) { clearTimeout(toastTimer); toastTimer = null; }
+        // 点击的结果：换了悬停就让位给新按钮的用法（结果还在气泡里）；后台消息、没有气泡的结果：留满时间
+        if (!keepToast && toastTimer && !toastSticky && !toastKeep) { toastNext(); return; }
         paintHover();
     }
     document.addEventListener("mouseover", function (e) { lastXY = [e.clientX, e.clientY]; hoverTo(hintNode(e.target)); }, true);
@@ -617,11 +663,27 @@
     // =====================================================================
     // 对话框 / 浮层
     // =====================================================================
-    // 双击对话框里的列表项：第一下就关了对话框，第二下会落在下面的面板按钮上——关掉后 0.6 秒内的「双击的第二下」不算
-    var shieldUntil = 0;
-    document.addEventListener("click", function (e) {
-        if (e.detail >= 2 && Date.now() < shieldUntil && !(e.target.closest && e.target.closest("#modal"))) { e.stopPropagation(); e.preventDefault(); }
-    }, true);
+    // 双击对话框里的列表项：第一下就关了对话框，第二下会落在下面的面板上（运行脚本库里的那一行、拖动缓动滑块……）。
+    // 用鼠标关掉对话框后 0.6 秒内，落在对话框外面的「双击的第二下」整个不算：按下、松开、单击、双击都在最前面拦掉。
+    // 单击（detail = 1）照常有效，关掉后马上点别的按钮不受影响；pointer 事件不带 detail，按位置认（和关掉对话框的那一下在同一处）。
+    // 离关掉对话框的那一下很远的双击，是用户在别处新的一次双击，也不拦。用键盘关掉的（Esc、回车）不拦：没有双击的第二下要落下来
+    var shieldUntil = 0, shieldAt = null;
+    function nearShield(e, r) { return !!shieldAt && Math.abs(e.clientX - shieldAt[0]) <= r && Math.abs(e.clientY - shieldAt[1]) <= r; }
+    function shielded(e) {
+        if (Date.now() >= shieldUntil || (e.target && e.target.closest && e.target.closest("#modal"))) return false;
+        if (e.type === "pointerdown" || e.type === "pointerup") return e.pointerType === "mouse" && nearShield(e, 4);
+        return (e.type === "dblclick" || e.detail >= 2) && nearShield(e, 16);
+    }
+    ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "dblclick"].forEach(function (type) {
+        window.addEventListener(type, function (e) { if (shielded(e)) { e.stopPropagation(); e.preventDefault(); } }, true);
+    });
+    // 关对话框的是一次鼠标点击（列表项、按钮、×、遮罩）：接下来 0.6 秒挡住双击的第二下
+    function armShield() {
+        var ev = window.event;
+        if (!ev || !/^(click|mouseup|mousedown)$/.test(ev.type) || !(ev.detail > 0)) return;
+        shieldUntil = Date.now() + 600;
+        shieldAt = [ev.clientX, ev.clientY];
+    }
     // 控件被重绘换掉以后，找新的那一个：data-focus-key（「+」、编辑条按钮）；脚本库的行按「行的 key + 第几个按钮」
     function sameControl(n) {
         if (!n || !n.dataset) return null;
@@ -630,10 +692,35 @@
         return null;
     }
 
+    // 关掉对话框以后焦点回到哪里：打开它的控件；它被重绘换掉了，找新的同一个；现在不能聚焦了（提示栏已经不显示那条消息、
+    // 按钮藏起来了）就落在「搜索命令」上，不掉到 <body>（下一个 Tab 不会从头开始）。
+    // 打开前焦点就不在控件上（鼠标点的行内按钮先放开了焦点）：什么都不聚焦，只让焦点离开已经藏起来的对话框
+    function refocus(back, m) {
+        if (!back || back === document.body || back === document.documentElement) {
+            if (m.contains(document.activeElement) && document.activeElement.blur) document.activeElement.blur();
+            return;
+        }
+        var tries = [back.isConnected ? back : null, sameControl(back), $("#btn-search")];
+        for (var i = 0; i < tries.length; i++) {
+            var t = tries[i];
+            if (!t || !t.focus) continue;
+            try { t.focus({ preventScroll: true }); } catch (e) {}
+            if (document.activeElement === t) return;
+        }
+    }
+    // 可以滚动的区域（新版 Chromium 里 Tab 能停在上面，比如「添加脚本」里很长的文件列表）
+    function scrollable(n) {
+        if (!n || !n.nodeType || n.nodeType !== 1) return false;
+        var cs = getComputedStyle(n);
+        return (n.scrollHeight > n.clientHeight + 1 && /auto|scroll|overlay/.test(cs.overflowY)) || (n.scrollWidth > n.clientWidth + 1 && /auto|scroll|overlay/.test(cs.overflowX));
+    }
+
     // 对话框：贴着面板顶部的抽屉（不在高高的停靠面板中间飘着）。标题栏 40px + 关闭按钮，按钮栏 48px，中间滚动。
     // Tab 只在对话框里转；关掉以后焦点回到打开它的按钮。Enter = 最后一个按钮（焦点在按钮上时按那个按钮自己的）
     // o.full：占满高度（命令搜索、组件库）；o.headNode：放在标题栏里代替标题（命令搜索的输入框）；o.footNode：最下面一行说明
     // o.bodyCls：给中间区域加的类；o.danger：默认焦点放在「取消」上（删除类的确认，免得一下回车就删了）
+    // o.saveKey：在对话框里任何地方按 Ctrl+Enter（Mac 上 ⌘↩）= 最后一个按钮（片段编辑的「保存」，照样先检查名称和代码）
+    // 代码框（<textarea>）里按 Esc 不关对话框：先跳出代码框，落到最后一个按钮上；再按一次 Esc 才关
     function dialog(title, bodyNodes, buttons, o) {
         o = o || {};
         if (!$("#modal").hidden && $("#modal").closeWith) $("#modal").closeWith(null);
@@ -656,9 +743,9 @@
                 done = true;
                 m.hidden = true;
                 document.removeEventListener("keydown", onKey, true);
-                shieldUntil = Date.now() + 600;
-                var target = back && back.isConnected ? back : sameControl(back);
-                if (target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) {} }
+                document.removeEventListener("focusin", onFocusIn, true);
+                armShield();
+                refocus(back, m);
                 resolve(v);
                 setTimeout(syncHover, 0);
             }
@@ -674,17 +761,29 @@
             function onKey(e) {
                 if (done || m.hidden) return;                         // 已经关掉的对话框不再管按键
                 if (e.isComposing || e.keyCode === 229) return;       // 输入法正在组字：回车 / Esc 是给输入法的
-                if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(null); return; }
                 var inside = box.contains(document.activeElement);
+                if (e.key === "Escape") {
+                    e.stopPropagation(); e.preventDefault();
+                    // 代码框里的 Esc：跳出代码框，落到「保存」上（写好的代码还在）；再按一次 Esc 才关
+                    if (inside && e.target.tagName === "TEXTAREA" && btnEls.length) { btnEls[btnEls.length - 1].focus(); return; }
+                    close(null);
+                    return;
+                }
                 if (e.key === "Tab") {
-                    // 代码框自己处理 Tab（插入缩进）
+                    // 代码框自己处理 Tab（缩进 / 减少缩进）
                     if (inside && e.target.tagName === "TEXTAREA") return;
-                    var f = focusables(), i = f.indexOf(document.activeElement);
+                    var a = document.activeElement, f = focusables(), i = f.indexOf(a);
                     if (!f.length) { e.preventDefault(); return; }
-                    // 焦点在对话框里、但不在列表里（比如可以滚动的文件列表）：交给浏览器
-                    if (inside && i === -1) return;
+                    // 焦点停在可以滚动的区域上（比如很长的文件列表）：交给浏览器，Tab 到它前后的控件
+                    if (inside && i === -1 && a !== box && scrollable(a)) return;
                     e.stopPropagation();
-                    if (!inside || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+                    // 焦点在对话框外面、在不能 Tab 到的东西上（右键过、按下后拖开的命令行），或者已经到头：转回第一个 / 最后一个
+                    if (!inside || i === -1 || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+                    return;
+                }
+                if (e.key === "Enter" && o.saveKey && (e.ctrlKey || e.metaKey) && buttons.length) {
+                    e.preventDefault(); e.stopPropagation();
+                    fire(buttons[buttons.length - 1], btnEls[btnEls.length - 1]);
                     return;
                 }
                 if (e.key === "Enter") {
@@ -711,12 +810,20 @@
             });
             $("#dlg-x").onclick = function () { close(null); };
             m.hidden = false;
-            // 只有在遮罩上按下、又在遮罩上松开才关（在输入框里拖选文字、松手在遮罩上，不会把没保存的内容关掉）
+            // 只有在遮罩上按下、又在遮罩上松开才关（在输入框里拖选文字、松手在遮罩上，不会把没保存的内容关掉）。
+            // 上一个对话框刚被双击的第一下关掉、这个马上打开：第二下落在遮罩上不算
             var downOnScrim = false;
-            m.onmousedown = function (e) { downOnScrim = e.target === m; };
+            m.onmousedown = function (e) { downOnScrim = e.target === m && !(e.detail >= 2 && Date.now() < shieldUntil); };
             m.onclick = function (e) { if (e.target === m && downOnScrim) close(null); downOnScrim = false; };
             m.closeWith = close;
             document.addEventListener("keydown", onKey, true);
+            // 焦点不管怎么跑到了对话框外面（浏览器自己挪的、程序里的 focus()）：拉回对话框里的第一个控件
+            function onFocusIn(e) {
+                if (done || m.hidden || m.contains(e.target)) return;
+                var f = focusables();
+                (f[0] || $("#dlg-x")).focus();
+            }
+            document.addEventListener("focusin", onFocusIn, true);
             // 焦点一定落在对话框里：第一个看得见的输入框；没有就落在默认按钮上（删除类落在「取消」上）
             var first = null;
             if (o.headNode && o.headNode.matches && o.headNode.matches("input")) first = o.headNode;
@@ -941,6 +1048,8 @@
     var migrationNotice = null;
     function showMigrationNotice() {
         if (!migrationNotice || !migrationNotice.length) return;
+        // 有对话框开着（用户已经在用面板了）：等它关掉再说，不把用户正在填的对话框换掉
+        if (!$("#modal").hidden) { setTimeout(showMigrationNotice, 600); return; }
         var byTo = {}, order = [];
         migrationNotice.forEach(function (m) {
             if (!byTo[m.to]) { byTo[m.to] = []; order.push(m.to); }
@@ -990,8 +1099,9 @@
                     return;
                 }
                 cfgUnsaved(true);
-                if (B.disk.ok()) {
-                    // 有 Node 时还写不进去，多半是暂时的（文件正被别的程序占用、磁盘满了）：顶部横幅一直说着，过一会儿自动重试，写进去就消失
+                // 有 Node 时还写不进去，多半是暂时的（文件正被别的程序占用、磁盘满了）；没有 Node、AE 也允许写文件时写不进去也一样：
+                // 顶部横幅一直说着，过一会儿自动重试，写进去就消失
+                if (B.disk.ok() || (canWrite && !(r && r.down))) {
                     var why = (r && r.msg) || "没有返回";
                     if (!cfgWarned) { cfgWarned = true; note(diskFail("面板布局", why)); }
                     bannerState.disk = why; renderBanner();
@@ -1000,7 +1110,7 @@
                     cfgRetry++;
                     return;
                 }
-                cfgSynced = false; cfgDirty = true;   // 没有 Node：改成「离线改动」，权限打开或重新连上后再写
+                cfgSynced = false; cfgDirty = true;   // 没有 Node，后台没连上或没有写入权限：改成「离线改动」，权限打开或重新连上后再写
             });
         }, 250);
     }
@@ -1114,7 +1224,7 @@
                 saveConfig(); renderLayout(); renderSettings(); selectTab("panel");
                 return { ok: true, msg: "已换回备份的布局，刚才的布局也另存了一份备份" };
             });
-        }).then(function (res) { B.show(null, res.ok ? "ok" : "err", res.msg); toast(res); return res; });
+        }).then(function (res) { B.show(null, res.ok ? "ok" : "err", res.msg); toast(res, { bubble: true }); return res; });
     }
 
     function findItem(id) { for (var i = 0; i < cfg.items.length; i++) if (cfg.items[i].id === id) return i; return -1; }
@@ -2167,23 +2277,28 @@
                 if (def.size[1] > 1) cell.style.gridRow = "span " + def.size[1];
             }
             paintCell(cell, item.color);
+            var broken = false;
             try { def.render(cell, item); } catch (err) {
+                broken = true;
                 cell.innerHTML = "";
                 cell.classList.add("broken");
-                cell.appendChild(el("div", "broken-msg", "这个组件加载失败：" + esc((def.name || item.type) + " · " + (err && err.message ? err.message : err))));
+                var bm = el("div", "broken-msg", "这个组件加载失败：" + esc((def.name || item.type) + " · " + (err && err.message ? err.message : err)));
+                bm.title = bm.textContent;
+                cell.appendChild(bm);
                 if (window.console) console.error("MotionHub 组件加载失败", item.type, err);
             }
             if (editing) decorateEditable(cell, item, def);
             if (item.type === "heading") { open(cell, item); return; }
             if (!cur) open(null, null);
-            if (RUN_TYPES[item.type]) {
+            // 加载失败的组件（脚本、片段按钮也一样）单独占一整行：说明能完整显示，不挤在 110px 的脚本格子里
+            if (RUN_TYPES[item.type] && !broken) {
                 cur.keys = cur.pair = null;
                 if (!cur.run) cur.run = blk("run-grid");
                 cur.run.appendChild(cell);
-            } else if (def.size === "full" || cell.classList.contains("broken")) {
+            } else if (def.size === "full" || broken) {
                 cur.keys = cur.run = null;
-                if (cell.classList.contains("broken")) { cell.style.gridColumn = ""; cell.style.gridRow = ""; }
-                if (COMPACT[item.type] && !cell.classList.contains("broken")) { if (!cur.pair) cur.pair = blk("pair-grid"); cur.pair.appendChild(cell); }
+                if (broken) { cell.style.gridColumn = ""; cell.style.gridRow = ""; }
+                if (COMPACT[item.type] && !broken) { if (!cur.pair) cur.pair = blk("pair-grid"); cur.pair.appendChild(cell); }
                 else { cur.pair = null; blk("full-block").appendChild(cell); }
             } else {
                 cur.run = cur.pair = null;
@@ -2280,6 +2395,7 @@
             cfg.items.splice(after ? to + 1 : to, 0, moved);
             dragId = null;
             saveConfig(); renderLayout();
+            updateEditBar();   // 拖动的是选中的组件：编辑条的上移 / 下移跟着新位置变
         });
     }
     function cellOf(id) { return id ? layoutEl.querySelector('.cell[data-id="' + id + '"]') : null; }
@@ -2291,15 +2407,16 @@
         updateEditBar();
     }
     function updateEditBar() {
-        // 吸顶的编辑条有多高，滚动定位时就让出多少（被选中的组件不会滚到编辑条下面）
-        var bar = $("#edit-bar");
-        $("#page-panel").style.scrollPaddingTop = editing && bar && bar.offsetHeight ? (bar.offsetHeight + 8) + "px" : "";
         var i = selId ? findItem(selId) : -1, it = i >= 0 ? cfg.items[i] : null, def = it ? W[it.type] : null;
         $("#eb-sel").classList.toggle("on", !!it);
         $("#eb-tip").textContent = it ? (def ? def.name : it.type) + (it.type === "heading" && (it.zh || it.en) ? "「" + (it.zh || it.en) + "」" : "") : "点选组件，或直接拖动排序";
         $("#eb-title").hidden = !(def && def.editable);
         $("#eb-up").disabled = !it || i === 0;
         $("#eb-down").disabled = !it || i === cfg.items.length - 1;
+        // 吸顶的编辑条有多高，滚动定位时就让出多少（被选中的组件不会滚到编辑条下面）。
+        // 先换好编辑条里的按钮再量：窄面板里选中组件后编辑条会折成两行，量早了让出的是上一次的高度
+        var bar = $("#edit-bar");
+        $("#page-panel").style.scrollPaddingTop = editing && bar && bar.offsetHeight ? (bar.offsetHeight + 8) + "px" : "";
     }
     function moveSel(d) {
         var i = findItem(selId), j = i + d;
@@ -2322,6 +2439,8 @@
         if (c) c.focus({ preventScroll: true });
     }
 
+    // 要 AE 交给面板的按键：⌘K、Esc；编辑时加上方向键、Delete（免得在面板里按 Delete 删掉了 AE 里的图层）；extra：对话框临时要的（片段编辑的 ⌘↩）
+    function panelKeys(extra) { return (editing ? ["cmdK", "esc", "altUp", "altDown", "del", "bksp"] : ["cmdK", "esc"]).concat(extra || []); }
     function setEditing(on) {
         editing = on;
         document.body.classList.toggle("editing", on);
@@ -2330,8 +2449,7 @@
         if (on) selectTab("panel");
         if (!on) selId = null;
         hidePop();
-        // 编辑时让 AE 把方向键、Delete 交给面板（免得在面板里按 Delete 删掉了 AE 里的图层）
-        B.registerKeys(on ? ["cmdK", "esc", "altUp", "altDown", "del", "bksp"] : ["cmdK", "esc"]);
+        B.registerKeys(panelKeys());
         renderLayout();
         updateEditBar();
         paintHover();   // 正在显示后台消息时不打断它
@@ -2354,7 +2472,7 @@
         var it = cfg.items[i], def = W[it.type];
         if (def && def.editable) def.edit(it).then(function (v) { if (v) { saveConfig(); renderLayout(); updateEditBar(); } });
     });
-    $("#eb-color").addEventListener("click", function () {
+    $("#eb-color").addEventListener("click", function (e) {
         var i = findItem(selId), btn = this;
         if (i < 0) return;
         var it = cfg.items[i];
@@ -2363,6 +2481,24 @@
             hidePop(); saveConfig(); renderLayout();
             $("#eb-color").focus();
         }, true)]);
+        pop.backTo = btn;
+        // 键盘打开的（回车 / 空格）：焦点进到色板里，落在现在的颜色上（没有就第一个）。浮层放在 <body> 最后，不然要按很多次 Tab 才到得了
+        if (!e.detail) { var cur = $(".sw.on", pop) || $(".sw", pop); if (cur) cur.focus(); }
+    });
+    // 取色浮层里的按键：方向键 / Tab 在色块之间走；Esc 关掉，焦点回到打开它的按钮；Tab 走过最后一个（Shift+Tab 走过第一个）也关掉回去。
+    // 浮层里的按键不往外传：Esc 不会顺带退出编辑模式，Delete 不会删掉选中的组件
+    pop.addEventListener("keydown", function (e) {
+        if (pop.hidden || e.isComposing || e.keyCode === 229 || e.ctrlKey || e.metaKey) return;
+        var items = $$(".sw", pop).map(function (s) { return s.tagName === "LABEL" ? s.querySelector("input") : s; }).filter(Boolean);
+        var i = items.indexOf(document.activeElement), back = function () { hidePop(); if (pop.backTo && pop.backTo.isConnected) pop.backTo.focus(); };
+        e.stopPropagation();
+        if (e.key === "Escape") { e.preventDefault(); back(); return; }
+        if (i === -1 || e.altKey) return;
+        var d = e.key === "Tab" ? (e.shiftKey ? -1 : 1) : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+        if (!d) return;
+        e.preventDefault();
+        if (e.key === "Tab" && (i + d < 0 || i + d >= items.length)) { back(); return; }
+        items[(i + d + items.length) % items.length].focus();
     });
     bindHint($("#eb-color"), { title: "组件颜色", click: "给选中的组件换颜色", note: "主按钮和标题编号跟着变" });
     bindHint($("#eb-title"), { title: "编辑标题", click: "改分组的英文标题和中文说明" });
@@ -2372,6 +2508,7 @@
     $("#page-panel").addEventListener("click", function (e) { if (editing && !e.target.closest(".cell, .edit-bar")) selectCell(null); });
     document.addEventListener("keydown", function (e) {
         if (!editing || !$("#modal").hidden) return;
+        if (e.isComposing || e.keyCode === 229) return;   // 输入法正在组字：Esc / Delete 是给输入法的（和对话框一样）
         if (e.key === "Escape") { setEditing(false); return; }
         if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
         if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); moveSel(e.key === "ArrowUp" ? -1 : 1); }
@@ -2574,16 +2711,16 @@
             })).then(function (rs) {
                 var bad = rs.filter(function (r) { return !r || !r.ok; });
                 var good = rs.filter(function (r) { return r && r.ok && r.data; });
-                if (!good.length) { var b0 = bad[0] || { ok: false, msg: "没有加进任何文件" }; B.show(null, "err", b0.msg); toast(b0); return; }
+                if (!good.length) { var b0 = bad[0] || { ok: false, msg: "没有加进任何文件" }; B.show(null, "err", b0.msg); toast(b0, { bubble: true }); return; }
                 afterInstall(good.map(function (r) { return r.data.key; }), v).then(function () {
                     var msg = droppedMsg(good) + (v.pin ? "。已放到当前面板" : "");
                     if (bad.length) msg += "。另有 " + bad.length + " 个没加进去：" + bad[0].msg;
                     if (skipped) msg += "。" + skipped + " 个不是 .jsx / .jsxbin / .ffx 文件，跳过了";
                     var r = { ok: !bad.length, msg: msg };
-                    B.show(null, r.ok ? "ok" : "err", r.msg); toast(r);
+                    B.show(null, r.ok ? "ok" : "err", r.msg); toast(r, { bubble: true });
                 }, function (e) {
                     var r = { ok: false, msg: "文件已经加进脚本库，但刷新列表失败：" + (e && e.message ? e.message : e) + "。点脚本库页的「刷新」再试" };
-                    B.show(null, "err", r.msg); toast(r);
+                    B.show(null, "err", r.msg); toast(r, { bubble: true });
                 });
             });
         });
@@ -2602,7 +2739,15 @@
 
     // 行内按钮可能在点击后立刻重绘列表，双击的第二下会落到新的行上：记下时间，行的双击据此忽略
     var lastActClick = 0;
-    function rowDblclick(e) { return !(e.target.closest && e.target.closest(".acts")) && Date.now() - lastActClick > 600; }
+    // 用鼠标关掉对话框后的那一下双击（shieldUntil 之内）也不算
+    function rowDblclick(e) { return !(e.target.closest && e.target.closest(".acts")) && Date.now() - lastActClick > 600 && Date.now() >= shieldUntil; }
+    function byActKey(k) { return k ? document.querySelector('[data-act-key="' + k.replace(/"/g, '\\"') + '"]') : null; }
+    // 同一个列表里前 / 后一行（跳过分类标题）的 key
+    function sibRowKey(li, dir) {
+        for (var n = dir > 0 ? li.nextElementSibling : li.previousElementSibling; n; n = dir > 0 ? n.nextElementSibling : n.previousElementSibling)
+            if (n.classList.contains("lib-item") && n.dataset.key) return n.dataset.key;
+        return null;
+    }
     function act(parent, icon, cls, h, fn) {
         var b = el("button", "act " + (cls || ""), svg(icon));
         bindHint(b, h);
@@ -2610,11 +2755,23 @@
         b.addEventListener("click", function (e) {
             e.stopPropagation(); lastActClick = Date.now();
             var m = mods(e), key = b.dataset.actKey, kb = !e.detail;
+            // 鼠标点的：先放开焦点再执行（不然打开的确认框关掉后把焦点还给它，鼠标移开了这一行还亮着）
+            if (!kb) b.blur();
+            // 键盘按的：记下前后两行和这个列表的「添加 / 新建」按钮，这一行被删掉时焦点有地方落
+            var li = kb ? b.closest(".lib-item") : null, near = li ? [sibRowKey(li, 1), sibRowKey(li, -1)] : [];
+            var grp = li && li.parentNode ? li.parentNode.previousElementSibling : null;
+            var home = li ? (li.closest("#lib-list") ? $("#lib-add") : grp && grp.classList.contains("lib-group") ? grp.querySelector(".act") : null) : null;
+            var homeKey = home && home.dataset.actKey;
             act0(b, function () { return fn(m); }).then(function () {
-                // 键盘按的：列表重绘后焦点回到同一行的同一个按钮（不然掉到 <body>，下一个 Tab 从第一行开始）
-                if (kb && key && !b.isConnected && document.activeElement === document.body) { var n = document.querySelector('[data-act-key="' + key.replace(/"/g, '\\"') + '"]'); if (n) n.focus(); }
+                if (!kb || !key || b.isConnected || document.activeElement !== document.body) return;
+                // 列表重绘了：焦点回到同一行的同一个按钮（不然掉到 <body>，下一个 Tab 从第一行开始）。
+                // 这一行没了（删除 / 移除）：落到顶替它的那一行（下一行，没有就上一行）的同一个按钮，没有就那一行的第一个按钮；
+                // 列表空了：落到这个列表的「添加 / 新建」上
+                var idx = key.slice(key.lastIndexOf("#")), n = byActKey(key);
+                near.forEach(function (rk) { if (!n && rk) n = byActKey(rk + idx) || byActKey(rk + "#0"); });
+                if (!n && home) n = home.isConnected ? home : byActKey(homeKey);
+                if (n) n.focus();
             });
-            if (!kb) b.blur();   // 鼠标点的：不留焦点（不然鼠标移开了这一行还亮着）
         });
         if (row && row.dataset.key) b.dataset.actKey = row.dataset.key + "#" + parent.children.length;
         // 双击按钮时，不能顺带触发整行的「双击运行」
@@ -2623,7 +2780,15 @@
         return b;
     }
 
-    function renderLibrary() {
+    // 列表重绘时焦点在列表里的某个按钮上（键盘用户）：重绘后回到同一个按钮（data-act-key 一样的那个），
+    // 不掉到 <body>（下一个 Tab 不会从第一行重新开始）。后台同步引起的重绘也一样
+    function keepActFocus(box, draw) {
+        var a = document.activeElement, key = a && a !== document.body && box.contains(a) && a.dataset ? a.dataset.actKey : "";
+        draw();
+        if (key && !a.isConnected && document.activeElement === document.body) { var n = byActKey(key); if (n) n.focus(); }
+    }
+    function renderLibrary() { keepActFocus(listEl, drawLibrary); }
+    function drawLibrary() {
         var cat = catSel.value || "全部", q = qInput.value.trim().toLowerCase();
         var items = lib.items.filter(function (it) {
             if (cat !== "全部" && it.cat !== cat) return false;
@@ -2790,6 +2955,35 @@
         return s.kind === "expr" ? host("applyExpr", { code: s.code, name: s.name, mods: m }) : host("runCode", { code: s.code, name: s.name, mods: m });
     }
 
+    // 代码框里的 Tab：只有光标时插入 4 个空格；选了内容（几行、全选）时每一行前面加 4 个空格，不会把选中的代码换成空格。
+    // Shift+Tab：当前行或选中的每一行去掉最多 4 个空格（或一个制表符），不插入空格。
+    // 都用 execCommand("insertText") 改文字：Ctrl / ⌘+Z 能撤销（直接改 value 会清掉撤销记录，全选后按 Tab 的代码就找不回来了）
+    function codeIndent(ta, out) {
+        var v = ta.value, s = ta.selectionStart, e = ta.selectionEnd;
+        if (!out && s === e) { codeInsert(ta, s, e, "    "); return; }
+        // 选中的行：第一行的行首到最后一行的行尾（选区结束在行首时，那一行不算）
+        var ls = s > 0 ? v.lastIndexOf("\n", s - 1) + 1 : 0, last = e > s && v.charAt(e - 1) === "\n" ? e - 1 : e, le = v.indexOf("\n", last);
+        if (le === -1) le = v.length;
+        var block = v.slice(ls, le), cut = 0;
+        var next = block.split("\n").map(function (line, k) {
+            if (!out) return "    " + line;
+            var n = (/^(\t| {1,4})/.exec(line) || [""])[0].length;
+            if (k === 0) cut = n;
+            return line.slice(n);
+        }).join("\n");
+        if (next === block) return;
+        codeInsert(ta, ls, le, next);
+        if (s === e) { var p = Math.max(ls, s - cut); ta.setSelectionRange(p, p); }   // 只有光标：光标跟着这一行往左挪
+        else ta.setSelectionRange(ls, ls + next.length);                              // 选区盖住改过的这几行
+    }
+    function codeInsert(ta, a, b, text) {
+        ta.focus();
+        ta.setSelectionRange(a, b);
+        var ok = false;
+        try { ok = document.execCommand("insertText", false, text); } catch (err) {}
+        if (!ok) ta.setRangeText(text, a, b, "end");
+    }
+
     function editSnippet(s, kind) {
         var isNew = !s;
         s = s || { id: uid(), kind: kind, name: "", code: "" };
@@ -2805,15 +2999,26 @@
         var code = el("textarea"); code.value = s.code; code.spellcheck = false;
         code.addEventListener("keydown", function (e) {
             e.stopPropagation();
-            if (e.key === "Tab") { e.preventDefault(); var p = code.selectionStart; code.value = code.value.slice(0, p) + "    " + code.value.slice(code.selectionEnd); code.selectionStart = code.selectionEnd = p + 4; }
+            if (e.key !== "Tab" || e.isComposing || e.keyCode === 229 || e.altKey || e.ctrlKey || e.metaKey) return;
+            e.preventDefault();
+            codeIndent(code, e.shiftKey);
         });
         c.appendChild(code);
-        return dialog(isNew ? "新建片段" : "编辑片段「" + s.name + "」", [a, b, c], [
+        // 代码框下面一行灰字：这里的按键（Mac 上 ⌘ 画成图标，Geist 里没有这个符号）
+        var keys = el("div", "code-keys",
+            "<span>Tab 缩进</span> · <span>" + (OS === "mac" ? "⇧Tab" : modName("shift") + "+Tab") + " 减少缩进</span> · <span>Esc 跳出代码框</span> · <span>" +
+            (OS === "mac" ? keycap("ctrl") + "↩" : modName("ctrl") + "+Enter") + " 保存</span>");
+        keys.id = "dlg-code-keys";
+        code.setAttribute("aria-describedby", keys.id);
+        // 对话框开着时，AE 把 ⌘↩ / Ctrl+Enter 交给面板（焦点在按钮上时也能保存）
+        B.registerKeys(panelKeys(["cmdEnter"]));
+        return dialog(isNew ? "新建片段" : "编辑片段「" + s.name + "」", [a, b, c, keys], [
             { label: "取消", value: function () { return null; } },
             { label: "保存", accent: true,
               check: function () { if (!name.value.trim()) { name.focus(); return "先填名称"; } if (!code.value.trim()) { code.focus(); return "先填代码"; } return ""; },
               value: function () { return { name: name.value.trim(), kind: sel.value, code: code.value }; } }
-        ]).then(function (v) {
+        ], { saveKey: true }).then(function (v) {
+            B.registerKeys(panelKeys());
             if (!v) return null;
             if (!v.name || !v.code.trim()) return { ok: false, msg: "名称和代码都不能为空" };
             var item = { id: s.id, kind: v.kind, name: v.name, code: v.code };
@@ -2827,13 +3032,15 @@
         });
     }
 
-    function renderSnippets() {
+    function renderSnippets() { keepActFocus($("#lib-snippets"), drawSnippets); }
+    function drawSnippets() {
         var box = $("#lib-snippets");
         box.innerHTML = "";
         [["expr", "表达式 · 应用到选中属性"], ["script", "脚本 · 直接执行"]].forEach(function (g) {
             var nAll = BUILTIN_SNIPPETS.filter(function (x) { return x.kind === g[0]; }).length + snippets.filter(function (x) { return x.kind === g[0]; }).length;
             var head = el("div", "lib-group", "<span>" + esc(g[1]) + '</span><span class="n">' + nAll + "</span>");
-            act(head, "plus", "", { title: "新建" + (g[0] === "expr" ? "表达式" : "脚本") + "片段", click: "粘贴或手写代码，保存后可以一键使用" }, function () { return editSnippet(null, g[0]); });
+            // 分组的「+」建的时候还没放进列表（没有行的 key）：给它一个固定的 key，键盘新建完片段、列表重绘后焦点回到它上面
+            act(head, "plus", "", { title: "新建" + (g[0] === "expr" ? "表达式" : "脚本") + "片段", click: "粘贴或手写代码，保存后可以一键使用" }, function () { return editSnippet(null, g[0]); }).dataset.actKey = "g:" + g[0] + "#0";
             box.appendChild(head);
             var ul = el("ul", "lib-list");
             ul.style.borderTop = "0";
@@ -2905,11 +3112,12 @@
         var box = $("#set-accent");
         box.innerHTML = "";
         box.appendChild(swatches(cfg.accent, function (hex) {
-            var kb = document.activeElement && box.contains(document.activeElement);
+            var a = document.activeElement, kb = a && box.contains(a), custom = kb && a.type === "color";
             cfg.accent = hex || "#FF5900";
             applyAccent(cfg.accent);
             saveConfig(); renderSettings();
-            if (kb) { var on = $("#set-accent .sw.on"); if (on) on.focus(); }
+            // 色板重画了：焦点留在刚才用的那个控件上。点的色块 → 新的选中色块；自定义颜色 → 新的自定义颜色框（自定义的颜色没有选中的色块）
+            if (kb) { var on = (!custom && $("#set-accent .sw.on")) || $("#set-accent .sw.custom input"); if (on) on.focus(); }
         }, false));
     }
     $("#set-name").addEventListener("change", function () {
@@ -2932,13 +3140,13 @@
             if (key.indexOf("backup:") === 0) return restoreBackup(key.slice(7));
             // 载入预设会替换整个布局：先把当前布局另存一份备份（选错了还能从这里换回去），备份写不进去就不换
             return backupLayout(cfg).then(function (bk) {
-                if (!bk.ok) { var no = { ok: false, msg: "没有载入：当前布局的备份没写进去（" + bk.msg + "）。检查 MotionHub 文件夹是否可写后再试" }; B.show(null, "err", no.msg); toast(no); return; }
+                if (!bk.ok) { var no = { ok: false, msg: "没有载入：当前布局的备份没写进去（" + bk.msg + "）。检查 MotionHub 文件夹是否可写后再试" }; B.show(null, "err", no.msg); toast(no, { bubble: true }); return; }
                 var keepName = cfg.name, keepAccent = cfg.accent;
                 cfg = fromPreset(key);
                 cfg.name = keepName; cfg.accent = keepAccent;
                 saveConfig(); renderLayout(); selectTab("panel");
                 B.show(null, "ok", "已载入预设布局");
-                toast({ ok: true, msg: "已载入预设布局，原来的布局另存了一份备份（设置 → 载入预设 里可以换回去）" });
+                toast({ ok: true, msg: "已载入预设布局，原来的布局另存了一份备份（设置 → 载入预设 里可以换回去）" }, { bubble: true });
             });
         });
     });
@@ -3291,17 +3499,25 @@
     // 顶部横幅：后台没连上 / 没有写入权限，第一屏就告诉用户怎么解决
     // =====================================================================
     var bannerState = { down: false, perm: false, disk: null };
+    // 路径只留最后两段：C:\Users\…\MotionHub\panel1.json → …\MotionHub\panel1.json（横幅只有几行，完整的放在悬停提示里）
+    function shortPaths(s) {
+        return String(s || "").replace(/(?:[A-Za-z]:[\\\/]|\\\\|\/)[^，。；：（）「」\n]*/g, function (p) {
+            var sep = p.indexOf("\\") !== -1 ? "\\" : "/", parts = p.split(/[\\\/]+/).filter(Boolean);
+            return parts.length > 3 ? "…" + sep + parts.slice(-2).join(sep) : p;
+        });
+    }
     function renderBanner() {
-        var bn = $("#banner");
+        var bn = $("#banner"), full = "";
         if (bannerState.down) {
             bn.hidden = false;
             $("#banner-msg").textContent = "后台没连上 AE · 面板里的工具暂时用不了";
             $("#banner-btn").textContent = "重新连接";
             $("#banner-btn").dataset.act = "reconnect";
         } else if (bannerState.disk) {
-            // 写盘失败排在「没写入权限」前面：这是数据有风险
+            // 写盘失败排在「没写入权限」前面：这是数据有风险。先说会怎样（窄面板里也一定看得到），路径只留最后两段放在后面，完整的在悬停提示里
             bn.hidden = false;
-            $("#banner-msg").textContent = "面板布局没写进磁盘（" + bannerState.disk + "）· 改动先存在这台电脑的缓存里，会自动重试";
+            $("#banner-msg").textContent = "面板布局没写进磁盘 · 改动先存在这台电脑的缓存里，会自动重试 · " + shortPaths(bannerState.disk);
+            full = "面板布局没写进磁盘（" + bannerState.disk + "）· 改动先存在这台电脑的缓存里，会自动重试";
             $("#banner-btn").textContent = "现在重试";
             $("#banner-btn").dataset.act = "resave";
         } else if (bannerState.perm) {
@@ -3310,7 +3526,7 @@
             $("#banner-btn").textContent = "重新检查";
             $("#banner-btn").dataset.act = "recheck";
         } else bn.hidden = true;
-        $("#banner-msg").title = $("#banner-msg").textContent;
+        $("#banner-msg").title = full || $("#banner-msg").textContent;
         // 后台没连上：所有要用到 AE 的按键都显示成「现在不可用」，悬停写明原因
         document.body.classList.toggle("backend-down", !!bannerState.down);
         if (typeof applyNeeds === "function") applyNeeds();
@@ -3334,6 +3550,7 @@
                     return writeConfigText("panel" + PANEL, JSON.stringify(cfg)).then(function (r) {
                         if (!r.ok) throw new Error(r.msg);
                         cfgSynced = true; cfgDirty = false; cfgUnsaved(false);
+                        if (bannerState.disk) { bannerState.disk = null; renderBanner(); }   // 之前写不进去的横幅：现在写进去了
                     });
                 }
                 return loadConfig().then(function () { applyAccent(cfg.accent || "#FF5900"); $("#panel-name").textContent = cfg.name; renderLayout(); renderSettings(); showMigrationNotice(); });
@@ -3355,7 +3572,7 @@
     B.onBackend(function (down) {
         bannerState.down = down;
         renderBanner();
-        if (!down && toastSticky) { clearTimeout(toastTimer); toastTimer = null; toastSticky = false; paintHover(); }   // 「后台没连上」之类的消息过时了
+        if (!down) clearConnNotes();   // 「后台没连上」这一类消息过时了（别的后台消息，比如布局文件损坏的说明，照常留满时间）
         if (!down) resync();   // 自动恢复或点「重新连接」后，把离线期间的改动同步到磁盘
     });
     $("#banner-btn").addEventListener("click", function () {
@@ -3492,6 +3709,6 @@
         note: function (r) { note(r); }
     };
 
-    B.registerKeys(["cmdK", "esc"]);
+    B.registerKeys(panelKeys());
     boot();
 })();

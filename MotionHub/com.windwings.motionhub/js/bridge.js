@@ -94,12 +94,13 @@
     // 按键：面板获得焦点时 AE 默认会吃掉快捷键，先登记要用的组合
     // macOS 用 Mac 虚拟键码，Windows 用 VK 键码
     // =====================================================================
-    var KEYCODES = IS_WIN ? { k: 75, esc: 27, space: 32, up: 38, down: 40, del: 46, bksp: 8 } : { k: 40, esc: 53, space: 49, up: 126, down: 125, del: 117, bksp: 51 };
+    var KEYCODES = IS_WIN ? { k: 75, esc: 27, space: 32, up: 38, down: 40, del: 46, bksp: 8, enter: 13 } : { k: 40, esc: 53, space: 49, up: 126, down: 125, del: 117, bksp: 51, enter: 36 };
     function registerKeys(names) {
         if (!CEP || !CEP.registerKeyEventsInterest) return false;
         var list = [];
         names.forEach(function (n) {
             if (n === "cmdK") list.push(IS_WIN ? { keyCode: KEYCODES.k, ctrlKey: true } : { keyCode: KEYCODES.k, metaKey: true });
+            else if (n === "cmdEnter") list.push(IS_WIN ? { keyCode: KEYCODES.enter, ctrlKey: true } : { keyCode: KEYCODES.enter, metaKey: true });
             else if (n === "altUp" || n === "altDown") list.push({ keyCode: KEYCODES[n === "altUp" ? "up" : "down"], altKey: true });
             else if (KEYCODES[n] !== undefined) list.push({ keyCode: KEYCODES[n] });
         });
@@ -126,6 +127,8 @@
         var r = anchor && anchor.isConnected ? anchor.getBoundingClientRect() : (saved || null);
         var W = window.innerWidth, H = window.innerHeight;
         if (!r || (!r.width && !r.height)) r = { left: W / 2, right: W / 2, top: 40, bottom: 40, width: 0, height: 0 };
+        // 很矮的面板里 8 行放不下：少显示几行（行尾省略），字不会画到气泡外面（气泡最高 100vh - 24px，上下内边距加边框 10px，一行 16px）
+        b.style.setProperty("--fb-lines", Math.max(1, Math.min(8, Math.floor((H - 34) / 16))));
         // 先放回左上角再量：固定定位元素的宽度会受当前位置限制，停在旧位置量会偏窄
         b.style.left = "0px"; b.style.top = "0px";
         var bw = b.offsetWidth, bh = b.offsetHeight;

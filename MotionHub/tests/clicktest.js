@@ -314,6 +314,97 @@ async function runEase(browser) {
     return out;
 }
 
+// 第三轮复核：双击对话框里的一项，第一下就关了对话框，第二下（按下、松开、单击、双击）不能落到下面的面板上——
+// 不运行脚本库里的那一行、不拖动缓动滑块；关掉后马上单击别的按钮照常有效
+async function runShield(browser) {
+    const page = await browser.newPage({ viewport: { width: 320, height: 800 } });
+    const errors = [], out = [];
+    page.on("pageerror", e => errors.push(e.message));
+    await page.exposeFunction("__mhHost", (name, argsJSON) => JSON.stringify(fakeHost(name, JSON.parse(argsJSON || "{}"), { canWrite: true })));
+    await page.addInitScript(() => {
+        try { localStorage.clear(); } catch (e) {}
+        window.__calls = [];
+        window.__adobe_cep__ = {
+            getExtensionId: () => "com.windwings.motionhub.panel1", getSystemPath: () => "file:///ext", registerKeyEventsInterest() {},
+            evalScript(code, cb) {
+                if (code === "typeof MH") return setTimeout(() => cb("object"), 2);
+                const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
+                window.__calls.push(m[1]);
+                window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 2));
+            }
+        };
+    });
+    await page.goto("file://" + EXT + "/index.html");
+    await page.waitForTimeout(500);
+    const BG = "^(init|ctx|scan|status|loadConfig|saveConfig|loadSnippets|saveSnippets|listEffects|importSamples)$";
+    const tools = () => page.evaluate((bg) => window.__calls.filter(c => !new RegExp(bg).test(c)), BG);
+    const clear = () => page.evaluate(() => { window.__calls = []; });
+    // 人手的双击：第一下（clickCount 1）关掉对话框，第二下（clickCount 2）落在面板上
+    const humanDbl = async (p) => { await page.mouse.move(p.x, p.y); await page.mouse.down({ clickCount: 1 }); await page.mouse.up({ clickCount: 1 }); await page.waitForTimeout(80); await page.mouse.down({ clickCount: 2 }); await page.mouse.up({ clickCount: 2 }); };
+    const overRow = (p) => page.evaluate((p) => { const n = document.elementFromPoint(p.x, p.y); return !!(n && n.closest("#modal .cat-item")); }, p);
+
+    // 面板页：命令搜索里盖在缓动滑块上的那一项，双击 → 滑块不动，也不应用缓动
+    const sl = await page.evaluate(() => { const r0 = document.querySelector("#layout input[type=range]"); r0.scrollIntoView({ block: "center" }); const r = r0.getBoundingClientRect(); return { x: Math.round(r.left + r.width * 0.9), y: Math.round(r.top + r.height / 2), v: r0.value }; });
+    await page.click("#btn-search"); await page.waitForTimeout(150);
+    const over1 = await overRow(sl);
+    await clear();
+    await humanDbl(sl); await page.waitForTimeout(400);
+    const t1 = await tools(), v1 = await page.evaluate(() => document.querySelector("#layout input[type=range]").value);
+    out.push({ name: "面板页：双击盖在缓动滑块上的那一项，只运行这一项；滑块不动，也不应用缓动", ok: over1 && t1.length === 1 && t1.indexOf("easeIfKeys") === -1 && v1 === sl.v, detail: JSON.stringify({ over1, t1, before: sl.v, after: v1 }) });
+
+    // 脚本库页：命令搜索里正好盖在脚本库某一行上的那一项，双击 → 只运行这一项，那一行脚本没有跟着运行
+    await page.click(".tab[data-tab=library]"); await page.waitForTimeout(150);
+    const rows = await page.evaluate(() => [...document.querySelectorAll("#lib-list .lib-item")].map(li => { const r = li.getBoundingClientRect(); return { x: Math.round(r.left + 60), y: Math.round(r.top + r.height / 2) }; }));
+    await page.click("#btn-search"); await page.waitForTimeout(150);
+    let pt = null;
+    for (const r of rows) if (!pt && await overRow(r)) pt = r;
+    await clear();
+    if (pt) { await humanDbl(pt); await page.waitForTimeout(400); }
+    const t2 = await tools();
+    out.push({ name: "脚本库页：双击盖在一行脚本上的那一项，只运行这一项，那一行脚本没有跟着运行", ok: !!pt && t2.length === 1 && t2.indexOf("run") === -1, detail: JSON.stringify({ pt, t2 }) });
+
+    // 关掉命令搜索后 20 / 250 毫秒，单击面板上别的按钮：照常运行（单击不拦）
+    await page.click(".tab[data-tab=panel]"); await page.waitForTimeout(150);
+    await page.evaluate(() => { document.querySelector("#page-panel").scrollTop = 0; });
+    for (const delay of [20, 250]) {
+        const tile = await page.evaluate(() => {
+            const t = [...document.querySelectorAll("#layout .tile[data-tool]")].find(x => { const r = x.getBoundingClientRect(); if (r.top < 60 || r.bottom > innerHeight - 70) return false; const n = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return n && x.contains(n); });
+            if (!t) return null;
+            const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        });
+        await page.click("#btn-search"); await page.waitForTimeout(150);
+        await page.click("#dlg-body .cat-item >> nth=0");
+        await clear();
+        await page.waitForTimeout(delay);
+        if (tile) { await page.mouse.click(tile.x, tile.y); await page.waitForTimeout(300); }
+        const t3 = await tools();
+        out.push({ name: "关掉命令搜索 " + delay + " 毫秒后单击面板上别的按钮：照常运行", ok: !!tile && t3.length === 1, detail: JSON.stringify({ tile, t3 }) });
+    }
+    // 关掉命令搜索 0.25 秒后，在离关掉的那一下很远的按钮上连按两下：是用户新的一次双击，两下都算
+    {
+        const tile = await page.evaluate(() => {
+            const t = [...document.querySelectorAll("#layout .tile[data-tool]")].find(x => { const r = x.getBoundingClientRect(); return r.top > 60 && r.bottom < innerHeight - 70; });
+            if (!t) return null;
+            const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        });
+        await page.click("#btn-search"); await page.waitForTimeout(150);
+        const row = await page.evaluate(() => { const r = document.querySelectorAll("#dlg-body .cat-item")[8].getBoundingClientRect(); return { x: r.left + 200, y: r.top + r.height / 2 }; });
+        await page.mouse.click(row.x, row.y);
+        await clear();
+        await page.waitForTimeout(250);
+        if (tile) {
+            await page.mouse.move(tile.x, tile.y);
+            await page.mouse.down({ clickCount: 1 }); await page.mouse.up({ clickCount: 1 }); await page.waitForTimeout(150);
+            await page.mouse.down({ clickCount: 2 }); await page.mouse.up({ clickCount: 2 }); await page.waitForTimeout(400);
+        }
+        const t4 = await tools();
+        out.push({ name: "关掉命令搜索 0.25 秒后在别处的按钮上连按两下：两下都算（不是关掉对话框的那次双击）", ok: !!tile && t4.length === 2, detail: JSON.stringify({ tile, row, t4 }) });
+    }
+    out.push({ name: "双击防护场景没有 JS 错误", ok: errors.length === 0, detail: errors.join(" | ") });
+    await page.close();
+    return out;
+}
+
 // 阶段 2：选区状态（变暗 / 恢复 / 节流 / 鼠标不在面板时不查 / 变暗仍可点）和自检
 async function runNeeds(browser) {
     const page = await browser.newPage({ viewport: { width: 320, height: 1600 } });
@@ -533,6 +624,7 @@ async function runStudio(browser, opts) {
     const regress = await runRegressions(browser);
     const needs = await runNeeds(browser);
     const ease = await runEase(browser);
+    const shield = await runShield(browser);
     await browser.close();
 
     let fail = 0;
@@ -569,7 +661,9 @@ async function runStudio(browser, opts) {
     regress.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
     lines.push("缓动滑块（松手直接应用）：");
     ease.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
-    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress, needs, ease }, null, 2));
+    lines.push("双击对话框里的一项（第二下不落到面板上）：");
+    shield.forEach(r => { lines.push("  " + (r.ok ? "✓ " : "✗ ") + r.name + (r.ok ? "" : "：" + r.detail)); if (!r.ok) fail++; });
+    fs.writeFileSync(path.join(OUT, "clicktest.json"), JSON.stringify({ panels, studio, regress, needs, ease, shield }, null, 2));
     console.log(lines.join("\n"));
     console.log(fail ? "✗ 点击测试：" + fail + " 项没通过（详情见 tests/out/clicktest.json）" : "✓ 点击测试通过（详情见 tests/out/clicktest.json）");
     process.exit(fail ? 1 : 0);
