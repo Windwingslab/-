@@ -1036,7 +1036,7 @@
                     (function (fx, fy, name, ix, iy) {
                         g.appendChild(tile({
                             icon: "anchor" + ix + iy,
-                            hint: { title: "锚点 · " + name, click: "把锚点移到图层的" + name + "，图层位置不变", alt: "同时把图层贴到合成的" + name },
+                            hint: { title: "锚点 · " + name, click: "锚点移到" + name + "，画面不动", alt: "再把图层贴到合成的" + name, note: "有遮罩按遮罩范围；选中遮罩只看选中的" },
                             run: call("anchor", { fx: fx, fy: fy })
                         }));
                     })(x / 2, y / 2, pos[y][x], x, y);
@@ -1046,15 +1046,15 @@
         }
     });
 
-    toolType("centerComp", { name: "居中到合成", cat: "锚点 · 对齐", icon: "center", w: 3, hint: { title: "居中到合成", click: "锚点居中，并把图层移到合成中心", alt: "不改锚点，按外框居中" }, run: call("centerComp") });
+    toolType("centerComp", { name: "居中到合成", cat: "锚点 · 对齐", icon: "center", w: 3, hint: { title: "居中到合成", click: "锚点放到中心，再移到合成中心", alt: "不改锚点，按外框居中", note: "有遮罩按遮罩范围；带父级的也能居中" }, run: call("centerComp") });
     toolType("precomp", { name: "逐个预合成", cat: "图层", icon: "precomp", w: 3, hint: { title: "逐个预合成", click: "每个选中图层各自预合成，保留属性" }, run: call("precompEach") });
 
     [["alignLeft", "left", "左对齐"], ["alignHCenter", "hcenter", "水平居中"], ["alignRight", "right", "右对齐"],
      ["alignTop", "top", "顶部对齐"], ["alignVCenter", "vcenter", "垂直居中"], ["alignBottom", "bottom", "底部对齐"]].forEach(function (d) {
-        toolType(d[0], { name: d[2], cat: "锚点 · 对齐", icon: d[0], hint: { title: d[2], click: d[2] + "到合成", alt: d[2] + "到选区（选中图层的整体外框）" }, run: call("align", { mode: d[1] }) });
+        toolType(d[0], { name: d[2], cat: "锚点 · 对齐", icon: d[0], hint: { title: d[2], click: d[2] + "到合成", alt: "到选区（整体外框）", shift: "到最上面的选中图层", note: "按看得见的部分：有遮罩按遮罩，带父级的也算" }, run: call("align", { mode: d[1] }) });
     });
-    toolType("distH", { name: "水平分布", cat: "锚点 · 对齐", icon: "distH", hint: { title: "水平分布", click: "按中心点水平均匀分布（至少 3 个图层）" }, run: call("distribute", { horizontal: true }) });
-    toolType("distV", { name: "垂直分布", cat: "锚点 · 对齐", icon: "distV", hint: { title: "垂直分布", click: "按中心点垂直均匀分布（至少 3 个图层）" }, run: call("distribute", { horizontal: false }) });
+    toolType("distH", { name: "水平分布", cat: "锚点 · 对齐", icon: "distH", hint: { title: "水平分布", click: "按中心等距，两头不动", alt: "按间距均分：空隙一样大", note: "至少 3 个图层；有遮罩按遮罩范围" }, run: call("distribute", { horizontal: true }) });
+    toolType("distV", { name: "垂直分布", cat: "锚点 · 对齐", icon: "distV", hint: { title: "垂直分布", click: "按中心等距，两头不动", alt: "按间距均分：空隙一样大", note: "至少 3 个图层；有遮罩按遮罩范围" }, run: call("distribute", { horizontal: false }) });
 
     toolType("trim", { more: true, name: "剪到工作区", cat: "图层", icon: "trim", hint: { title: "剪到工作区", click: "把选中图层的入点和出点剪到工作区", alt: "只把入点剪到播放头" }, run: call("trim") });
     toolType("split", { more: true, name: "在播放头拆分", cat: "图层", icon: "split", hint: { title: "在播放头拆分", click: "把选中图层在播放头位置拆成两段" }, run: call("splitLayer") });
@@ -1396,7 +1396,7 @@
         name: "时间排列", cat: "智能组件", icon: "seqForward", desc: "错开（Num / Step、四种顺序）、首尾相接、跟着音乐节拍排列图层", size: "full",
         render: function (cell, item) {
             var mode = item.mode || "stagger";
-            var w = widgetBox(cell, "ARRANGE · 时间排列", "按选择顺序");
+            var w = widgetBox(cell, "ARRANGE · 时间排列");
             var chips = el("div", "chips");
             ARRANGE_MODES.forEach(function (md) {
                 var c = el("button", "chip" + (md[0] === mode ? " on" : ""), esc(md[1]));
@@ -1417,9 +1417,12 @@
                 bindHint(num, { title: "Num", click: "每组几个图层同时出现" });
                 bindHint(step, { title: "Step", click: "组与组之间错开的帧数" });
                 var r2 = row(w);
-                [["forward", "seqForward", "正序"], ["reverse", "seqReverse", "倒序"], ["center", "seqCenter", "从中间向两边"], ["random", "seqRandom", "随机"]].forEach(function (o, i) {
+                [["forward", "seqForward", "正序"], ["reverse", "seqReverse", "倒序"], ["center", "seqCenter", "从中间向两边"], ["random", "seqRandom", "随机"], ["position", "seqPosition", "画面位置"]].forEach(function (o, i) {
                     var t = tile({
-                        icon: o[1], filled: i === 0, tool: "sequence", hint: { title: "错开 · " + o[2], click: "按" + o[2] + "错开选中图层", note: "顺序以你选择图层的先后为准" },
+                        icon: o[1], filled: i === 0, tool: "sequence",
+                        hint: o[0] === "position"
+                            ? { title: "错开 · 按画面位置", click: "铺得宽从左到右，铺得高从上到下", alt: "反过来", note: "按看得见的部分的中心，和选择顺序无关" }
+                            : { title: "错开 · " + o[2], click: "按" + o[2] + "错开选中图层", note: "顺序以你选择图层的先后为准" },
                         needs: NEEDS.sequence, run: function (m) { return host("sequence", { order: o[0], num: item.num || 1, step: item.step === undefined ? 2 : item.step, mods: m }); }
                     });
                     t.classList.add("grow");
@@ -1473,7 +1476,7 @@
             var r = el("div", "w-row create-row");
             CREATE.forEach(function (c) {
                 var t = c[0] === "null"
-                    ? tile({ icon: c[1], tool: "nullLayer", hint: { title: "新建空对象", click: "在选中图层上方新建空对象", alt: "放到选中图层中心，并设为它们的父级" }, run: call("nullLayer") })
+                    ? tile({ icon: c[1], tool: "nullLayer", hint: { title: "新建空对象", click: "在选中图层上方新建", alt: "放到选中图层中心并设为父级", note: "原来有同一个父级时，空对象接在它下面" }, run: call("nullLayer") })
                     : tile({ icon: c[1], tool: "addLayer:" + c[0], hint: { title: "新建" + c[2], click: "在选中图层上方新建" + c[2] }, run: call("addLayer", { kind: c[0] }) });
                 t.classList.add("grow");
                 r.appendChild(t);

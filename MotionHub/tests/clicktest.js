@@ -428,7 +428,8 @@ async function runNeeds(browser) {
     // 操作完成后查询一次
     await page.evaluate(() => { window.__calls = []; });
     await page.click('#layout .tile[data-tool="centerComp"]');
-    await page.waitForTimeout(300);
+    // 等到这次操作和它后面的选区查询都到了（最多 2 秒），不靠固定的等待时间
+    await page.waitForFunction(() => { const c = window.__calls; const i = c.indexOf("centerComp"); return i !== -1 && c.lastIndexOf("ctx") > i; }, null, { timeout: 2000 }).catch(() => {});
     const after = await page.evaluate(() => window.__calls.slice());
     out.push({ name: "每次操作完成后查询一次选区", ok: after.indexOf("centerComp") !== -1 && after.lastIndexOf("ctx") > after.indexOf("centerComp"), detail: JSON.stringify(after) });
 

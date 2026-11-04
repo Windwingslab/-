@@ -1,5 +1,5 @@
 #!/bin/bash
-# 跑全部验收测试：ES3 检查、host 单元测试、迁移测试、磁盘数据安全测试、配色测试、4 面板共用磁盘模拟、4 种后台状态下的点击测试（含网络测试和 Studio）
+# 跑全部验收测试：ES3 检查、host 单元测试、图层工具几何测试（遮罩 / 父级 / 3D）、迁移测试、磁盘数据安全测试、配色测试、4 面板共用磁盘模拟、4 种后台状态下的点击测试（含网络测试和 Studio）
 cd "$(dirname "$0")"
 set -o pipefail   # 「node xxx | tee」时，以 node 的结果为准（否则测试没通过也会被当成通过）
 [ -d node_modules ] || npm install --silent
@@ -7,6 +7,7 @@ mkdir -p out
 st=0
 node es3check.js | tee out/es3check.txt || st=1
 node hosttest.js | tee out/hosttest.txt || st=1
+node tooltest.js | tee out/tooltest.txt || st=1
 node migrationtest.js | tee out/migrationtest.txt || st=1
 node disktest.js | tee out/disktest.txt || st=1
 node colortest.js | tee out/colortest.txt || st=1
