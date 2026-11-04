@@ -10,6 +10,8 @@ const fs = require("fs");
 const { chromium } = require("playwright");
 
 const EXT = path.join(__dirname, "../com.windwings.motionhub");
+// 假后台报的版本号跟着 host.jsx 走：升级版本时不用改测试
+const HOST_VERSION = (/var VERSION = "([^"]+)"/.exec(require("fs").readFileSync(require("path").join(EXT, "jsx/host.jsx"), "utf8")) || [])[1] || "0";
 // main.js 里声明了 needs 的后台工具名：点了会调用这些工具的按钮，必须带 data-needs
 const NEED_TOOLS = (function () {
     const src = fs.readFileSync(path.join(EXT, "js/main.js"), "utf8");
@@ -22,10 +24,10 @@ const OUT = path.join(__dirname, "out");
 function fakeHost(name, args, state) {
     const ok = (data, msg) => ({ ok: true, msg: msg || "", data: data || {} });
     switch (name) {
-        case "init": return ok({ libPath: "/lib", version: "3.7.2", ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
+        case "init": return ok({ libPath: "/lib", version: HOST_VERSION, ae: "24.3.0", canWrite: state.canWrite, os: "mac" });
         case "status": return ok({ canWrite: state.canWrite });
         case "ctx": return ok(state.ctx || { comp: "", layers: 0, keys: 0, exprProps: 0, precomps: 0, projComps: 0 });
-        case "selfCheck": return ok({ version: "3.7.2", ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
+        case "selfCheck": return ok({ version: HOST_VERSION, ae: "24.3.0", canWrite: state.canWrite, libPath: "/lib", libExists: true, libWritable: state.canWrite, libError: "" });
         case "scan": return ok({
             items: [
                 { path: "/lib/动画/弹跳.jsx", key: "/动画/弹跳.jsx", name: "弹跳", file: "弹跳.jsx", cat: "动画", ext: "jsx", desc: "测试脚本", author: "", type: "脚本" },
