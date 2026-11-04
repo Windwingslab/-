@@ -128,7 +128,8 @@ function toParent(L, p, t) {
     t = t || 0;
     const tr = L.transform;
     const A = tr.anchorPoint.valueAtTime(t), P = tr.position.valueAtTime(t), S = tr.scale.valueAtTime(t);
-    let v = [(p[0] - A[0]) * S[0] / 100, (p[1] - A[1]) * S[1] / 100, L.threeDLayer ? ((p[2] || 0) - (A[2] || 0)) * (S[2] || 100) / 100 : 0];
+    // 2D 图层不改 z（和 AE 一样：3D 子图层挂在 2D 父级下时深度不丢）
+    let v = [(p[0] - A[0]) * S[0] / 100, (p[1] - A[1]) * S[1] / 100, L.threeDLayer ? ((p[2] || 0) - (A[2] || 0)) * (S[2] || 100) / 100 : (p[2] || 0)];
     v = rotZ(v, tr.property("ADBE Rotate Z").valueAtTime(t));
     if (L.threeDLayer) {
         v = rotY(v, tr.property("ADBE Rotate Y").valueAtTime(t));
@@ -192,11 +193,20 @@ function evalProbe(L, expr, t) {
     if (m) return toComp(L, m[1].split(",").map(Number), Number(m[2]));
     m = /^thisLayer\.toWorldVec\(\[([^\]]+)\],\s*([^)]+)\);$/.exec(expr);
     if (m) return vecToWorld(L, m[1].split(",").map(Number), Number(m[2]));
-    m = /^var w = thisComp\.layer\((\d+)\)\.toWorldVec\(\[([^\]]+)\],\s*([^)]+)\);\nthisLayer\.hasParent \? thisLayer\.parent\.fromWorldVec\(w, /.exec(expr);
+    // 沿摄像机的 x、y（单位长度）移 (dx, dy)，再换到父级坐标
+    m = /^var c = thisComp\.layer\((\d+)\), dx = ([^,]+), dy = ([^,]+), t = ([^;]+);\nvar w = add\(mul\(normalize\(c\.toWorldVec\(\[1, 0, 0\], t\)\), dx\), mul\(normalize\(c\.toWorldVec\(\[0, 1, 0\], t\)\), dy\)\);\nthisLayer\.hasParent \? thisLayer\.parent\.fromWorldVec\(w, t\) : w;$/.exec(expr);
     if (m) {
-        const C = ALL_LAYERS[Number(m[1]) - 1], tt = Number(m[3]);
-        const w = vecToWorld(C, m[2].split(",").map(Number), tt);
+        const C = ALL_LAYERS[Number(m[1]) - 1], dx = Number(m[2]), dy = Number(m[3]), tt = Number(m[4]);
+        const nz = v => { const l = Math.hypot(v[0], v[1], v[2]); return v.map(x => x / l); };
+        const ux = nz(vecToWorld(C, [1, 0, 0], tt)), uy = nz(vecToWorld(C, [0, 1, 0], tt));
+        const w = [0, 1, 2].map(i => ux[i] * dx + uy[i] * dy);
         return L.parent ? vecFromWorld(L.parent, w, tt) : w;
+    }
+    // 一点在摄像机坐标里（z = 沿镜头方向离摄像机多远）
+    m = /^var c = thisComp\.layer\((\d+)\);\nc\.fromWorld\(thisLayer\.toWorld\(\[([^\]]+)\],\s*([^)]+)\),\s*[^)]+\);$/.exec(expr);
+    if (m) {
+        const C = ALL_LAYERS[Number(m[1]) - 1], tt = Number(m[3]), w = toComp(L, m[2].split(",").map(Number), tt), o = toComp(C, [0, 0, 0], tt);
+        return vecFromWorld(C, [w[0] - o[0], w[1] - o[1], w[2] - o[2]], tt);
     }
     throw new Error("看不懂的表达式：" + expr);
 }
@@ -843,6 +853,245 @@ function gridNameOf(fx, fy) { return [["左上", "上中", "右上"], ["左中",
     const O2 = makeLayer({ three: true, rect: [0, 0, 100, 100], anchor: [50, 50, 0], pos: [600, 400], orient: [20, 0, 0] });
     const r4 = run([O2], [O2], "align", { mode: "left" }).r;
     check("方向带 X 的 3D 图层：说「方向带 X / Y 角度」", !r4.ok && /方向带 X \/ Y 角度/.test(r4.msg), r4.msg);
+}
+
+// 21. 第四轮复核回归（3.8.0）
+const circlePts = (cx, cy, r, N) => Array.from({ length: N }, (_, i) => [cx + r * Math.cos(i / N * 2 * Math.PI), cy + r * Math.sin(i / N * 2 * Math.PI)]);
+const inRect = (p, R) => p[0] >= R[0] - 1e-9 && p[0] <= R[2] + 1e-9 && p[1] >= R[1] - 1e-9 && p[1] <= R[3] + 1e-9;
+{
+    // 遮罩按块算：伸到图层外面的相加遮罩不撑大范围
+    const mk = (rot) => makeLayer({ rect: [0, 0, 1000, 1000], anchor: [500, 500], pos: [960, 540], rot, masks: [{ shape: rectShape(200, 200, 400, 400) }, { shape: rectShape(1100, 200, 1300, 400) }] });
+    let L = mk(0);
+    run([L], [L], "anchor", { fx: 0.5, fy: 0.5 });
+    check("遮罩按块：伸到图层外面的遮罩不算，锚点在露出来那块的中心 (300, 300)", nearV(L.transform.anchorPoint.value, [300, 300]), fmt(L.transform.anchorPoint.value));
+    for (const rot of [0, 30]) {
+        L = mk(rot);
+        run([L], [L], "align", { mode: "right" });
+        const b = outline(L, rectPts(200, 200, 400, 400));
+        check("遮罩按块：旋转 " + rot + "°，伸到图层外面的遮罩不算，右对齐贴边", near(b.r, 1920, 0.01), fmt([b.r]));
+    }
+    // 相交遮罩夹在两个相加遮罩中间（谁也没碰到），后面再相加：只算后加的
+    const G = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [
+        { shape: rectShape(0, 0, 100, 100) }, { shape: rectShape(400, 0, 500, 100) }, { shape: rectShape(200, 0, 300, 100), mode: MaskMode.INTERSECT }, { shape: rectShape(700, 700, 800, 800) }] });
+    run([G], [G], "anchor", { fx: 0.5, fy: 0.5 });
+    check("遮罩按块：相交遮罩夹在两个相加遮罩中间，按后加的算 (750, 750)", nearV(G.transform.anchorPoint.value, [750, 750]), fmt(G.transform.anchorPoint.value));
+    // 两块相加以后再相交：每块各自去交（旋转 30° / 45° 也准）
+    for (const rot of [30, 45]) {
+        const U = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [500, 500], pos: [960, 540], rot, masks: [
+            { shape: rectShape(100, 100, 400, 400) }, { shape: rectShape(500, 500, 800, 800) }, { shape: rectShape(200, 200, 700, 700), mode: MaskMode.INTERSECT }] });
+        run([U], [U], "align", { mode: "left" });
+        const b = outline(U, rectPts(200, 200, 400, 400).concat(rectPts(500, 500, 700, 700)));
+        check("遮罩按块：两块相加再相交，旋转 " + rot + "° 左对齐贴边", near(b.l, 0, 0.01), fmt([b.l]));
+    }
+}
+{
+    // 相减的矩形遮罩真的切掉范围；第一个遮罩是相减、反转的相交、反转的相加也一样
+    const L1 = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [{ shape: rectShape(0, 0, 400, 400) }, { shape: rectShape(200, -50, 450, 450), mode: MaskMode.SUBTRACT }] });
+    run([L1], [L1], "anchor", { fx: 0.5, fy: 0.5 });
+    check("相减的矩形切掉右半边：锚点在剩下那块的中心 (100, 200)", nearV(L1.transform.anchorPoint.value, [100, 200]), fmt(L1.transform.anchorPoint.value));
+    const L2 = makeLayer({ rect: [0, 0, 1000, 500], anchor: [0, 0], pos: [0, 0], masks: [{ shape: rectShape(0, 0, 600, 500), mode: MaskMode.SUBTRACT }] });
+    run([L2], [L2], "anchor", { fx: 0.5, fy: 0.5 });
+    check("第一个遮罩就是相减：从整个图层切掉，锚点在 (800, 250)", nearV(L2.transform.anchorPoint.value, [800, 250]), fmt(L2.transform.anchorPoint.value));
+    const L3 = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [{ shape: rectShape(0, 0, 400, 400) }, { shape: rectShape(200, -50, 450, 450), mode: MaskMode.INTERSECT, inverted: true }] });
+    run([L3], [L3], "anchor", { fx: 0.5, fy: 0.5 });
+    check("反转的相交（= 切掉这个矩形）：锚点在 (100, 200)", nearV(L3.transform.anchorPoint.value, [100, 200]), fmt(L3.transform.anchorPoint.value));
+    const L4 = makeLayer({ rect: [0, 0, 1000, 500], anchor: [0, 0], pos: [0, 0], masks: [{ shape: rectShape(0, 0, 600, 500), inverted: true }] });
+    run([L4], [L4], "anchor", { fx: 0.5, fy: 0.5 });
+    check("第一个遮罩是反转的相加（只露出外面）：锚点在 (800, 250)", nearV(L4.transform.anchorPoint.value, [800, 250]), fmt(L4.transform.anchorPoint.value));
+}
+{
+    // 曲线遮罩被图层边裁掉：按裁剪后的形状算（缩放 50%、旋转 20° 的素材上，圆伸出右边）
+    for (const rot of [20, 40, 60]) {
+        const L = makeLayer({ rect: [0, 0, 1920, 1080], anchor: [960, 540], pos: [960, 540], scale: [50, 50], rot, masks: [{ shape: ellipseShape(1700, 540, 400, 400) }] });
+        const pts = circlePts(1700, 540, 400, 20000).filter(q => inRect(q, [0, 0, 1920, 1080])).concat(
+            Array.from({ length: 20001 }, (_, i) => [1920, i / 20000 * 1080]).filter(q => Math.hypot(q[0] - 1700, q[1] - 540) <= 400));
+        run([L], [L], "align", { mode: "right" });
+        const br = outline(L, pts);
+        run([L], [L], "align", { mode: "bottom" });
+        const bb = outline(L, pts);
+        check("曲线遮罩被图层边裁掉（旋转 " + rot + "°）：右对齐、底对齐都贴边", near(br.r, 1920, 0.2) && near(bb.b, 1080, 0.2), fmt([br.r, bb.b]));
+    }
+    // 圆心在图层外面：锚点工具（图层坐标）也按裁剪后的形状
+    const C = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [{ shape: ellipseShape(1050, 500, 200, 200) }] });
+    run([C], [C], "anchor", { fx: 0.5, fy: 0.5 });
+    check("圆心在图层外面的遮罩：锚点在露出来那块的中心 (925, 500)", nearV(C.transform.anchorPoint.value, [925, 500], 0.05), fmt(C.transform.anchorPoint.value));
+}
+{
+    // ⌥ 空对象：转过 Y / Z 的 3D 卡片上的椭圆遮罩，按椭圆本身在世界里的范围（不按外框四个角，以前差 24 px）
+    const A = makeLayer({ name: "A", rect: [0, 0, 200, 200], anchor: [0, 0], pos: [100, 400] });
+    const B = makeLayer({ name: "B", three: true, rect: [0, 0, 1000, 1000], anchor: [500, 500, 0], pos: [1400, 540, 0], rotY: 40, rot: 45, masks: [{ shape: ellipseShape(500, 500, 400, 100) }] });
+    const pts = [[0, 0], [200, 0], [0, 200], [200, 200]].map(q => toComp(A, q)).concat(circlePts(0, 0, 1, 20000).map(q => toComp(B, [500 + 400 * q[0], 500 + 100 * q[1]])));
+    const want = [(Math.min(...pts.map(q => q[0])) + Math.max(...pts.map(q => q[0]))) / 2, (Math.min(...pts.map(q => q[1])) + Math.max(...pts.map(q => q[1]))) / 2];
+    const { comp } = run([A, B], [A, B], "nullLayer", { mods: { alt: true } });
+    const nl = comp.layer(1), w = toComp(nl, nl.transform.anchorPoint.value);
+    check("⌥ 空对象：转过的卡片上的椭圆遮罩按椭圆本身的范围", nearV(w.slice(0, 2), want, 0.05), fmt(w) + " 应为 " + fmt(want));
+}
+{
+    // 父级缩放是 0（弹出动画的第一帧）：转过 X / Y 的子图层改锚点算不出补偿——不改，并说明（以前改了锚点，等父级长大画面就跳了）
+    const Pop = makeLayer({ name: "Pop", rect: [0, 0, 10, 10], anchor: [0, 0], pos: [960, 540], scale: [0, 0] });
+    const Card = makeLayer({ name: "Card", three: true, rect: [0, 0, 400, 300], anchor: [0, 0, 0], pos: [-200, -150, 0], rotY: 35, rotX: 10 });
+    Card.parent = Pop;
+    const r = run([Card, Pop], [Card], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    check("父级缩放是 0：锚点不改，并说「父级缩放是 0」", !r.ok && /父级缩放是 0/.test(r.msg) && nearV(Card.transform.anchorPoint.value, [0, 0, 0]) && nearV(Card.transform.position.value, [-200, -150, 0]), JSON.stringify(r));
+}
+{
+    // 在摄像机后面的 3D 卡片（默认摄像机在 z = -2667）：⌥ 贴不了，说明，不动它
+    const L = makeLayer({ three: true, rect: [0, 0, 400, 300], anchor: [200, 150, 0], pos: [960, 540], z: -5000 });
+    const bL = snapshot(L);
+    const r = run([L], [L], "anchor", { fx: 0, fy: 0, mods: { alt: true } }).r;
+    check("在摄像机后面的图层：⌥ 贴角说「在摄像机后面」，画面不动（只换了锚点）", /摄像机后面/.test(r.msg) && /其中 0 个贴到了合成的左上/.test(r.msg) && same(bL, snapshot(L)), JSON.stringify(r));
+    // 带着摄像机的空对象（摄像机挂在它下面）：移它画面上看不出来——说明，不动它
+    const N = makeLayer({ name: "N", three: true, rect: [0, 0, 100, 100], anchor: [50, 50, 0], pos: [960, 540, 0] });
+    const cam = makeLayer({ name: "摄像机", three: true, rect: [0, 0, 1, 1], anchor: [0, 0, 0], pos: [0, 0], z: -2666.67 });
+    Object.setPrototypeOf(cam, CameraLayer.prototype);
+    cam.parent = N;
+    const bN = snapshot(N);
+    const r2 = run([N, cam], [N], "anchor", { fx: 0, fy: 0, mods: { alt: true } }, { activeCamera: cam }).r;
+    check("带着摄像机的图层：⌥ 贴角说「带着摄像机」，画面不动（只换了锚点）", /带着摄像机/.test(r2.msg) && same(bN, snapshot(N)), JSON.stringify(r2));
+}
+{
+    // ⌥ 空对象接在共同的父级下：深度按卡片画面所在的位置换到父级坐标（以前取锚点的 z，绕着锚点转的卡片会差 500）
+    const rig = makeLayer({ name: "rig", three: true, rect: [0, 0, 10, 10], anchor: [0, 0, 0], pos: [1500, 300, 0] });
+    const A = makeLayer({ name: "A", three: true, rect: [0, 0, 100, 100], anchor: [50, 50, -500], pos: [0, 0, 0] });
+    const B = makeLayer({ name: "B", three: true, rect: [0, 0, 100, 100], anchor: [50, 50, -500], pos: [200, 0, 0] });
+    A.parent = rig; B.parent = rig;
+    const zA = toComp(A, [50, 50, 0])[2];
+    const { comp } = run([A, B, rig], [A, B], "nullLayer", { mods: { alt: true } });
+    const nl = comp.layer(1), w = toComp(nl, nl.transform.anchorPoint.value);
+    check("⌥ 空对象接在父级下：深度是卡片画面所在的 z（" + zA + "）", near(w[2], zA, 0.01) && near(w[0], 1600, 0.01), fmt(w));
+}
+{
+    // 快速动画从表达式之前的值出发：跟着数值走的表达式（value + [100, 0]）不再被算两遍，停下来的位置不跳
+    const L = makeLayer({ rect: [0, 0, 200, 100], anchor: [0, 0], pos: [600, 400], posExpr: (L, t, v) => [v[0] + 100, v[1]] });
+    const before = L.transform.position.valueAtTime(0, false);
+    const { comp } = run([L], [L], "quickAnim", { kind: "slide", dir: "left", frames: 12 });
+    const t1 = comp.time + 12 * comp.frameDuration, after = L.transform.position.valueAtTime(t1, false);
+    check("滑动入场：位置带 value + [100, 0] 的表达式，停下来的位置和原来一样", nearV(after, before), fmt(before) + " → " + fmt(after));
+    const F = makeLayer({ rect: [0, 0, 200, 100], anchor: [0, 0], pos: [600, 400] });
+    F.transform.opacity = prop(100, { exprFn: (t, v) => v * 0.5 });
+    run([F], [F], "quickAnim", { kind: "fade", frames: 12 });
+    const o1 = F.transform.opacity.valueAtTime(12 * (1 / 25), false);
+    check("淡入：透明度带 value * 0.5 的表达式，淡入后还是 50（以前变成 25）", near(o1, 50), o1);
+    // 位置被表达式钉死：加的关键帧看不出来，要说
+    const P = makeLayer({ rect: [0, 0, 200, 100], anchor: [0, 0], pos: [600, 400], posExpr: () => [600, 400] });
+    const r = run([P], [P], "quickAnim", { kind: "slide", dir: "left", frames: 12 }).r;
+    check("滑动：位置被表达式钉死时说「被表达式盖住」", r.ok && /被表达式盖住/.test(r.msg), r.msg);
+}
+{
+    // 提示里的个数对得上
+    const pin = makeLayer({ rect: [0, 0, 200, 100], anchor: [100, 50], pos: [400, 250], posExpr: () => [400, 250] });
+    const r = run([pin], [pin], "anchor", { fx: 0.5, fy: 0.5, mods: { alt: true } }).r;
+    check("⌥ 贴中心、位置钉死：标题说「其中 0 个贴到了合成的中心」，不说已经贴好", /其中 0 个贴到了合成的中心/.test(r.msg) && !/并贴到合成/.test(r.msg), r.msg);
+    const m1 = makeLayer({ name: "m1", rect: [0, 0, 400, 400], anchor: [0, 0], pos: [100, 100], masks: [{ shape: rectShape(100, 100, 200, 200) }] });
+    const m2 = makeLayer({ name: "m2", rect: [0, 0, 400, 400], anchor: [0, 0], pos: [600, 100], masks: [{ shape: rectShape(100, 100, 200, 200) }], posExpr: () => [600, 100] });
+    const r2 = run([m1, m2], [m1, m2], "centerComp", {}).r;
+    check("居中：一个居中了、一个位置钉死——「已居中：1 个图层」，按遮罩的说明只说居中了的那个", /已居中：1 个图层，按遮罩露出来的范围/.test(r2.msg), r2.msg);
+    const K = makeLayer({ name: "参照", rect: [0, 0, 400, 400], anchor: [0, 0], pos: [500, 100], masks: [{ shape: rectShape(100, 100, 200, 200) }] });
+    const M = makeLayer({ name: "M", rect: [0, 0, 400, 400], anchor: [0, 0], pos: [900, 300], masks: [{ shape: rectShape(100, 100, 200, 200) }] });
+    const r3 = run([K, M], [K, M], "align", { mode: "left", mods: { shift: true } }).r;
+    check("⇧ 对齐：按遮罩的个数不算参照层", /已对齐到「参照」：1 个图层（1 个按遮罩范围）/.test(r3.msg), r3.msg);
+    const d1 = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [0, 0] }), d2 = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [300, 0], posExpr: () => [300, 0] }), d3 = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [1000, 0] });
+    const r4 = run([d1, d2, d3], [d1, d2, d3], "distribute", { horizontal: true }).r;
+    check("分布：中间的图层动不了时直说「只分布了一部分」", /只分布了一部分/.test(r4.msg) && /表达式/.test(r4.msg), r4.msg);
+}
+{
+    // 旋转跟着位置走的表达式（滚轮）：改锚点要补位置，补了旋转就变——还原，并说明
+    const W = makeLayer({ rect: [0, 0, 200, 200], anchor: [0, 0], pos: [400, 300] });
+    const rz = W.transform.property("ADBE Rotate Z"), base = rz.valueAtTime.bind(rz);
+    rz.expression = "position[0] / 2"; rz.expressionEnabled = true;
+    rz.valueAtTime = (t, pre) => (pre ? base(t, true) : W.transform.position.valueAtTime(t, false)[0] / 2);
+    const before = snapshot(W);
+    const r = run([W], [W], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    check("旋转带跟着位置的表达式：改锚点会让画面转，还原并说明", same(before, snapshot(W)) && /表达式/.test(r.msg), JSON.stringify(r));
+}
+{
+    // 父级接近侧着（Y 转 89.95°）：2D 子图层左右方向压得只剩 0.1%——居中说转到了侧面、不动；上下照样能滑，左右不滑
+    const side = makeLayer({ name: "side", three: true, rect: [0, 0, 10, 10], anchor: [0, 0, 0], pos: [960, 540, 0], rotY: 89.95 });
+    const S = makeLayer({ rect: [0, 0, 100, 100], anchor: [50, 50], pos: [30, 30] });
+    S.parent = side;
+    const before = snapshot(S);
+    const r = run([S, side], [S], "centerComp", {}).r;
+    check("父级接近侧着：居中说「转到了侧面」，画面不动", /侧面/.test(r.msg) && same(before, snapshot(S)), r.msg);
+    const T2 = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [0, 0] });
+    T2.parent = side;
+    const r2 = run([T2, side], [T2], "quickAnim", { kind: "slide", dir: "up", frames: 12 }).r;
+    const k1 = T2.transform.position.keyValue(1), k2 = T2.transform.position.keyValue(2);
+    const d1 = toComp(side, k1), d2 = toComp(side, k2);
+    check("父级接近侧着：上下方向照样滑 270 px", r2.ok && nearV([d1[0] - d2[0], d1[1] - d2[1]], [0, -270], 0.5), fmt([d1[0] - d2[0], d1[1] - d2[1]]) + " " + r2.msg);
+    const T3 = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [0, 0] });
+    T3.parent = side;
+    const r3 = run([T3, side], [T3], "quickAnim", { kind: "slide", dir: "left", frames: 12 }).r;
+    check("父级接近侧着：往左滑不动，说明，不加关键帧", !r3.ok && /侧面/.test(r3.msg) && T3.transform.position.numKeys === 0, r3.msg);
+}
+{
+    // 摄像机挂在缩放 200% 的空对象下：沿摄像机滑的距离不跟着缩放变（还是 480 px）
+    const rigS = makeLayer({ name: "rig", three: true, rect: [0, 0, 10, 10], anchor: [0, 0, 0], pos: [960, 540], z: -2666.67, scale: [200, 200, 200] });
+    const cam = makeLayer({ name: "摄像机", three: true, rect: [0, 0, 1, 1], anchor: [0, 0, 0], pos: [0, 0], rotY: 30 });
+    Object.setPrototypeOf(cam, CameraLayer.prototype);
+    cam.parent = rigS;
+    const W = makeLayer({ name: "W", three: true, rect: [0, 0, 200, 100], anchor: [0, 0, 0], pos: [960, 540], z: 0 });
+    run([W, cam, rigS], [W], "quickAnim", { kind: "slide", dir: "left", frames: 12 }, { activeCamera: cam });
+    const w1 = W.transform.position.keyValue(1), w2 = W.transform.position.keyValue(2);
+    const len = Math.hypot(w2[0] - w1[0], w2[1] - w1[1], w2[2] - w1[2]);
+    check("摄像机挂在缩放过的父级下：沿摄像机滑的距离还是 480 px", near(len, 480, 0.01), len);
+    // 对齐时选中了摄像机：说摄像机没动
+    const a = makeLayer({ rect: [0, 0, 100, 100], anchor: [0, 0], pos: [300, 300] });
+    const c2 = makeLayer({ kind: "camera", name: "摄像机2" });
+    const r = run([a, c2], [a, c2], "align", { mode: "left" }).r;
+    check("对齐时选中了摄像机：说「摄像机 / 灯光没动」", r.ok && /摄像机 \/ 灯光没动/.test(r.msg), r.msg);
+}
+
+{
+    // 父级缩放几乎是 0（0.000001%）：也当成 0，不把子图层推到几百亿像素外
+    const P = makeLayer({ name: "P", rect: [0, 0, 100, 100], anchor: [50, 50], pos: [960, 540], scale: [1e-6, 100], rot: 20 });
+    const C = makeLayer({ name: "C", three: true, rect: [0, 0, 300, 200], anchor: [150, 100, 0], pos: [-150.5, -66.25], z: 24.1 });
+    C.parent = P;
+    const r = run([C, P], [C], "centerComp", {}).r;
+    check("父级缩放几乎是 0：居中说「父级缩放是 0」，位置一点没变", /父级缩放是 0/.test(r.msg) && nearV(C.transform.position.value, [-150.5, -66.25, 24.1], 1e-9), JSON.stringify(r) + " " + fmt(C.transform.position.value));
+    // 3D、位置有关键帧又被表达式钉住：量着贴贴不上，关键帧原样写回（不是加了又减）
+    const K = makeLayer({ three: true, rect: [0, 0, 200, 100], anchor: [100, 50, 0], pos: [300, 300, 0], posExpr: () => [500, 400, 0] });
+    K.transform.position.setValueAtTime(0, [300.123456789, 300.5, 0]); K.transform.position.setValueAtTime(1, [912345.678, -77.25, 40]);
+    const r2 = run([K], [K], "anchor", { fx: 0.5, fy: 0.5, mods: { alt: true } }).r;
+    check("量着贴贴不上：位置的关键帧原样写回", /表达式/.test(r2.msg) && K.transform.position.keyValue(1)[0] === 300.123456789 && K.transform.position.keyValue(2)[0] === 912345.678, r2.msg + " " + fmt(K.transform.position.keyValue(1)) + " " + fmt(K.transform.position.keyValue(2)));
+}
+{
+    // 曲线遮罩和曲线遮罩相交：两个圆隔开（外框重叠、形状不重叠）→ 交不出东西，后面相加的才算
+    const L = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [
+        { shape: ellipseShape(200, 200, 150, 150) }, { shape: ellipseShape(430, 430, 150, 150), mode: MaskMode.INTERSECT }, { shape: rectShape(700, 700, 800, 800) }] });   // 圆心距 325 > 300：不重叠，外框重叠
+    run([L], [L], "anchor", { fx: 0.5, fy: 0.5 });
+    check("两个隔开的圆相交（外框重叠、形状不重叠）：按后加的遮罩算 (750, 750)", nearV(L.transform.anchorPoint.value, [750, 750], 0.05), fmt(L.transform.anchorPoint.value));
+    // 两个椭圆相交（透镜形）：按交出来的形状对齐
+    const E = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [500, 500], pos: [960, 540], masks: [
+        { shape: ellipseShape(400, 500, 250, 200) }, { shape: ellipseShape(600, 500, 250, 200), mode: MaskMode.INTERSECT }] });
+    const inBoth = q => ((q[0] - 400) / 250) ** 2 + ((q[1] - 500) / 200) ** 2 <= 1 + 1e-12 && ((q[0] - 600) / 250) ** 2 + ((q[1] - 500) / 200) ** 2 <= 1 + 1e-12;
+    const lens = circlePts(0, 0, 1, 40000).map(q => [400 + 250 * q[0], 500 + 200 * q[1]]).concat(circlePts(0, 0, 1, 40000).map(q => [600 + 250 * q[0], 500 + 200 * q[1]])).filter(inBoth);
+    run([E], [E], "align", { mode: "top" });
+    const bt = outline(E, lens);
+    run([E], [E], "align", { mode: "left" });
+    const bl = outline(E, lens);
+    check("两个椭圆相交（透镜形）：顶对齐、左对齐按交出来的形状（差不到 0.2 px）", near(bt.t, 0, 0.2) && near(bl.l, 0, 0.2), fmt([bt.t, bl.l]));
+}
+
+{
+    // 第一个遮罩是相减、但被负的扩展收没了：它还是「第一个」——从整个图层开始，后面反转的相加不会把范围缩小
+    const L = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [
+        { shape: rectShape(300, 950, 420, 1010), mode: MaskMode.SUBTRACT, expansion: -40 }, { shape: rectShape(-300, 700, 50, 1300), inverted: true }] });
+    run([L], [L], "anchor", { fx: 1, fy: 1 });
+    check("被收没的第一个相减遮罩还算「第一个」：范围是整个图层，锚点在右下 (1000, 1000)", nearV(L.transform.anchorPoint.value, [1000, 1000]), fmt(L.transform.anchorPoint.value));
+}
+{
+    // 位置取整的父级，下面有贴着摄像机的 3D 子图层：改父级的锚点差 0.2 px，子图层会被透视放大——还原，并说明
+    const N = makeLayer({ name: "N", rect: [0, 0, 101, 101], anchor: [0, 0], pos: [960.3, 540.4], posExpr: (L, t, v) => v.map(Math.round) });
+    const C = makeLayer({ name: "C", three: true, rect: [0, 0, 50, 50], anchor: [0, 0, 0], pos: [0, 0], z: -2600 });
+    C.parent = N;
+    const bC = snapshot(C), dC = drawnOf(C, [0, 0, 0]);
+    const r = run([N, C], [N], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    const dC2 = drawnOf(C, [0, 0, 0]);
+    check("取整表达式的父级：子图层离摄像机很近时不改锚点（子图层画面不动），并说明", /表达式/.test(r.msg) && Math.hypot(dC2[0] - dC[0], dC2[1] - dC[1]) < 0.01, r.msg + " " + fmt(dC) + " → " + fmt(dC2));
+    // 没有子图层时照常改（取整只差不到半个像素）
+    const N2 = makeLayer({ name: "N2", rect: [0, 0, 101, 101], anchor: [0, 0], pos: [960.3, 540.4], posExpr: (L, t, v) => v.map(Math.round) });
+    const r2 = run([N2], [N2], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    check("取整表达式、没有子图层：照常改锚点", r2.ok && /锚点已移到中心：1 个图层/.test(r2.msg), r2.msg);
 }
 
 console.log(failures ? "✗ 图层工具测试：" + failures + " 项没通过" : "✓ 图层工具测试全部通过");
