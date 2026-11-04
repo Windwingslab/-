@@ -422,25 +422,37 @@
     // =====================================================================
     // 底部提示栏
     // =====================================================================
-    var KEYS = OS === "mac"
-        ? { click: "单击", alt: "⌥ 单击", shift: "⇧ 单击", ctrl: "⌘ 单击" }
-        : { click: "单击", alt: "Alt+单击", shift: "Shift+单击", ctrl: "Ctrl+单击" };
-    var IDLE = '<div class="muted">把鼠标移到按钮上，这里会显示它的用法。点右上角 ✎ 可以自定义布局。</div>';
-    var hintEl = $("#hint"), hovered = null, toastTimer = null;
+    // 固定 3 行：① 标题 · 单击做什么 ② / ③ 修饰键（键帽）、说明；「现在不可用」永远占一行。每行一行字，放不下用省略号
+    // 修饰键在 Mac 上画成图标（Geist 里没有 ⌥ ⌘），Windows 上写 Alt / Shift / Ctrl
+    var MOD_ICON = { alt: "opt", shift: "shift", ctrl: "cmd" }, MOD_WIN = { alt: "Alt", shift: "Shift", ctrl: "Ctrl" }, MOD_SAY = { alt: "Option", shift: "Shift", ctrl: "Command" };
+    function keycap(k) {
+        return OS === "mac" ? '<span class="kc" aria-label="' + MOD_SAY[k] + '">' + svg(MOD_ICON[k]) + "</span>" : '<span class="kc">' + MOD_WIN[k] + "</span>";
+    }
+    var hintEl = $("#hint"), toastTimer = null;
+    function modName(k) { return OS === "mac" ? MOD_SAY[k] : MOD_WIN[k]; }
 
+    function hRow(cls, html) { return '<div class="h-row' + (cls ? " " + cls : "") + '">' + html + "</div>"; }
+    function hMods(h, keys) { return keys.map(function (k) { return '<span class="h-m">' + keycap(k) + "<span>" + esc(h[k]) + "</span></span>"; }).join(""); }
     function hintHTML(h) {
-        if (!h) return IDLE;
-        var html = '<div class="h-title">' + esc(h.title) + "</div>";
-        ["click", "alt", "shift", "ctrl"].forEach(function (k) {
-            if (h[k]) html += '<div><span class="k">' + KEYS[k] + "</span> — " + esc(h[k]) + "</div>";
-        });
-        if (h.note) html += '<div class="muted">' + esc(h.note) + "</div>";
-        if (h.na) html += '<div class="na-line">现在不可用：' + esc(h.na) + "（仍然可以点，AE 会再检查一次）</div>";
-        return html;
+        if (!h) return idleHTML();
+        var rows = [hRow("", '<span class="h-title">' + esc(h.title) + "</span>" + (h.click ? '<span class="h-dot">·</span>' + esc(h.click) : ""))];
+        var mk = ["alt", "shift", "ctrl"].filter(function (k) { return h[k]; });
+        var extra = h.na ? hRow("h-na", "现在不可用：" + esc(h.na)) : h.note ? hRow("", esc(h.note)) : "";
+        if (mk.length === 0) { if (extra) rows.push(extra); }
+        else if (mk.length === 1) { rows.push(hRow("", hMods(h, mk))); if (extra) rows.push(extra); }
+        else if (extra && (mk.length === 2 || h.na)) { rows.push(hRow("", hMods(h, mk))); rows.push(extra); }
+        else { rows.push(hRow("", hMods(h, mk.slice(0, 1)))); rows.push(hRow("", hMods(h, mk.slice(1)))); }
+        return rows.join("");
+    }
+    // 没有悬停在按钮上：第一行是 AE 里现在的状态（合成、选中了什么），下面是用法
+    function idleHTML() {
+        if (editing) return hRow("", '<span class="h-title">编辑布局</span><span class="h-dot">·</span>点选组件，或直接拖动排序') +
+            hRow("", '<span class="h-m">' + keycap("alt") + "<span>↑ / ↓ 移动选中的组件</span></span>") + hRow("", "Delete 从面板删除 · Esc 完成");
+        var c = ctx, line = "MotionHub";
+        if (c) line = c.comp ? "「" + esc(c.comp) + "」 · " + c.layers + " 个图层" + (c.keys ? " · " + c.keys + " 个关键帧" : "") + (c.exprProps && !c.keys ? " · " + c.exprProps + " 个属性" : "") : "没有打开合成";
+        return hRow("h-ctx", line) + hRow("", "把鼠标移到按钮上，这里显示用法和修饰键") + hRow("", '<span class="h-m">' + keycap("ctrl") + "<span>K 搜索全部工具 · 右上角「编辑」调整布局</span></span>");
     }
     function showHint(h) {
-        hovered = h;
-        if (toastTimer) return;
         hintEl.className = "hint";
         hintEl.innerHTML = hintHTML(h);
     }
@@ -478,20 +490,52 @@
         } else errParts = [];
         clearTimeout(toastTimer);
         hintEl.className = "hint " + (r.ok ? "ok" : "err");
-        hintEl.innerHTML = '<div class="h-msg">' + esc(msg) + "</div>";
-        toastTimer = setTimeout(function () { toastTimer = null; if (hoverNode) rehint(); else showHint(hovered); }, r.ok ? 2600 : 4200);
+        hintEl.innerHTML = '<div class="h-row h-wrap ' + (r.ok ? "h-ok" : "h-err") + '"><span class="h-msg">' + esc(msg) + "</span></div>";
+        toastTimer = setTimeout(function () { toastTimer = null; paintHover(); }, r.ok ? 2600 : 4200);
         return r;
     }
+    // 提示统一由一个监听器负责：元素 → 提示（对象，或返回对象的函数）记在 WeakMap 里。
+    // 鼠标移到另一个按钮（或键盘焦点移过去）的同一帧就换；列表重绘后按鼠标现在的位置重新找，不会停在已经不存在的按钮上
+    var HINTS = new WeakMap(), hoverNode = null, lastXY = null;
     function bindHint(node, h) {
-        node.addEventListener("mouseenter", function () { hoverNode = node; hoverRaw = h; if (!editing) showHint(withNa(node, typeof h === "function" ? h() : h)); });
-        node.addEventListener("mouseleave", function () { if (hoverNode === node) { hoverNode = null; hoverRaw = null; } showHint(null); });
+        if (!node) return;
+        HINTS.set(node, h);
+        if (h && typeof h === "object" && h.title && !node.hasAttribute("aria-label") && !(node.textContent || "").trim()) node.setAttribute("aria-label", h.title);
     }
-    // 鼠标停着的按钮和它原始的提示：选区变化后重新算「现在不可用」那一行
-    var hoverNode = null, hoverRaw = null;
+    function hintNode(n) {
+        for (; n && n !== document.body && n !== document; n = n.parentNode) if (HINTS.has(n)) return n;
+        return null;
+    }
+    function hintFor(node) {
+        if (!node) return null;
+        if (editing && layoutEl.contains(node)) return null;   // 编辑模式下组件不显示用法，显示编辑说明
+        var raw = HINTS.get(node);
+        return withNa(node, typeof raw === "function" ? raw() : raw);
+    }
+    function paintHover() { if (!toastTimer) showHint(hintFor(hoverNode && hoverNode.isConnected ? hoverNode : null)); }
+    function hoverTo(node, keepToast) {
+        if (node === hoverNode) return;
+        hoverNode = node;
+        if (!keepToast && toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+        paintHover();
+    }
+    document.addEventListener("mouseover", function (e) { lastXY = [e.clientX, e.clientY]; hoverTo(hintNode(e.target)); }, true);
+    document.addEventListener("mouseout", function (e) { if (!e.relatedTarget) { lastXY = null; hoverTo(null); } }, true);
+    document.addEventListener("focusin", function (e) {
+        var t = e.target, kb = false;
+        try { kb = t.matches(":focus-visible"); } catch (err) {}
+        if (kb) hoverTo(hintNode(t));
+    });
+    // 重绘之后：鼠标下面现在是哪个元素（不打断正在显示的结果）
+    function syncHover() {
+        if (!lastXY) { if (hoverNode && !hoverNode.isConnected) hoverTo(null, true); return; }
+        hoverTo(hintNode(document.elementFromPoint(lastXY[0], lastXY[1])), true);
+    }
+    // 选区变化后：重新算「现在不可用」那一行；没悬停时刷新第一行的 AE 状态
     function rehint() {
-        if (!hoverNode || toastTimer || editing) return;
-        if (!hoverNode.isConnected) { hoverNode = null; hoverRaw = null; return; }
-        showHint(withNa(hoverNode, typeof hoverRaw === "function" ? hoverRaw() : hoverRaw));
+        if (toastTimer) return;
+        if (hoverNode && !hoverNode.isConnected) { syncHover(); return; }
+        paintHover();
     }
     function withNa(node, h) {
         if (!h || !node.dataset || !node.dataset.na) return h;
@@ -509,11 +553,15 @@
         if (o.tool) b.dataset.tool = o.tool;
         var needs = o.needs !== undefined ? o.needs : (o.run && o.run.needs) || "";
         if (needs) b.dataset.needs = needs;
+        // 只有图标的按键：读屏和键盘用户靠 aria-label 知道它是什么
+        if (!o.label) {
+            var ht = typeof o.hint === "function" ? (o.hint() || {}).title : o.hint && o.hint.title;
+            if (ht) b.setAttribute("aria-label", ht);
+        }
         if (o.hint) bindHint(b, o.hint);
+        // 按下的反馈交给 :active（0ms）；这里只管执行
         b.addEventListener("click", function (e) {
             if (editing) return;
-            b.classList.add("flash");
-            setTimeout(function () { b.classList.remove("flash"); }, 140);
             var m = mods(e);
             act0(b, function () { return o.run(m); });
         });
@@ -536,51 +584,85 @@
     // =====================================================================
     // 对话框 / 浮层
     // =====================================================================
-    function dialog(title, bodyNodes, buttons) {
+    // 对话框：贴着面板顶部的抽屉（不在高高的停靠面板中间飘着）。标题栏 40px + 关闭按钮，按钮栏 48px，中间滚动。
+    // Tab 只在对话框里转；关掉以后焦点回到打开它的按钮。Enter = 最后一个按钮（焦点在按钮上时按那个按钮自己的）
+    // o.full：占满高度（命令搜索、组件库）；o.headNode：放在标题栏里代替标题（命令搜索的输入框）；o.footNode：最下面一行说明
+    // o.bodyCls：给中间区域加的类；o.danger：默认焦点放在「取消」上（删除类的确认，免得一下回车就删了）
+    function dialog(title, bodyNodes, buttons, o) {
+        o = o || {};
         return new Promise(function (resolve) {
-            var m = $("#modal"), body = $("#dlg-body"), btns = $("#dlg-btns");
+            var m = $("#modal"), box = $(".dialog", m), head = $("#dlg-head"), body = $("#dlg-body"), btns = $("#dlg-btns");
+            var back = document.activeElement;
+            $$(".dlg-extra", m).forEach(function (n) { n.parentNode.removeChild(n); });
+            m.classList.toggle("full", !!o.full);
             $("#dlg-title").textContent = title;
+            $("#dlg-title").hidden = !!o.headNode;
+            if (o.headNode) { o.headNode.classList.add("dlg-extra"); head.insertBefore(o.headNode, $("#dlg-x")); }
+            body.className = "dlg-body" + (o.bodyCls ? " " + o.bodyCls : "");
             body.innerHTML = "";
             btns.innerHTML = "";
             bodyNodes.forEach(function (n) { body.appendChild(n); });
+            if (o.footNode) { o.footNode.classList.add("dlg-extra", "dlg-foot"); box.appendChild(o.footNode); }
+            var done = false;
             function close(v) {
+                if (done) return;
+                done = true;
                 m.hidden = true;
                 document.removeEventListener("keydown", onKey, true);
+                if (back && back.isConnected && back.focus) { try { back.focus({ preventScroll: true }); } catch (e) {} }
                 resolve(v);
+                setTimeout(syncHover, 0);
+            }
+            function focusables() {
+                return $$('button:not([disabled]), input:not([disabled]), select, textarea, [tabindex="0"]', box).filter(function (n) { return n.offsetParent !== null; });
             }
             function onKey(e) {
-                if (e.key === "Escape") { e.stopPropagation(); close(null); }
-                if (e.key === "Enter" && e.target.tagName !== "TEXTAREA" && buttons.length) close(buttons[buttons.length - 1].value());
+                if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(null); return; }
+                if (e.key === "Tab") {
+                    var f = focusables(), i = f.indexOf(document.activeElement);
+                    if (!f.length) return;
+                    if (i === -1 || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+                    return;
+                }
+                if (e.key === "Enter" && !o.noEnter && buttons.length && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "BUTTON") {
+                    e.preventDefault(); close(buttons[buttons.length - 1].value());
+                }
             }
-            buttons.forEach(function (b) {
-                var x = el("button", "btn" + (b.accent ? " accent" : ""), esc(b.label));
+            var btnEls = buttons.map(function (b) {
+                var x = el("button", "btn" + (b.accent ? " accent" : "") + (b.danger ? " danger" : ""), esc(b.label));
                 x.addEventListener("click", function () { close(b.value()); });
                 btns.appendChild(x);
+                return x;
             });
+            $("#dlg-x").onclick = function () { close(null); };
             m.hidden = false;
             m.onclick = function (e) { if (e.target === m) close(null); };
             m.closeWith = close;
             document.addEventListener("keydown", onKey, true);
-            var first = body.querySelector("input[type=text], textarea");
+            var first = o.headNode && o.headNode.matches && o.headNode.matches("input") ? o.headNode : body.querySelector("input[type=text], textarea");
             if (first) { first.focus(); if (first.select) first.select(); }
+            else if (btnEls.length) btnEls[o.danger ? 0 : btnEls.length - 1].focus();
+            else $("#dlg-x").focus();
         });
     }
-    function ask(title, labelText, def) {
+    function ask(title, labelText, def, okLabel) {
         var lab = el("label", "", esc(labelText));
         var inp = el("input");
         inp.type = "text";
         inp.value = def || "";
+        inp.spellcheck = false;
         lab.appendChild(inp);
         return dialog(title, [lab], [
             { label: "取消", value: function () { return null; } },
-            { label: "确定", accent: true, value: function () { return inp.value.trim() || null; } }
+            { label: okLabel || "确定", accent: true, value: function () { return inp.value.trim() || null; } }
         ]);
     }
-    function confirmBox(title, text) {
-        return dialog(title, [el("div", "", esc(text))], [
+    // 确认框的按钮写动词（「移除」「删除」「清空」），不写「确定」；删除类默认焦点在「取消」上
+    function confirmBox(title, text, verb) {
+        return dialog(title, [el("p", "", esc(text))], [
             { label: "取消", value: function () { return false; } },
-            { label: "确定", accent: true, value: function () { return true; } }
-        ]);
+            { label: verb || "确定", danger: !!verb, accent: !verb, value: function () { return true; } }
+        ], { danger: !!verb });
     }
 
     var pop = $("#pop");
@@ -696,7 +778,7 @@
         seq: "依次排列", chain: "首尾相接", wiggle: "抖动", loop: "循环", bounce: "弹性", clearExpr: "清除表达式", beatSeq: "按节拍排列"
     };
     var NEW_PLACES = {
-        ease: "「缓动」组件", keys: "「关键帧工具」组件", create: "「新建图层」组件（空对象的 ⌥ 设为父级也在这里）",
+        ease: "「缓动」组件", keys: "「关键帧工具」组件", create: "「新建图层」组件（空对象「设为父级」的用法也在这里）",
         arrange: "「时间排列」组件（错开 / 首尾相接 / 跟节拍）", snippet: "内置表达式片段（修饰键用法不变，脚本库 → 代码片段里可以隐藏）"
     };
 
@@ -787,10 +869,10 @@
         });
         migrationNotice = null;
         local.set("migNotice" + PANEL, SCHEMA);
-        dialog("(3.7) — 按钮搬家了", [
+        dialog("按钮搬家了", [
             el("p", "", "为了少一些重复的入口，下面这些按钮合并进了对应的组件。你的布局、颜色和设置都保留了，面板上没有出现空格子。"),
             ul,
-            el("p", "muted", "「在播放头拆分」「剪到工作区」「移到播放头」「运动模糊」不再默认放在新面板上；已经放上去的保持不变，组件库「更多」和 ⌘K 里都能找到。")
+            el("p", "muted", "「在播放头拆分」「剪到工作区」「移到播放头」「运动模糊」不再默认放在新面板上；已经放上去的保持不变，组件库「更多」和命令搜索里都能找到。")
         ], [{ label: "知道了", accent: true, value: function () { return true; } }]);
     }
 
@@ -914,7 +996,7 @@
         if (!name) return;
         if (!$("#modal").hidden) { setTimeout(showBackupNotice, 600); return; }
         local.set("cfgBackupNotice" + PANEL, null);
-        dialog("(3.7.1) — 布局有备份", [
+        dialog("布局有备份", [
             el("p", "", "这个 AE 版本里原来的面板布局，和磁盘上的不一样（多半是另一个 AE 版本改过这个面板）。现在用的是磁盘上的那份。"),
             el("p", "muted", "原来的已经备份。以后也可以在「设置 → 载入预设」里选「备份」换回去。")
         ], [
@@ -1018,7 +1100,7 @@
             var i1 = el("input"); i1.type = "text"; i1.value = item.en || ""; a.appendChild(i1);
             var b = el("label", "", "中文说明");
             var i2 = el("input"); i2.type = "text"; i2.value = item.zh || ""; b.appendChild(i2);
-            return dialog("(✎) — HEADING", [a, b], [
+            return dialog("编辑分组标题", [a, b], [
                 { label: "取消", value: function () { return null; } },
                 { label: "确定", accent: true, value: function () { return { en: i1.value.trim().toUpperCase(), zh: i2.value.trim() }; } }
             ]).then(function (v) { if (v) { item.en = v.en; item.zh = v.zh; } return v; });
@@ -1060,30 +1142,30 @@
     toolType("split", { more: true, name: "在播放头拆分", cat: "图层", icon: "split", hint: { title: "在播放头拆分", click: "把选中图层在播放头位置拆成两段" }, run: call("splitLayer") });
     toolType("toPlayhead", { more: true, name: "移到播放头", cat: "图层", icon: "toPlayhead", hint: { title: "移到播放头", click: "把选中图层的入点对齐到播放头", alt: "把出点对齐到播放头" }, run: call("toPlayhead") });
     toolType("reverseLayers", { name: "反转顺序", cat: "图层", icon: "reverse", hint: { title: "反转图层顺序", click: "反转选中图层的上下顺序" }, run: call("reverse") });
-    toolType("motionBlur", { more: true, name: "运动模糊", cat: "图层", icon: "motionBlur", hint: { title: "运动模糊", click: "开 / 关选中图层的运动模糊（同时打开合成开关）" }, run: call("motionBlur") });
+    toolType("motionBlur", { more: true, name: "运动模糊", cat: "图层", icon: "motionBlur", hint: { title: "运动模糊", click: "开 / 关选中图层的运动模糊", note: "打开时也会打开合成的运动模糊开关" }, run: call("motionBlur") });
     toolType("rename", {
-        name: "批量重命名", cat: "图层", icon: "rename", needs: "layer", hint: { title: "批量重命名", click: "输入名称后，按 名称_01、名称_02 … 重命名" },
+        name: "批量重命名", cat: "图层", icon: "rename", needs: "layer", hint: { title: "批量重命名", click: "按 名称_01、名称_02 … 重命名", note: "点了以后先输入名称" },
         run: function () {
-            return ask("(R) — RENAME", "新名称（会自动加编号）", "Layer").then(function (base) { return base ? host("rename", { base: base }) : null; });
+            return ask("批量重命名", "新名称（会自动加编号）", "Layer", "重命名").then(function (base) { return base ? host("rename", { base: base }) : null; });
         }
     });
 
 
 
-    toolType("dupComp", { name: "复制合成", cat: "合成 · 颜色", icon: "dupComp", hint: { title: "复制合成并更新表达式", click: "复制选中合成，并把表达式里对原合成名的引用改成新名字", alt: "复制后直接打开新合成" }, run: call("dupComp") });
+    toolType("dupComp", { name: "复制合成", cat: "合成 · 颜色", icon: "dupComp", hint: { title: "复制合成", click: "复制，并更新表达式里的合成名", alt: "复制后直接打开新合成" }, run: call("dupComp") });
     // 新建图层（单个按钮版，也可以用整行的「新建图层」组件）
     var CREATE = [
         ["text", "textLayer", "文字"], ["shape", "shapeLayer", "形状"], ["solid", "solid", "纯色"], ["adjust", "adjust", "调整图层"],
         ["null", "nullLayer", "空对象"], ["camera", "camera", "摄像机"], ["light", "light", "灯光"]
     ];
 
-    toolType("decompose", { name: "解散预合成", cat: "图层", icon: "decompose", hint: { title: "解散预合成", click: "把预合成里的图层放回当前合成，画面位置保持不变", alt: "同时删除项目里不再使用的原合成", note: "预合成图层自己有变换时，会用一个空对象接住它" }, run: call("decompose") });
-    toolType("dupPrecomp", { name: "复制预合成（独立）", cat: "图层", icon: "dupPrecomp", hint: { title: "复制预合成（独立副本）", click: "复制图层，并换成一份独立的合成副本，改副本不会影响原来的", alt: "连里面嵌套的预合成也一起独立复制", shift: "不新建图层，直接把当前图层换成独立副本" }, run: call("dupPrecomp") });
-    toolType("smartRename", { name: "智能重命名", cat: "图层", icon: "smartRename", hint: { title: "智能重命名", click: "按图层内容自动起名：文字用文字内容，素材用文件名，调整层用第一个效果名", alt: "重命名合成里的全部图层", shift: "名字前加上类型，例如 [文字] 标题" }, run: call("smartRename") });
+    toolType("decompose", { name: "解散预合成", cat: "图层", icon: "decompose", hint: { title: "解散预合成", click: "图层放回当前合成，画面不变", alt: "同时删掉项目里不再用的原合成", note: "预合成图层自己有变换时，用一个空对象接住它" }, run: call("decompose") });
+    toolType("dupPrecomp", { name: "复制预合成（独立）", cat: "图层", icon: "dupPrecomp", hint: { title: "复制预合成", click: "复制成独立副本，改它不影响原来的", alt: "里面嵌套的预合成也一起独立", shift: "不新建图层，把当前图层换成副本" }, run: call("dupPrecomp") });
+    toolType("smartRename", { name: "智能重命名", cat: "图层", icon: "smartRename", hint: { title: "智能重命名", click: "按内容起名：文字、文件名、效果名", alt: "重命名合成里的全部图层", shift: "名字前加类型，例如 [文字] 标题" }, run: call("smartRename") });
 
     toolType("studio", {
         name: "打开 Studio", cat: "新建", icon: "widgets", w: 3,
-        hint: { title: "MotionHub Studio · 剪辑排版", click: "打开剪辑排版窗口：多视频拼图、社交媒体尺寸、调色、导出 GIF / MP4" },
+        hint: { title: "Studio · 剪辑排版", click: "拼图、社交尺寸、调色、导出 GIF / MP4", note: "在单独的窗口里打开" },
         run: function () {
             if (CEP && CEP.requestOpenExtension) {
                 CEP.requestOpenExtension("com.windwings.motionhub.studio", "");
@@ -1093,12 +1175,14 @@
         }
     });
 
-    toolType("colors", { name: "收集颜色", cat: "合成 · 颜色", icon: "colors", hint: { title: "收集颜色", click: "收集选中图层（含图层样式）里不重复的颜色，放进「颜色控制器」并自动关联", alt: "只收集，不关联" }, run: call("collectColors") });
+    toolType("colors", { name: "收集颜色", cat: "合成 · 颜色", icon: "colors", hint: { title: "收集颜色", click: "把不重复的颜色收进「颜色控制器」", alt: "只收集，不关联", note: "包括图层样式里的颜色，收完自动关联" }, run: call("collectColors") });
 
     // —— 智能组件：缓动 ——
     function widgetBox(cell, head, right) {
         var w = el("div", "widget");
-        w.appendChild(el("div", "w-head", esc(head) + (right !== undefined ? '<span class="r">' + esc(right) + "</span>" : "")));
+        var parts = String(head).split(" · "), zh = parts.slice(1).join(" · ");
+        w.appendChild(el("div", "w-head", '<span class="en">' + esc(parts[0]) + "</span>" + (zh ? '<span class="zh">' + esc(zh) + "</span>" : "") +
+            (right !== undefined ? '<span class="r">' + esc(right) + "</span>" : "")));
         cell.appendChild(w);
         return w;
     }
@@ -1145,11 +1229,11 @@
                     if (again) { again = false; live(anchor); }
                 });
             };
-            var h = { title: "缓动影响 %", click: "拖动后松手，直接应用到选中的关键帧（没选关键帧时只记下数值）", note: "IN 控制进入关键帧，OUT 控制离开关键帧；数值越大曲线越陡，AE 默认 33" };
+            var h = { title: "缓动影响 %", click: "松手就应用到选中的关键帧", note: "没选关键帧时只记下数值 · 越大越陡，AE 默认 33" };
             sliderRow(w, "IN", item, "inInfl", 33, h, live);
             sliderRow(w, "OUT", item, "outInfl", 33, h, live);
             var r = row(w);
-            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的影响值应用到选中的关键帧（相当于 F9）", alt: "只缓入", shift: "只缓出", note: "调滑块时松手就会直接应用，这个按钮用来给新选中的关键帧套用同样的数值" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("both", m)); } }));
+            r.appendChild(tile({ icon: "easeBoth", label: "缓入缓出", left: false, cls: "grow", filled: true, hint: { title: "缓入缓出", click: "按上面的数值应用（相当于 F9）", alt: "只缓入", shift: "只缓出", note: "给新选中的关键帧套用同样的数值" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("both", m)); } }));
             r.appendChild(tile({ icon: "linear", hint: { title: "线性", click: "把选中关键帧设为线性" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("linear", m)); } }));
             r.appendChild(tile({ icon: "hold", hint: { title: "定格", click: "把选中关键帧设为定格" }, needs: NEEDS.ease, run: function (m) { return host("ease", args("hold", m)); } }));
         }
@@ -1200,7 +1284,13 @@
             var curve = document.createElementNS(NS, "path");
             curve.setAttribute("class", "g-curve");
             g.appendChild(curve);
-            function handle() { var c = document.createElementNS(NS, "circle"); c.setAttribute("class", "g-h"); c.setAttribute("r", 5); g.appendChild(c); return c; }
+            // 看得见的手柄半径 5，能点到的范围半径 12（鼠标不用对得那么准）
+            function handle() {
+                var hit = document.createElementNS(NS, "circle"); hit.setAttribute("class", "g-hit"); hit.setAttribute("r", 12); g.appendChild(hit);
+                var c = document.createElementNS(NS, "circle"); c.setAttribute("class", "g-h"); c.setAttribute("r", 5); g.appendChild(c);
+                c.hit = hit;
+                return c;
+            }
             var h1 = handle(), h2 = handle();
             var val = w.querySelector(".w-head .r") || el("span");
             val.classList.add("bz-val");
@@ -1208,8 +1298,8 @@
 
             function draw() {
                 curve.setAttribute("d", "M" + X(0) + " " + Y(0) + " C" + X(b[0]) + " " + Y(b[1]) + " " + X(b[2]) + " " + Y(b[3]) + " " + X(1) + " " + Y(1));
-                h1.setAttribute("cx", X(b[0])); h1.setAttribute("cy", Y(b[1]));
-                h2.setAttribute("cx", X(b[2])); h2.setAttribute("cy", Y(b[3]));
+                [h1, h1.hit].forEach(function (n) { n.setAttribute("cx", X(b[0])); n.setAttribute("cy", Y(b[1])); });
+                [h2, h2.hit].forEach(function (n) { n.setAttribute("cx", X(b[2])); n.setAttribute("cy", Y(b[3])); });
                 arm1.setAttribute("x1", X(0)); arm1.setAttribute("y1", Y(0)); arm1.setAttribute("x2", X(b[0])); arm1.setAttribute("y2", Y(b[1]));
                 arm2.setAttribute("x1", X(1)); arm2.setAttribute("y1", Y(1)); arm2.setAttribute("x2", X(b[2])); arm2.setAttribute("y2", Y(b[3]));
                 val.textContent = "(" + b.map(function (v) { return Math.round(v * 100) / 100; }).join(", ") + ")";
@@ -1235,8 +1325,14 @@
                     window.addEventListener("mouseup", up, true);
                 };
             }
-            h1.addEventListener("mousedown", drag(0));
-            h2.addEventListener("mousedown", drag(2));
+            h1.addEventListener("mousedown", drag(0)); h1.hit.addEventListener("mousedown", drag(0));
+            h2.addEventListener("mousedown", drag(2)); h2.hit.addEventListener("mousedown", drag(2));
+            val.addEventListener("click", function () {
+                if (editing) return;
+                var t = "cubic-bezier(" + b.join(", ") + ")";
+                act0(val, function () { return copyText(t) ? { ok: true, msg: "已复制 " + t } : { ok: false, msg: "没复制上：" + t }; });
+            });
+            bindHint(val, { title: "曲线数值", click: "点一下复制 cubic-bezier(…)" });
             BEZ_PRESETS.concat(userCurves).forEach(function (p, i) {
                 var mine = i >= BEZ_PRESETS.length;
                 var btn = el("button", "preset" + (mine ? " mine" : ""), esc(p[0]));
@@ -1263,7 +1359,7 @@
             w.appendChild(wrap);
             var r = row(w);
             r.appendChild(tile({
-                icon: "read", needs: "keys", hint: { title: "从关键帧读取", click: "选中两个关键帧，把它们之间的速度曲线读成 cubic-bezier" },
+                icon: "read", needs: "keys", hint: { title: "从关键帧读取", click: "把两个关键帧之间的曲线读进来", note: "选中同一属性上的两个关键帧" },
                 run: function () {
                     return host("bezierRead").then(function (x) {
                         if (x.ok) { b = x.data.bezier; item.bz = b.slice(); draw(); saveConfig(); }
@@ -1272,9 +1368,9 @@
                 }
             }));
             r.appendChild(tile({
-                icon: "save", hint: { title: "保存为预设", click: "把当前曲线存成自己的预设（所有面板共用）", note: "⌥ 单击自己的预设可以删除它" },
+                icon: "save", hint: { title: "保存为预设", click: "存成自己的预设（所有面板共用）", note: modName("alt") + " 单击自己的预设可以删除它" },
                 run: function () {
-                    return ask("(+) — SAVE CURVE", "预设名称", "我的曲线 " + (userCurves.length + 1)).then(function (name) {
+                    return ask("保存曲线预设", "预设名称", "我的曲线 " + (userCurves.length + 1), "保存").then(function (name) {
                         if (!name) return null;
                         var entry = [name, b.slice()];
                         userCurves.push(entry);
@@ -1287,10 +1383,10 @@
             }));
             r.appendChild(tile({
                 icon: "play", label: "应用", left: false, cls: "grow", filled: true,
-                hint: { title: "应用曲线", click: "把曲线应用到选中的关键帧（每两个相邻关键帧之间算一段）", alt: "镜像应用（进出对调）", note: "只选一个关键帧时，应用到它和下一个关键帧之间" },
+                hint: { title: "应用曲线", click: "应用到选中的关键帧", alt: "镜像应用（进出对调）", note: "每两个相邻关键帧算一段；只选一个时，到下一个关键帧为止" },
                 needs: NEEDS.bezier, run: function (m) { return host("bezier", { bezier: b, mods: m }); }
             }));
-            bindHint(g, { title: "缓动曲线", click: "拖动两个手柄调整曲线，横轴是时间，纵轴是数值", note: "纵向可以拖出 0–1 以外，做回弹和预备动作" });
+            bindHint(g, { title: "缓动曲线", click: "拖手柄调整：横轴时间，纵轴数值", note: "纵向能拖出 0–1 以外，做回弹和预备动作" });
             draw();
         }
     });
@@ -1315,18 +1411,18 @@
                     });
                 }
             }));
-            r1.appendChild(tile({ icon: "pasteKeys", filled: true, hint: { title: "粘贴关键帧", click: "粘贴到播放头位置：选了属性就粘到属性上，只选图层就粘到同名属性", alt: "反向粘贴", shift: "粘贴后选中新关键帧" }, run: call("pasteKeys") }));
+            r1.appendChild(tile({ icon: "pasteKeys", filled: true, hint: { title: "粘贴关键帧", click: "粘贴到播放头位置", alt: "反向粘贴", shift: "粘贴后选中新关键帧", note: "选了属性就粘到属性上，只选图层就粘到同名属性" }, run: call("pasteKeys") }));
             r1.appendChild(tile({ icon: "cloneKeys", hint: { title: "克隆关键帧", click: "从播放头克隆选中关键帧", alt: "克隆后选中新关键帧", shift: "反向克隆" }, run: call("cloneKeys") }));
 
             var r2 = row(w);
             r2.appendChild(tile({ icon: "reverseKeys", hint: { title: "反转关键帧", click: "把选中关键帧的时间顺序倒过来" }, run: call("keyTime", { op: "reverse" }) }));
-            r2.appendChild(tile({ icon: "distributeKeys", hint: { title: "均分关键帧", click: "让选中关键帧在首尾之间等间距分布（至少 3 个）" }, run: call("keyTime", { op: "distribute" }) }));
+            r2.appendChild(tile({ icon: "distributeKeys", hint: { title: "均分关键帧", click: "在首尾之间等间距（至少 3 个）" }, run: call("keyTime", { op: "distribute" }) }));
             r2.appendChild(el("span", "sp"));
             var factor = numInput(item.factor || 1.5, function (n) { item.factor = Math.max(0.05, parseFloat(n.value) || 1.5); n.value = item.factor; saveConfig(); });
             bindHint(factor, { title: "拉伸倍数", click: "拉伸 / 压缩关键帧时用的倍数" });
             r2.appendChild(el("span", "unit", "×"));
             r2.appendChild(factor);
-            r2.appendChild(tile({ icon: "stretchKeys", hint: { title: "拉伸关键帧", click: "以第一个选中关键帧为起点，按倍数拉长间隔", alt: "按倍数压缩" }, needs: NEEDS.keyTime, run: function (m) { return host("keyTime", { op: "stretch", factor: item.factor || 1.5, mods: m }); } }));
+            r2.appendChild(tile({ icon: "stretchKeys", hint: { title: "拉伸关键帧", click: "从第一个关键帧起按倍数拉长", alt: "按倍数压缩" }, needs: NEEDS.keyTime, run: function (m) { return host("keyTime", { op: "stretch", factor: item.factor || 1.5, mods: m }); } }));
 
             var r3 = row(w);
             var frames = numInput(item.frames || 1, function (n) { item.frames = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.frames; saveConfig(); });
@@ -1362,7 +1458,7 @@
             });
             w.appendChild(chips);
             var dirRow = row(w);
-            dirRow.appendChild(el("span", "k", "方向"));
+            dirRow.appendChild(el("span", "unit", "方向"));
             DIRS.forEach(function (d) {
                 var t = tile({
                     icon: d[1], filled: d[0] === dir, hint: { title: "滑动方向 · " + d[2], click: "入场时" + d[2] + "滑入，出场时向这个方向滑出" },
@@ -1407,10 +1503,10 @@
             w.appendChild(chips);
             if (mode === "stagger") {
                 var r1 = row(w);
-                r1.appendChild(el("span", "unit", "NUM"));
+                r1.appendChild(el("span", "unit lat", "NUM"));
                 var num = numInput(item.num || 1, function (n) { item.num = Math.max(1, parseInt(n.value, 10) || 1); n.value = item.num; saveConfig(); });
                 r1.appendChild(num);
-                r1.appendChild(el("span", "unit", "STEP"));
+                r1.appendChild(el("span", "unit lat", "STEP"));
                 var step = numInput(item.step === undefined ? 2 : item.step, function (n) { item.step = Math.max(0, parseInt(n.value, 10) || 0); n.value = item.step; saveConfig(); });
                 r1.appendChild(step);
                 r1.appendChild(el("span", "unit", "帧"));
@@ -1432,7 +1528,7 @@
                 var rc = row(w);
                 rc.appendChild(el("span", "unit", "间隔"));
                 var gap = numInput(item.gap || 0, function (n) { item.gap = Math.max(0, parseInt(n.value, 10) || 0); n.value = item.gap; saveConfig(); });
-                bindHint(gap, { title: "间隔", click: "相邻两个图层之间空出几帧，0 表示紧挨着" });
+                bindHint(gap, { title: "间隔", click: "相邻图层之间空几帧，0 = 紧挨着" });
                 rc.appendChild(gap);
                 rc.appendChild(el("span", "unit", "帧"));
                 rc.appendChild(tile({
@@ -1445,7 +1541,7 @@
                 if (!beat.info) {
                     rb.appendChild(tile({
                         icon: "beat", label: "先在「音乐节拍」里载入音频", left: false, cls: "grow", tool: "beatArrangeHint",
-                        hint: { title: "跟节拍", click: "这个模式用「音乐节拍」组件分析出的节拍。先在那里选中音频图层并载入", note: "面板里没有「音乐节拍」组件时，从组件库添加" },
+                        hint: { title: "跟节拍", click: "用「音乐节拍」组件分析出的节拍", note: "先在那里选中音频图层并载入；没有这个组件就从组件库添加" },
                         run: function () {
                             var beatCell = null;
                             $$(".cell", layoutEl).forEach(function (c) { if (!beatCell && /BEAT · 音乐节拍/.test(c.textContent)) beatCell = c; });
@@ -1461,7 +1557,7 @@
                     rb.appendChild(el("span", "unit", "拍"));
                     rb.appendChild(tile({
                         icon: "seqForward", label: "按节拍排列", left: false, cls: "grow", filled: true, tool: "beatLayers",
-                        hint: { title: "按节拍排列 · " + beat.info.name, click: "按选择顺序，从播放头后的第一拍开始，每隔 N 拍放一个图层", alt: "同时把每个图层的出点剪到下一个位置（卡点剪辑）" },
+                        hint: { title: "按节拍排列", click: "从播放头后的第一拍起，每 N 拍放一个", alt: "出点剪到下一个位置（卡点剪辑）", note: "按选择顺序 · 音频：" + beat.info.name },
                         needs: NEEDS.beatLayers, run: function (m) { return host("beatLayers", { index: beat.info.index, times: beat.times.map(fileToComp), mode: "sequence", every: item.every || 1, mods: m }); }
                     }));
                 }
@@ -1574,7 +1670,7 @@
                 var r0 = row(w);
                 var load = tile({
                     icon: "beat", label: "载入选中的音频图层", left: false, cls: "grow", filled: true, needs: "layer",
-                    hint: { title: "载入音频", click: "先在时间轴选中一个音频（或带声音的视频）图层，再点这里", note: "视频里的声音会先由 AE 渲染成临时 WAV，第一次会慢一点" },
+                    hint: { title: "载入音频", click: "先选中音频（或带声音的视频）图层", note: "视频里的声音会先由 AE 渲染成临时 WAV，第一次会慢一点" },
                     run: function () { return loadBeat(item); }
                 });
                 r0.appendChild(load);
@@ -1601,7 +1697,7 @@
             r1.appendChild(gap);
             r1.appendChild(el("span", "unit", "帧"));
             sens.addEventListener("change", function () { item.sens = +sens.value; saveConfig(); redetect(item); renderLayout(); });
-            bindHint(r1, { title: "检测设置", click: "灵敏度越低（往左）节拍越多；间隔是两个节拍之间最少隔几帧" });
+            bindHint(r1, { title: "检测设置", click: "灵敏度越往左，节拍越多", note: "间隔：两个节拍之间最少隔几帧" });
 
             var r2 = row(w);
             var times = function () { return beat.times.map(fileToComp); };
@@ -1711,7 +1807,7 @@
             var chips = el("div", "chips");
             toggleChip(chips, "效果", item, "fx", true, { title: "粘贴效果", click: "把效果连同参数一起粘贴" });
             toggleChip(chips, "关键帧", item, "keys", true, { title: "粘贴关键帧", click: "效果上的关键帧和速度曲线一起带过去" });
-            toggleChip(chips, "适配长度", item, "fit", true, { title: "适配长度", click: "开：关键帧按每个图层的长短等比例拉伸；关：保持原来的时间" });
+            toggleChip(chips, "适配长度", item, "fit", true, { title: "适配长度", click: "开：关键帧按图层长短等比拉伸", note: "关：保持原来的时间" });
             toggleChip(chips, "变换", item, "tr", false, { title: "粘贴变换", click: "缩放和旋转" });
             toggleChip(chips, "混合", item, "blend", false, { title: "粘贴混合", click: "混合模式、不透明度、运动模糊" });
             toggleChip(chips, "替换效果", item, "replace", false, { title: "替换已有效果", click: "粘贴前先删掉目标图层原有的效果" });
@@ -1719,7 +1815,7 @@
             var r = row(w);
             r.appendChild(tile({
                 icon: "styleCopy", label: "复制", left: false, cls: "grow", needs: "layer",
-                hint: { title: "复制样式", click: "复制选中图层（第一个）的效果、关键帧、变换和混合模式" },
+                hint: { title: "复制样式", click: "复制第一个选中图层的样式", note: "效果、关键帧、变换和混合模式" },
                 run: function () {
                     return host("styleCopy").then(function (x) {
                         if (x.ok) { styleInfo = { layer: x.data.layer, effects: x.data.effects, keys: x.data.keys }; local.set("styleInfo", styleInfo); renderLayout(); }
@@ -1780,7 +1876,7 @@
                     return null;
                 }
             }));
-            r.appendChild(tile({ icon: "trash", hint: { title: "清除线框", click: "删除这个合成里所有 MotionHub 生成的线框图层" }, run: call("wireClear") }));
+            r.appendChild(tile({ icon: "trash", hint: { title: "清除线框", click: "删掉这个合成里的线框图层", note: "只删 MotionHub 生成的" }, run: call("wireClear") }));
         }
     });
 
@@ -1795,10 +1891,10 @@
         name: "效果收藏", cat: "智能组件", icon: "fx", desc: "常用效果一键添加，Alt 加在新的调整图层上", size: "full",
         render: function (cell, item) {
             var favs = item.favs || DEFAULT_FAVS;
-            var w = widgetBox(cell, "EFFECTS · 效果收藏", "⌥ 加到调整层");
+            var w = widgetBox(cell, "EFFECTS · 效果收藏", "按住 " + modName("alt") + " 加到调整层");
             var chips = el("div", "chips");
             favs.forEach(function (f) {
-                var c = el("button", "chip", svg("fx") + esc(f[1]));
+                var c = el("button", "chip", esc(f[1]));
                 c.dataset.needs = NEEDS.applyEffect;
                 bindHint(c, { title: f[1], click: "添加到选中图层", alt: "新建调整图层并添加" });
                 c.addEventListener("click", function (e) { if (editing) return; var m = mods(e); act0(c, function () { return host("applyEffect", { match: f[0], name: f[1], mods: m }); }); });
@@ -1848,7 +1944,7 @@
             draw();
             var nodes = [q, box];
             if (loadErr) nodes.unshift(el("div", "status bad", esc("读不到已安装的效果（" + loadErr + "），下面先列出默认收藏")));
-            return dialog("(★) — FAVORITE EFFECTS", nodes, [
+            return dialog("管理收藏的效果", nodes, [
                 { label: "取消", value: function () { return null; } },
                 { label: "保存", accent: true, value: function () { return favs; } }
             ]).then(function (v) {
@@ -1891,7 +1987,7 @@
                 needs: snippetNeeds(s), tool: s && s.builtin ? s.id : undefined,
                 hint: function () {
                     if (!s) return { title: name };
-                    if (s.builtin) return { title: name + " · 内置" + (s.kind === "expr" ? "表达式" : "脚本"), click: s.hint.click, alt: s.hint.alt, shift: s.hint.shift, ctrl: s.hint.ctrl, note: "内置片段：可以在「脚本库 → 代码片段」里隐藏" };
+                    if (s.builtin) return { title: name, click: s.hint.click, alt: s.hint.alt, shift: s.hint.shift, ctrl: s.hint.ctrl, note: s.hint.note || "内置片段 · 可以在「脚本库 → 代码片段」里隐藏" };
                     return s.kind === "expr"
                         ? { title: name + " · 表达式", click: "应用到选中属性", alt: "追加到已有表达式后面", note: s.code.split("\n")[0] }
                         : { title: name + " · 脚本", click: "执行", note: s.code.split("\n")[0] };
@@ -1904,20 +2000,58 @@
     // =====================================================================
     // 布局渲染 + 编辑模式
     // =====================================================================
-    var layoutEl = $("#layout"), dragId = null;
+    var layoutEl = $("#layout"), dragId = null, selId = null;
+
+    // 按面板宽度算列数和键宽：左右各 12px，键与键之间 4px，键是正方形，正好铺满宽度（右边不留参差的空）
+    // 260 / 320 / 400 / 560px 宽：5 × 44 / 6 × 46 / 8 × 43.5 / 12 × 41 px
+    var gridCols = 6;
+    function measureGrid() {
+        var cw = layoutEl.clientWidth;
+        if (!cw) return;
+        var cols = Math.max(5, Math.floor((cw + 4) / 44)), key = (cw - 4 * (cols - 1)) / cols, k = key.toFixed(2) + "px";
+        if (cols === gridCols && layoutEl.style.getPropertyValue("--key") === k) return;
+        gridCols = cols;
+        layoutEl.style.setProperty("--cols", cols);
+        layoutEl.style.setProperty("--key", k);
+        layoutEl.style.setProperty("--half", Math.floor(cols / 2));
+        layoutEl.classList.toggle("wide", cols >= 10);
+        requestAnimationFrame(markColumns);
+    }
+    if (window.ResizeObserver) new ResizeObserver(function () { measureGrid(); }).observe(layoutEl);
+    window.addEventListener("resize", measureGrid);
+    // 滚动条占了多宽：有经典滚动条的环境里（不是 AE 里的浮层滚动条），右边距减去滚动条，两边视觉上都是 12px
+    function measureScrollbar() {
+        var pg = $(".page.on");
+        if (!pg) return;
+        var sbw = Math.max(0, pg.offsetWidth - pg.clientWidth);
+        document.documentElement.style.setProperty("--sbw", Math.min(12, sbw) + "px");
+    }
+
+    // 宽面板里可以两个并排的组件；脚本、片段按钮放进子网格（每个至少 110px）
+    var COMPACT = { ease: 1, keys: 1, quick: 1, arrange: 1, style: 1, effects: 1, beat: 1, wire: 1, graph: 1 };
+    var RUN_TYPES = { script: 1, snippet: 1 };
 
     function renderLayout() {
+        measureGrid();
         layoutEl.innerHTML = "";
-        var hn = 0;
+        var hn = 0, cur = null, secs = [];
+        function open(headCell, headItem) {
+            var sec = el("div", "sec"), grid = el("div", "sec-grid");
+            if (headCell) sec.appendChild(headCell);
+            sec.appendChild(grid);
+            layoutEl.appendChild(sec);
+            cur = { grid: grid, run: null, n: 0, head: headItem };
+            secs.push(cur);
+        }
         cfg.items.forEach(function (item) {
             var def = W[item.type];
             if (!def) return;
             if (item.type === "heading") item._n = ++hn;
             var cell = el("div", "cell");
             cell.dataset.id = item.id;
-            if (def.size === "full") cell.classList.add("full");
-            else {
-                cell.style.gridColumn = "span " + def.size[0];
+            if (def.size === "full") { cell.classList.add("full"); if (COMPACT[item.type]) cell.classList.add("compact"); }
+            else if (!RUN_TYPES[item.type]) {
+                cell.style.gridColumn = "span " + Math.min(def.size[0], gridCols);
                 if (def.size[1] > 1) cell.style.gridRow = "span " + def.size[1];
             }
             paintCell(cell, item.color);
@@ -1928,47 +2062,84 @@
                 if (window.console) console.error("MotionHub 组件加载失败", item.type, err);
             }
             if (editing) decorateEditable(cell, item, def);
-            layoutEl.appendChild(cell);
+            if (item.type === "heading") { open(cell, item); return; }
+            if (!cur) open(null, null);
+            if (RUN_TYPES[item.type]) {
+                if (!cur.run) { cur.run = el("div", "run-grid"); cur.grid.appendChild(cur.run); }
+                cur.run.appendChild(cell);
+            } else { cur.run = null; cur.grid.appendChild(cell); }
+            cur.n++;
         });
+        if (!cur) open(null, null);
+        secs.forEach(function (sc) { if (!sc.n) sc.grid.appendChild(emptySection(sc.head)); });
         if (!editing) {
-            var add = el("div", "cell");
-            add.appendChild(tile({ icon: "plus", cls: "add", hint: { title: "添加", click: "往这个面板添加组件、工具、脚本或代码片段" }, run: function () { openCatalog(); return null; } }));
-            layoutEl.appendChild(add);
+            // 「＋」单独占一行放在最后（放进分组的网格会被填空位的规则挪到前面去）
+            var tail = el("div", "sec-grid add-row"), add = el("div", "cell");
+            add.appendChild(tile({ icon: "plus", cls: "add", hint: { title: "添加", click: "往这个面板加组件、工具、脚本或片段" }, run: function () { openCatalog(); return null; } }));
+            tail.appendChild(add);
+            layoutEl.appendChild(tail);
         }
         applyNeeds();
+        markColumns();
+        syncHover();
+    }
+    // 宽面板（两个小组件并排）：左边的留 12px，右边的前面加一条线
+    function markColumns() {
+        var wide = layoutEl.classList.contains("wide"), mid = 0;
+        if (wide) { var lr = layoutEl.getBoundingClientRect(); mid = lr.left + lr.width / 2; }
+        $$(".cell.compact", layoutEl).forEach(function (c) {
+            var right = wide && c.getBoundingClientRect().left > mid - 4;
+            c.classList.toggle("c-r", right);
+            c.classList.toggle("c-l", wide && !right);
+        });
     }
 
+    // 空分组：说清楚这里放什么、怎么放进来（「我的脚本」「代码片段」有专门的说明）
+    function emptySection(head) {
+        var en = head && head.en ? String(head.en).toUpperCase() : "";
+        var isSnips = /SNIPPET/.test(en), isScripts = !isSnips && /SCRIPT/.test(en);
+        var box = el("div", "sec-empty");
+        if (editing) {
+            box.innerHTML = "<b>空分组</b><p>把组件拖到这个分组的标题上，或者点上面的「添加」</p>";
+            return box;
+        }
+        var icon = isSnips ? "codeSnippet" : isScripts ? "pin" : "widgets";
+        var title = isSnips ? "把常用的代码片段放到这里" : isScripts ? "把常用脚本放到这里" : "这个分组还是空的";
+        var body = isSnips ? "在「脚本库 → 代码片段」里点图钉，片段就会出现在这里"
+            : isScripts ? "在脚本库里点图钉，或者把 .jsx / .jsxbin / .ffx 直接拖进面板"
+            : "点「添加组件」，或者在编辑模式里把组件拖到这个分组";
+        box.innerHTML = '<span class="se-ico">' + svg(icon) + "</span><b>" + esc(title) + "</b><p>" + esc(body) + "</p>";
+        var row = el("div", "btn-row");
+        if (isScripts || isSnips) {
+            var go = el("button", "btn sm", "打开脚本库");
+            go.addEventListener("click", function () { selectTab("library"); showSeg(isSnips ? "snippets" : "files"); });
+            row.appendChild(go);
+            if (isScripts) {
+                var addB = el("button", "btn sm accent", svg("plus") + "添加脚本");
+                addB.addEventListener("click", function () { act0(addB, addScripts); });
+                bindHint(addB, { title: "添加脚本", click: "选文件加进脚本库，并放到这个面板", note: "支持 .jsx / .jsxbin / .ffx" });
+                row.appendChild(addB);
+            }
+        } else {
+            var c = el("button", "btn sm accent", svg("plus") + "添加组件");
+            c.addEventListener("click", function () { openCatalog(); });
+            row.appendChild(c);
+        }
+        box.appendChild(row);
+        return box;
+    }
+
+    // 编辑模式：点一下选中组件（1px 强调色描边），顶部编辑条对它操作；整个组件都可以拖动排序
     function decorateEditable(cell, item, def) {
         cell.draggable = true;
-        var ctl = el("div", "cell-ctl");
-        if (def.editable) {
-            var ed = el("button", "", svg("pencil"));
-            ed.title = "编辑";
-            ed.addEventListener("click", function (e) { e.stopPropagation(); def.edit(item).then(function (v) { if (v) { saveConfig(); renderLayout(); } }); });
-            ctl.appendChild(ed);
-        }
-        var dot = el("button", "dot");
-        dot.title = "换颜色";
-        dot.addEventListener("click", function (e) {
-            e.stopPropagation();
-            showPop(dot, [el("div", "p-title", "组件颜色"), swatches(item.color, function (hex) {
-                if (hex) item.color = hex; else delete item.color;
-                hidePop(); saveConfig(); renderLayout();
-            }, true)]);
-        });
-        ctl.appendChild(dot);
-        var x = el("button", "", svg("close"));
-        x.title = "从面板删除";
-        x.addEventListener("click", function (e) {
-            e.stopPropagation();
-            cfg.items.splice(findItem(item.id), 1);
-            saveConfig(); renderLayout();
-        });
-        ctl.appendChild(x);
-        cell.appendChild(ctl);
-
+        cell.tabIndex = 0;
+        cell.setAttribute("aria-label", (def.name || item.type) + (item.type === "heading" ? "：" + (item.zh || item.en || "") : ""));
+        if (item.id === selId) cell.classList.add("sel");
+        cell.addEventListener("click", function (e) { e.stopPropagation(); selectCell(item.id); });
+        cell.addEventListener("focus", function () { if (selId !== item.id) selectCell(item.id); });
         cell.addEventListener("dragstart", function (e) {
             dragId = item.id;
+            selectCell(item.id);
             e.dataTransfer.effectAllowed = "move";
             e.dataTransfer.setData("text/plain", item.id);
             setTimeout(function () { cell.classList.add("dragging"); }, 0);
@@ -1981,7 +2152,8 @@
             if (!dragId || dragId === item.id) return;
             e.preventDefault();
             var r = cell.getBoundingClientRect();
-            var after = cell.classList.contains("full") ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
+            var vertical = cell.classList.contains("full") || cell.classList.contains("heading");
+            var after = vertical ? e.clientY > r.top + r.height / 2 : e.clientX > r.left + r.width / 2;
             cell.classList.toggle("drop-after", after);
             cell.classList.toggle("drop-before", !after);
         });
@@ -1998,34 +2170,106 @@
             saveConfig(); renderLayout();
         });
     }
+    function cellOf(id) { return id ? layoutEl.querySelector('.cell[data-id="' + id + '"]') : null; }
+    function selectCell(id) {
+        selId = id;
+        $$(".cell.sel", layoutEl).forEach(function (c) { c.classList.remove("sel"); });
+        var c = cellOf(id);
+        if (c) c.classList.add("sel");
+        updateEditBar();
+    }
+    function updateEditBar() {
+        var i = selId ? findItem(selId) : -1, it = i >= 0 ? cfg.items[i] : null, def = it ? W[it.type] : null;
+        $("#eb-sel").classList.toggle("on", !!it);
+        $("#eb-tip").textContent = it ? (def ? def.name : it.type) + (it.type === "heading" && (it.zh || it.en) ? "「" + (it.zh || it.en) + "」" : "") : "点选组件，或直接拖动排序";
+        $("#eb-title").hidden = !(def && def.editable);
+        $("#eb-up").disabled = !it || i === 0;
+        $("#eb-down").disabled = !it || i === cfg.items.length - 1;
+    }
+    function moveSel(d) {
+        var i = findItem(selId), j = i + d;
+        if (i < 0 || j < 0 || j >= cfg.items.length) return;
+        var x = cfg.items.splice(i, 1)[0];
+        cfg.items.splice(j, 0, x);
+        saveConfig(); renderLayout();
+        var c = cellOf(selId);
+        if (c) { c.focus({ preventScroll: true }); if (c.scrollIntoView) c.scrollIntoView({ block: "nearest" }); }
+    }
+    function deleteSel() {
+        var i = findItem(selId);
+        if (i < 0) return;
+        cfg.items.splice(i, 1);
+        var next = cfg.items[i] || cfg.items[i - 1];
+        selId = next ? next.id : null;
+        saveConfig(); renderLayout();
+        var c = cellOf(selId);
+        if (c) c.focus({ preventScroll: true });
+    }
 
     function setEditing(on) {
         editing = on;
         document.body.classList.toggle("editing", on);
         $("#btn-edit").classList.toggle("on", on);
+        $("#btn-edit").setAttribute("aria-pressed", on ? "true" : "false");
         if (on) selectTab("panel");
+        if (!on) selId = null;
         hidePop();
-        showHint(null);
+        // 编辑时让 AE 把方向键、Delete 交给面板（免得在面板里按 Delete 删掉了 AE 里的图层）
+        B.registerKeys(on ? ["cmdK", "esc", "altUp", "altDown", "del", "bksp"] : ["cmdK", "esc"]);
         renderLayout();
-        if (on) toast({ ok: true, msg: "编辑布局：拖动组件排序，点 ● 换颜色，点 × 删除" });
+        updateEditBar();
+        showHint(null);
     }
 
     $("#btn-edit").addEventListener("click", function () { setEditing(!editing); });
-    bindHint($("#btn-edit"), { title: "编辑布局", click: "进入 / 退出编辑模式：拖动排序、换颜色、删除、添加组件" });
+    bindHint($("#btn-edit"), { title: "编辑布局", click: "点选组件后上移、下移、换颜色、删除；也可以直接拖动", note: "Esc 或「完成」退出" });
+    $("#btn-search").addEventListener("click", function () { openPalette(); });
+    bindHint($("#btn-search"), { title: "搜索命令", click: "搜索全部工具、脚本和代码片段", note: modName("ctrl") + "+K 也能打开" });
     $("#eb-done").addEventListener("click", function () { setEditing(false); });
     $("#eb-add").addEventListener("click", function () { openCatalog(); });
-    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && editing && $("#modal").hidden) setEditing(false); });
+    bindHint($("#eb-add"), { title: "添加组件", click: "加到面板末尾，再拖到想要的位置" });
+    $("#eb-up").addEventListener("click", function () { moveSel(-1); });
+    $("#eb-down").addEventListener("click", function () { moveSel(1); });
+    $("#eb-del").addEventListener("click", deleteSel);
+    $("#eb-title").addEventListener("click", function () {
+        var i = findItem(selId);
+        if (i < 0) return;
+        var it = cfg.items[i], def = W[it.type];
+        if (def && def.editable) def.edit(it).then(function (v) { if (v) { saveConfig(); renderLayout(); updateEditBar(); } });
+    });
+    $("#eb-color").addEventListener("click", function () {
+        var i = findItem(selId), btn = this;
+        if (i < 0) return;
+        var it = cfg.items[i];
+        showPop(btn, [el("div", "p-title", "组件颜色：主按钮和标题跟着变"), swatches(it.color, function (hex) {
+            if (hex) it.color = hex; else delete it.color;
+            hidePop(); saveConfig(); renderLayout();
+        }, true)]);
+    });
+    bindHint($("#eb-color"), { title: "组件颜色", click: "给选中的组件换颜色", note: "主按钮和标题编号跟着变" });
+    bindHint($("#eb-title"), { title: "编辑标题", click: "改分组的英文标题和中文说明" });
+    bindHint($("#eb-up"), { title: "上移", click: "和前一个组件换位置", alt: "↑ 也可以" });
+    bindHint($("#eb-down"), { title: "下移", click: "和后一个组件换位置", alt: "↓ 也可以" });
+    bindHint($("#eb-del"), { title: "从面板删除", click: "只从这个面板拿掉", note: "脚本和片段本身不会删 · Delete 也可以" });
+    $("#page-panel").addEventListener("click", function (e) { if (editing && !e.target.closest(".cell, .edit-bar")) selectCell(null); });
+    document.addEventListener("keydown", function (e) {
+        if (!editing || !$("#modal").hidden) return;
+        if (e.key === "Escape") { setEditing(false); return; }
+        if (e.target && /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+        if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) { e.preventDefault(); moveSel(e.key === "ArrowUp" ? -1 : 1); }
+        else if ((e.key === "Delete" || e.key === "Backspace") && selId) { e.preventDefault(); deleteSel(); }
+    });
 
     // —— 组件库 ——
     function openCatalog() {
         var nodes = [];
         function item(icon, name, desc, size, onAdd) {
             var b = el("button", "cat-item",
-                '<span class="ci">' + svg(icon) + '</span><span><div class="cn">' + esc(name) + '</div><div class="cd">' + esc(desc || "") + '</div></span><span class="cs">' + esc(size) + "</span>");
+                '<span class="ci">' + svg(icon) + '</span><span style="min-width:0"><div class="cn">' + esc(name) + '</div><div class="cd">' + esc(desc || "") + '</div></span><span class="cs">' + esc(size) + "</span>");
             b.addEventListener("click", function () {
                 onAdd();
                 $("#modal").closeWith(null);
-                toast({ ok: true, msg: "已添加「" + name + "」到面板末尾" + (editing ? "" : "，点 ✎ 可以调整位置") });
+                toast({ ok: true, msg: "已添加「" + name + "」到面板末尾" + (editing ? "" : "，右上角「编辑」可以调整位置") });
             });
             return b;
         }
@@ -2045,7 +2289,7 @@
         lib.items.forEach(function (it) {
             sl.appendChild(item(it.ext === "ffx" ? "preset" : "script", it.name, it.cat + " · " + it.type, "3×1", function () { addItem({ type: "script", key: it.key }); }));
         });
-        if (!lib.items.length) sl.appendChild(el("div", "muted", "脚本库是空的，可以在「脚本库」页添加"));
+        if (!lib.items.length) sl.appendChild(el("div", "pal-empty", "脚本库是空的：在「脚本库」页添加，或者把 .jsx 拖进面板"));
         nodes.push(el("div", "cat-title", "我的脚本"), sl);
         var cl = el("div", "cat-list");
         visibleSnippets().forEach(function (s) {
@@ -2062,7 +2306,7 @@
         });
         more.appendChild(ml);
         nodes.push(more);
-        dialog("(+) — ADD TO PANEL " + PANEL, nodes, [{ label: "关闭", value: function () { return null; } }]);
+        dialog("添加到「" + (cfg.name || "面板 " + PANEL) + "」", nodes, [], { full: true, bodyCls: "cat" });
     }
 
     // =====================================================================
@@ -2102,7 +2346,7 @@
             renderCats();
             renderLibrary();
             if (cfg) renderLayout();
-            $("#set-path").textContent = lib.libPath;
+            setPathText(lib.libPath);
         });
     }
 
@@ -2123,7 +2367,7 @@
         var lab = el("label", "", "分类");
         var sel = el("select");
         ["未分类"].concat(lib.categories).forEach(function (c) { sel.appendChild(new Option(c, c)); });
-        sel.appendChild(new Option("＋ 新建分类…", "__new__"));
+        sel.appendChild(new Option("新建分类…", "__new__"));
         lab.appendChild(sel);
         var labNew = el("label", "", "新分类名称");
         var inp = el("input");
@@ -2154,7 +2398,7 @@
             if (!r.ok) return r;
             var files = r.data.files;
             if (!files.length) return null;
-            return categoryDialog("(+) — ADD SCRIPTS", files.map(function (f) { return esc(f.name); }).join("<br>")).then(function (v) {
+            return categoryDialog("添加脚本", files.map(function (f) { return esc(f.name); }).join("<br>")).then(function (v) {
                 if (!v) return null;
                 return host("install", { paths: files.map(function (f) { return f.path; }), cat: v.cat, toPanels: v.toPanels }).then(function (res) {
                     if (!res.ok) return res;
@@ -2182,7 +2426,13 @@
     // 把文件拖进面板
     var dropDepth = 0, overlay = $("#drop-overlay");
     function isFileDrag(e) { return !dragId && e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1; }
-    document.addEventListener("dragenter", function (e) { if (isFileDrag(e)) { dropDepth++; overlay.hidden = false; } });
+    document.addEventListener("dragenter", function (e) {
+        if (!isFileDrag(e)) return;
+        dropDepth++;
+        var n = e.dataTransfer.items ? e.dataTransfer.items.length : 0;
+        $("#drop-meta").textContent = "支持 .jsx · .jsxbin · .ffx" + (n ? " · " + n + " 个文件" : "");
+        overlay.hidden = false;
+    });
     document.addEventListener("dragleave", function (e) { if (isFileDrag(e) && --dropDepth <= 0) { dropDepth = 0; overlay.hidden = true; } });
     document.addEventListener("dragover", function (e) { if (isFileDrag(e)) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
     document.addEventListener("drop", function (e) {
@@ -2193,7 +2443,7 @@
         var files = Array.prototype.filter.call(all, function (f) { return /\.(jsx|jsxbin|ffx)$/i.test(f.name); });
         var skipped = all.length - files.length;
         if (!files.length) { toast({ ok: false, msg: "只支持 .jsx / .jsxbin / .ffx 文件" }); return; }
-        categoryDialog("(+) — DROP FILES", files.map(function (f) { return esc(f.name); }).join("<br>")).then(function (v) {
+        categoryDialog("添加拖进来的文件", files.map(function (f) { return esc(f.name); }).join("<br>")).then(function (v) {
             if (!v) return;
             Promise.all(files.map(function (f) {
                 return new Promise(function (res) {
@@ -2252,34 +2502,38 @@
         });
         listEl.innerHTML = "";
         if (!items.length) {
-            listEl.appendChild(el("li", "lib-empty", lib.items.length ? "没有匹配的脚本" : "脚本库是空的，点下面的「添加脚本」或直接把文件拖进来"));
+            listEl.appendChild(el("li", "lib-empty", lib.items.length ? "没有匹配「" + esc(qInput.value.trim()) + "」的脚本：换个关键词，或者把分类换成「全部」" : "脚本库是空的：点上面的 + 添加，或者直接把 .jsx / .ffx 拖进面板"));
+            syncHover();
             return;
         }
-        var lastCat = null;
+        var lastCat = null, counts = {};
+        items.forEach(function (it) { counts[it.cat] = (counts[it.cat] || 0) + 1; });
         items.forEach(function (it) {
-            if (cat === "全部" && it.cat !== lastCat) { lastCat = it.cat; listEl.appendChild(el("li", "lib-group", esc(it.cat.toUpperCase()))); }
+            if (cat === "全部" && it.cat !== lastCat) { lastCat = it.cat; listEl.appendChild(el("li", "lib-group", "<span>" + esc(it.cat) + '</span><span class="n">' + counts[it.cat] + "</span>")); }
             var li = el("li", "lib-item");
-            li.innerHTML = '<div style="min-width:0"><div class="nm">' + esc(it.name) + '</div><div class="ds">' + esc(it.desc || it.file) + '</div></div><span class="tag">' + esc(it.type) + "</span>";
+            var tag = it.type === "面板" || it.type === "预设" ? '<span class="tag">' + esc(it.type) + "</span>" : "";
+            li.innerHTML = '<div class="nm">' + esc(it.name) + '</div><div class="ds">' + esc(it.desc || it.file) + "</div>" + tag;
             var acts = el("div", "acts");
             var here = onPanel("script", "key", it.key);
-            act(acts, here ? "close" : "pin", "", { title: here ? "从当前面板移除" : "放到当前面板", click: "在「面板」页显示为按钮" }, function () {
+            act(acts, here ? "close" : "pin", "", { title: here ? "从当前面板拿掉" : "放到当前面板", click: "在「面板」页显示为按钮" }, function () {
                 var added = togglePanel("script", "key", it.key);
                 renderLibrary();
-                return Promise.resolve({ ok: true, msg: added ? "已放到当前面板" : "已从当前面板移除" });
+                return Promise.resolve({ ok: true, msg: added ? "已放到当前面板" : "已从当前面板拿掉" });
             });
             act(acts, "folder", "", { title: "在文件夹中显示" }, function () { return host("reveal", { path: it.path }); });
-            act(acts, "trash", "", { title: "移除", click: "移到脚本库的 _已移除 文件夹（可手动恢复）" }, function () {
-                return confirmBox("(−) — REMOVE", "从脚本库移除「" + it.name + "」？文件会移到 _已移除 文件夹。").then(function (ok) {
+            act(acts, "play", "run", { title: "运行 " + it.name, click: it.ext === "ffx" ? "应用到选中图层" : "运行脚本" }, function () { return host("run", { path: it.path }); });
+            act(acts, "trash", "danger", { title: "移除", click: "移到脚本库的 _已移除 文件夹", note: "需要时可以手动放回来" }, function () {
+                return confirmBox("移除脚本", "从脚本库移除「" + it.name + "」？文件会移到脚本库的 _已移除 文件夹，需要时可以手动放回来。", "移除").then(function (ok) {
                     if (!ok) return null;
                     return host("remove", { path: it.path }).then(function (r) { return refreshLibrary().then(function () { return r; }); });
                 });
             });
-            act(acts, "play", "run", { title: "运行 " + it.name, click: it.ext === "ffx" ? "应用到选中图层" : "运行脚本" }, function () { return host("run", { path: it.path }); });
             li.appendChild(acts);
-            bindHint(li, { title: it.name + " · " + it.cat + " · " + it.type, click: "双击运行", note: it.desc || it.file });
+            bindHint(li, { title: it.name, click: "双击" + (it.ext === "ffx" ? "应用到选中图层" : "运行"), note: it.cat + " · " + it.type + " · " + (it.desc || it.file) });
             li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return host("run", { path: it.path }); }); });
             listEl.appendChild(li);
         });
+        syncHover();
     }
 
     catSel.addEventListener("change", renderLibrary);
@@ -2287,17 +2541,17 @@
     $("#lib-add").addEventListener("click", function () { act0(this, addScripts); });
     $("#lib-refresh").addEventListener("click", function () { act0(this, function () { return refreshLibrary().then(function () { return { ok: true, msg: "已刷新：" + lib.items.length + " 个脚本" }; }); }); });
     $("#lib-open").addEventListener("click", function () { act0(this, function () { return host("reveal", {}); }); });
-    bindHint($("#lib-add"), { title: "添加脚本", click: "选择文件加入脚本库，可以同时放到当前面板" });
+    bindHint($("#lib-add"), { title: "添加脚本", click: "选文件加进脚本库", note: "也可以把 .jsx / .jsxbin / .ffx 直接拖进面板" });
     bindHint($("#lib-refresh"), { title: "刷新", click: "重新扫描脚本库文件夹" });
     bindHint($("#lib-open"), { title: "打开脚本库文件夹", click: "每个子文件夹就是一个分类" });
 
-    $$("#lib-seg button").forEach(function (b) {
-        b.addEventListener("click", function () {
-            $$("#lib-seg button").forEach(function (x) { x.classList.toggle("on", x === b); });
-            $("#lib-files").hidden = b.dataset.seg !== "files";
-            $("#lib-snippets").hidden = b.dataset.seg !== "snippets";
-        });
-    });
+    function showSeg(name) {
+        $$("#lib-seg button").forEach(function (x) { x.classList.toggle("on", x.dataset.seg === name); });
+        $("#lib-files").hidden = name !== "files";
+        $("#lib-snippets").hidden = name !== "snippets";
+        syncHover();
+    }
+    $$("#lib-seg button").forEach(function (b) { b.addEventListener("click", function () { showSeg(b.dataset.seg); }); });
 
     // =====================================================================
     // 代码片段：「添加表达式」和「执行脚本」，存在脚本库的 _snippets.json
@@ -2323,7 +2577,7 @@
         { id: "builtin:clearExpr", kind: "expr", name: "清除表达式", tool: "clearExpr", code: "// 清除选中属性上的表达式",
             hint: { click: "清除选中属性上的表达式", alt: "清除选中图层上的全部表达式" } },
         { id: "builtin:wiggleSliders", kind: "script", name: "抖动 + 滑块控制", tool: "wiggle", mods: { alt: true }, code: "// 给选中属性加 wiggle，并在图层上加「抖动频率 / 抖动幅度」滑块关联",
-            hint: { click: "给选中属性加 wiggle，并在图层上加两个滑块控制频率和幅度" } }
+            hint: { click: "加 wiggle 和两个控制滑块", note: "滑块在图层上，控制频率和幅度" } }
     ];
     var snipPrefs = { hidden: [] };
     function isHiddenBuiltin(s) { return !!s.builtin && snipPrefs.hidden.indexOf(s.id) !== -1; }
@@ -2423,7 +2677,7 @@
             if (e.key === "Tab") { e.preventDefault(); var p = code.selectionStart; code.value = code.value.slice(0, p) + "    " + code.value.slice(code.selectionEnd); code.selectionStart = code.selectionEnd = p + 4; }
         });
         c.appendChild(code);
-        return dialog(isNew ? "(+) — NEW SNIPPET" : "(✎) — EDIT SNIPPET", [a, b, c], [
+        return dialog(isNew ? "新建片段" : "编辑片段「" + s.name + "」", [a, b, c], [
             { label: "取消", value: function () { return null; } },
             { label: "保存", accent: true, value: function () { return { name: name.value.trim(), kind: sel.value, code: code.value }; } }
         ]).then(function (v) {
@@ -2443,8 +2697,9 @@
     function renderSnippets() {
         var box = $("#lib-snippets");
         box.innerHTML = "";
-        [["expr", "ADD EXPRESSION · 添加表达式"], ["script", "EXECUTE SCRIPT · 执行脚本"]].forEach(function (g) {
-            var head = el("div", "lib-group", "<span>" + esc(g[1]) + "</span>");
+        [["expr", "表达式 · 应用到选中属性"], ["script", "脚本 · 直接执行"]].forEach(function (g) {
+            var nAll = BUILTIN_SNIPPETS.filter(function (x) { return x.kind === g[0]; }).length + snippets.filter(function (x) { return x.kind === g[0]; }).length;
+            var head = el("div", "lib-group", "<span>" + esc(g[1]) + '</span><span class="n">' + nAll + "</span>");
             act(head, "plus", "", { title: "新建" + (g[0] === "expr" ? "表达式" : "脚本") + "片段", click: "粘贴或手写代码，保存后可以一键使用" }, function () { return editSnippet(null, g[0]); });
             box.appendChild(head);
             var ul = el("ul", "lib-list");
@@ -2454,8 +2709,8 @@
             list.forEach(function (s) {
                 var hidden = isHiddenBuiltin(s);
                 var li = el("li", "lib-item" + (hidden ? " is-hidden" : ""));
-                li.innerHTML = '<div style="min-width:0"><div class="nm">' + esc(s.name) + '</div><div class="ds mono">' + esc(s.code.split("\n")[0]) + "</div></div>" +
-                    (s.builtin ? '<span class="tag">' + (hidden ? "已隐藏" : "内置") + "</span>" : "");
+                li.innerHTML = '<div class="nm">' + esc(s.name) + "</div>" +
+                    (s.builtin ? '<div class="ds">内置 · 修饰键可用' + (hidden ? " · 已隐藏" : "") + "</div>" : '<div class="ds mono">' + esc(s.code.split("\n")[0]) + "</div>");
                 var acts = el("div", "acts");
                 if (s.builtin) {
                     act(acts, hidden ? "refresh" : "close", "", { title: hidden ? "恢复显示" : "隐藏这个内置片段", click: hidden ? "重新出现在命令搜索和组件库里" : "不再出现在命令搜索和组件库里（已经放在面板上的不受影响）" }, function () {
@@ -2484,10 +2739,11 @@
                     renderSnippets();
                     return Promise.resolve({ ok: true, msg: added ? "已放到当前面板" : "已从当前面板移除" });
                 });
+                act(acts, "play", "run", s.kind === "expr" ? { title: "应用表达式", click: "应用到选中属性", alt: "追加到已有表达式后面" } : { title: "执行脚本" }, function (m) { return runSnippet(s, m); });
                 act(acts, "pencil", "", { title: "编辑" }, function () { return editSnippet(s); });
-                act(acts, "trash", "", { title: "删除" }, function () {
+                act(acts, "trash", "danger", { title: "删除", click: "从所有面板删除这个片段" }, function () {
                     var seen = JSON.parse(JSON.stringify(s));
-                    return confirmBox("(−) — DELETE", "删除片段「" + s.name + "」？").then(function (ok) {
+                    return confirmBox("删除片段", "删除片段「" + s.name + "」？所有面板都会看不到它。", "删除").then(function (ok) {
                         if (!ok) return null;
                         // 按 id 删：列表在对话框开着时可能被别的面板的改动更新过
                         var at = snippetIndex(seen.id);
@@ -2496,14 +2752,14 @@
                         return snippetStore.change({ op: "del", key: seen.id, prev: seen }).then(function (w) { return storeResult(w, "已删除「" + seen.name + "」"); });
                     });
                 });
-                act(acts, "play", "run", s.kind === "expr" ? { title: "应用表达式", click: "应用到选中属性", alt: "追加到已有表达式后面" } : { title: "执行脚本" }, function (m) { return runSnippet(s, m); });
                 li.appendChild(acts);
                 li.addEventListener("dblclick", function (e) { if (rowDblclick(e)) act0(li, function () { return runSnippet(s, {}); }); });
                 ul.appendChild(li);
             });
-            if (!mine.length) ul.appendChild(el("li", "lib-empty", "还没有自己的片段，点右边的 ＋ 新建"));
+            if (!mine.length) ul.appendChild(el("li", "lib-empty", "还没有自己的片段：点这一组右边的 + 新建"));
             box.appendChild(ul);
         });
+        syncHover();
     }
 
     // =====================================================================
@@ -2531,7 +2787,7 @@
         (local.get("cfgBackups" + PANEL, []) || []).forEach(function (b) { sel.appendChild(new Option("备份：" + b.label, "backup:" + b.name)); });
         [["main", "主面板：全部工具"], ["animate", "动画：曲线 · 关键帧 · 快速动画"], ["organize", "整理：锚点 · 对齐 · 图层"], ["scripts", "我的脚本"], ["blank", "空白"]].forEach(function (p) { sel.appendChild(new Option(p[1], p[0])); });
         lab.appendChild(sel);
-        dialog("(◇) — PRESET LAYOUT", [lab], [
+        dialog("载入预设布局", [lab], [
             { label: "取消", value: function () { return null; } },
             { label: "载入", accent: true, value: function () { return sel.value; } }
         ]).then(function (key) {
@@ -2554,6 +2810,7 @@
         canWrite = !!cw;
         var p = $("#set-perm");
         p.className = "status" + (canWrite ? "" : " bad");
+        p.hidden = canWrite;   // 正常时不占地方；没权限时这里写清楚怎么打开
         p.textContent = canWrite ? "已允许脚本写入文件，可以正常添加脚本。"
             : "打开 AE「首选项 → 脚本和表达式」，勾选「允许脚本写入文件和访问网络」：添加脚本、导入示例要用到它。" +
               (B.disk.ok() ? "面板布局和设置不受影响，照常保存在磁盘上。" : "打开之前，面板布局只保存在这台电脑的缓存里。");
@@ -2569,11 +2826,39 @@
         });
     });
     $("#set-open").addEventListener("click", function () { act0(this, function () { return host("reveal", {}); }); });
+    // 复制路径：CEF 里没有异步剪贴板，用一个临时的文本框 + execCommand
+    function setPathText(p) {
+        var n = $("#set-path");
+        n.innerHTML = "<bdi>" + esc(p || "—") + "</bdi>";
+        n.title = p || "";
+    }
+    function copyText(t) {
+        var ta = el("textarea");
+        ta.value = t;
+        ta.style.position = "fixed"; ta.style.opacity = "0"; ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta);
+        return ok;
+    }
+    $("#set-copy").addEventListener("click", function () {
+        var t = $("#set-path").textContent;
+        act0(this, function () { return t && t !== "—" && copyText(t) ? { ok: true, msg: "已复制路径" } : { ok: false, msg: "没复制上：在路径上双击选中后按 " + modName("ctrl") + "+C" }; });
+    });
+    bindHint($("#set-copy"), { title: "复制路径", click: "把脚本库文件夹的完整路径复制到剪贴板" });
+    bindHint($("#set-path"), { title: "脚本库文件夹", click: "4 个面板共用这一个文件夹", note: "每个子文件夹是一个分类；太长时只显示后半段" });
+    bindHint($("#set-change"), { title: "更换脚本库", click: "选一个文件夹作为脚本库（所有面板一起换）" });
+    bindHint($("#set-open"), { title: "打开脚本库文件夹" });
+    bindHint($("#set-samples"), { title: "导入示例", click: "复制自带的示例脚本进脚本库", note: "已有的不会覆盖" });
+    bindHint($("#set-preset"), { title: "载入预设 / 备份", click: "换成预设的布局，或者换回以前的备份", note: "换之前会先把当前布局另存一份备份" });
+    bindHint($("#set-panels"), { title: "ScriptUI Panels", click: "打开 AE 的 ScriptUI Panels 文件夹" });
     $("#set-samples").addEventListener("click", function () {
         act0(this, function () { return host("importSamples").then(function (r) { return refreshLibrary().then(function () { return r; }); }); });
     });
     $("#set-recheck").addEventListener("click", function () { act0(this, selfCheck); });
-    bindHint($("#set-recheck"), { title: "自检", click: "逐项检查：后台连接、前后端版本、AE 版本、写入权限、脚本库文件夹、Node、本地字体" });
+    bindHint($("#set-recheck"), { title: "自检", click: "逐项检查连接、版本、权限、文件夹", note: "还有 Node 和本地字体；没通过的写明怎么解决" });
 
     // 使用统计：4 个面板各存一份，这里汇总
     function loadUsage() {
@@ -2601,20 +2886,22 @@
             var used = Object.keys(total).sort(function (a, b) { return total[b] - total[a]; });
             var never = Object.keys(USAGE_LABEL).filter(function (k) { return !total[k]; });
             box.innerHTML = "";
-            if (!sum) { box.appendChild(el("p", "muted", "还没有记录。用一阵子再来看：最常用的工具会排在前面，从没用过的会列在下面。")); return; }
+            if (!sum) { box.appendChild(el("p", "muted", "还没有记录：用一阵子再来看，最常用的工具会排在前面，从没用过的列在下面")); return; }
             box.appendChild(el("div", "usage-h", "最常用 · 4 个面板合计 " + sum + " 次"));
             var ol = el("ol", "usage-top");
             used.slice(0, 8).forEach(function (k) {
-                ol.appendChild(el("li", "", '<span class="nm">' + esc(USAGE_LABEL[k]) + '</span><span class="bar"><i style="width:' + Math.round(total[k] / total[used[0]] * 100) + '%"></i></span><span class="n mono">' + total[k] + "</span>"));
+                ol.appendChild(el("li", "", '<span class="nm">' + esc(USAGE_LABEL[k]) + '</span><span class="bar"><i style="width:' + Math.round(total[k] / total[used[0]] * 100) + '%"></i></span><span class="n">' + total[k] + "</span>"));
             });
             box.appendChild(ol);
-            box.appendChild(el("div", "usage-h", "从没用过 · " + never.length + " 个"));
-            box.appendChild(el("p", "usage-never", never.map(function (k) { return esc(USAGE_LABEL[k]); }).join("、") || "全部都用过"));
+            var dt = el("details", "usage-never");
+            dt.appendChild(el("summary", "", "从没用过 · " + never.length + " 个"));
+            dt.appendChild(el("p", "", never.map(function (k) { return esc(USAGE_LABEL[k]); }).join("、") || "全部都用过"));
+            box.appendChild(dt);
         });
     }
     $("#set-usage-reset").addEventListener("click", function () {
         act0(this, function () {
-            return confirmBox("(−) — RESET USAGE", "清空这个面板的使用统计？其他面板的不受影响。").then(function (ok) {
+            return confirmBox("清空使用统计", "清空这个面板的使用统计？其他面板的不受影响。", "清空").then(function (ok) {
                 if (!ok) return null;
                 usage = {};
                 usageLoaded = true;
@@ -2665,13 +2952,13 @@
             ul.innerHTML = "";
             rows.forEach(function (x) {
                 var li = el("li", x.ok ? "ok" : "bad",
-                    '<span class="mk">' + (x.ok ? "✓" : "!") + '</span><span class="nm">' + esc(x.name) + '</span><span class="dt">' + esc(x.detail) + "</span>" +
+                    '<span class="mk" aria-label="' + (x.ok ? "通过" : "需要处理") + '">' + svg(x.ok ? "check" : "alert") + '</span><span class="nm">' + esc(x.name) + '</span><span class="dt">' + esc(x.detail) + "</span>" +
                     (x.fix ? '<span class="fx">' + esc(x.fix) + "</span>" : ""));
                 ul.appendChild(li);
             });
             var bad = rows.filter(function (x) { return !x.ok; });
             return bad.length
-                ? { ok: false, msg: "自检发现 " + bad.length + " 项问题：" + bad.map(function (x) { return x.name; }).join("、") + "，解决办法写在设置页 (03)" }
+                ? { ok: false, msg: rows.length + " 项中 " + bad.length + " 项需要处理：" + bad.map(function (x) { return x.name; }).join("、") + "。解决办法写在每一项下面" }
                 : { ok: true, msg: "自检通过：" + rows.length + " 项都正常" };
         });
     }
@@ -2695,6 +2982,9 @@
          ["nullLayer", "新建空对象", call("nullLayer")]].forEach(function (x) {
             list.push({ icon: x[0], name: x[1], sub: "关键帧 · 排列", run: x[2] });
         });
+        [["左上", 0, 0], ["上中", 0.5, 0], ["右上", 1, 0], ["左中", 0, 0.5], ["中心", 0.5, 0.5], ["右中", 1, 0.5], ["左下", 0, 1], ["下中", 0.5, 1], ["右下", 1, 1]].forEach(function (a) {
+            list.push({ icon: "anchor" + a[1] * 2 + a[2] * 2, name: "锚点 · " + a[0], sub: "锚点 · 对齐", run: call("anchor", { fx: a[1], fy: a[2] }) });
+        });
         list.push({ icon: "copyKeys", name: "复制关键帧", sub: "关键帧", run: call("copyKeys") });
         list.push({ icon: "pasteKeys", name: "粘贴关键帧", sub: "关键帧", run: call("pasteKeys") });
         list.push({ icon: "styleCopy", name: "复制样式", sub: "样式", run: call("styleCopy") });
@@ -2705,27 +2995,64 @@
         return list;
     }
 
+    var palRecent = local.get("palRecent", []) || [];
+    function norm(t) { return String(t).toLowerCase().replace(/[\s·]+/g, ""); }
+    function markHit(text, key) {
+        var t = String(text), i = key ? t.toLowerCase().indexOf(key) : -1;
+        if (i === -1) return esc(t);
+        return esc(t.slice(0, i)) + "<mark>" + esc(t.slice(i, i + key.length)) + "</mark>" + esc(t.slice(i + key.length));
+    }
     function openPalette() {
         if (!$("#modal").hidden) return;
         var cmds = allCommands(), shown = [], sel = 0;
         var q = el("input", "pal-input");
         q.type = "text";
-        q.placeholder = "搜索工具、脚本、代码片段…";
+        q.spellcheck = false;
+        q.placeholder = "搜索工具、脚本、代码片段";
+        q.setAttribute("aria-label", "搜索命令");
         var box = el("div", "cat-list pal-list");
+        var foot = el("div", "", "<span><b>↑↓</b> 选择</span><span><b>Enter</b> 运行</span><span>按住 <b>" + modName("alt") + "</b> / <b>Shift</b> = 修饰键用法</span><span><b>Esc</b> 关闭</span>");
+        function keyOf(c) { return c.sub + "/" + c.name; }
         function draw() {
-            var key = q.value.trim().toLowerCase();
-            shown = cmds.filter(function (c) { return !key || (c.name + " " + c.sub).toLowerCase().indexOf(key) !== -1; }).slice(0, 40);
+            var key = q.value.trim().toLowerCase(), list;
+            if (!key) {
+                // 空着：最近用过的在前（最多 8 个），后面是全部
+                var rec = [];
+                palRecent.forEach(function (k) { cmds.forEach(function (c) { if (keyOf(c) === k && rec.indexOf(c) === -1) rec.push(c); }); });
+                rec = rec.slice(0, 8);
+                list = rec.map(function (c) { return { c: c, group: "最近使用" }; }).concat(cmds.filter(function (c) { return rec.indexOf(c) === -1; }).map(function (c) { return { c: c, group: "全部" }; }));
+            } else {
+                // 忽略空格和「·」：「锚点中心」能搜到「锚点 · 中心」；名字里就有的排在前面
+                var nk = norm(key);
+                list = cmds.filter(function (c) { return norm(c.name + c.sub).indexOf(nk) !== -1; })
+                    .sort(function (a, b) { return (norm(a.name).indexOf(nk) === -1) - (norm(b.name).indexOf(nk) === -1); })
+                    .map(function (c) { return { c: c, group: "" }; });
+            }
+            shown = list.slice(0, 60);
             sel = Math.min(sel, Math.max(0, shown.length - 1));
             box.innerHTML = "";
-            shown.forEach(function (c, i) {
+            var lastGroup = null;
+            shown.forEach(function (x, i) {
+                if (x.group && x.group !== lastGroup) { lastGroup = x.group; box.appendChild(el("div", "cat-title", esc(x.group))); }
+                var c = x.c;
                 var b = el("button", "cat-item" + (i === sel ? " sel" : ""),
-                    '<span class="ci">' + svg(c.icon) + '</span><span><div class="cn">' + esc(c.name) + '</div><div class="cd">' + esc(c.sub || "") + "</div></span><span></span>");
+                    '<span class="ci">' + svg(c.icon) + '</span><span class="cn">' + markHit(c.name, key) + '</span><span class="cd">' + esc(c.sub || "") + "</span>");
+                b.tabIndex = -1;
                 b.addEventListener("click", function (e) { go(c, mods(e)); });
+                b.addEventListener("mousemove", function () { if (sel !== i) { sel = i; mark(); } });
                 box.appendChild(b);
             });
-            if (!shown.length) box.appendChild(el("div", "muted", "没有找到"));
+            if (!shown.length) box.appendChild(el("div", "pal-empty", "没有找到「" + esc(q.value.trim()) + "」：换个词试试，比如「锚点」「缓动」「复制」"));
+        }
+        function mark() {
+            var items = $$(".cat-item", box);
+            items.forEach(function (n, i) { n.classList.toggle("sel", i === sel); });
+            if (items[sel] && items[sel].scrollIntoView) items[sel].scrollIntoView({ block: "nearest" });
         }
         function go(c, m) {
+            var k = keyOf(c);
+            palRecent = [k].concat(palRecent.filter(function (x) { return x !== k; })).slice(0, 12);
+            local.set("palRecent", palRecent);
             $("#modal").closeWith(null);
             // 面板已经关掉，气泡出现在面板顶部
             act0(null, function () { return c.run(m || {}); });
@@ -2733,13 +3060,13 @@
         q.addEventListener("input", function () { sel = 0; draw(); });
         q.addEventListener("keydown", function (e) {
             e.stopPropagation();
-            if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(shown.length - 1, sel + 1); draw(); }
-            if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); }
-            if (e.key === "Enter" && shown[sel]) { e.preventDefault(); go(shown[sel], mods(e)); }
+            if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(shown.length - 1, sel + 1); mark(); }
+            if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); mark(); }
+            if (e.key === "Enter" && shown[sel]) { e.preventDefault(); go(shown[sel].c, mods(e)); }
             if (e.key === "Escape") $("#modal").closeWith(null);
         });
         draw();
-        dialog("(⌘K) — SEARCH", [q, box], []);
+        dialog("搜索命令", [box], [], { full: true, headNode: q, footNode: foot, bodyCls: "pal", noEnter: true });
     }
 
     document.addEventListener("keydown", function (e) {
@@ -2755,11 +3082,12 @@
         local.set("tab" + PANEL, name);
         if (name === "settings" && typeof renderUsage === "function") renderUsage();
         if (name !== "panel" && editing) setEditing(false);
+        requestAnimationFrame(function () { measureScrollbar(); syncHover(); });
     }
     $$(".tab").forEach(function (t) { t.addEventListener("click", function () { selectTab(t.dataset.tab); }); });
     $$("[data-icon]").forEach(function (n) { n.innerHTML = svg(n.dataset.icon); });
 
-    hintEl.innerHTML = IDLE;
+    showHint(null);
     selectTab(local.get("tab" + PANEL, "panel"));
 
     // =====================================================================
@@ -2768,6 +3096,7 @@
     // =====================================================================
     var ctx = null, ctxBusy = false, ctxAt = 0, ctxPending = false, ctxTrail = 0;
     function missing(needs, c) {
+        if (needs && bannerState && bannerState.down) return "后台没连上 AE，先点顶部的「重新连接」";
         if (!needs || !c) return "";
         if (needs === "compOrProj") return c.comp || c.projComps > 0 ? "" : NEED_TEXT.compOrProj;
         if (!c.comp) return NEED_TEXT.comp;
@@ -2828,15 +3157,20 @@
         var bn = $("#banner");
         if (bannerState.down) {
             bn.hidden = false;
-            $("#banner-msg").textContent = "后台没有连上 AE，面板里的工具暂时用不了。";
+            $("#banner-msg").textContent = "后台没连上 AE · 面板里的工具暂时用不了";
             $("#banner-btn").textContent = "重新连接";
             $("#banner-btn").dataset.act = "reconnect";
         } else if (bannerState.perm) {
             bn.hidden = false;
-            $("#banner-msg").textContent = "AE 还没允许脚本写入文件：打开「首选项 → 脚本和表达式」，勾选「允许脚本写入文件和访问网络」。";
+            $("#banner-msg").textContent = "AE 没允许脚本写入文件 · 首选项 → 脚本和表达式里勾选「允许脚本写入文件和访问网络」";
             $("#banner-btn").textContent = "重新检查";
             $("#banner-btn").dataset.act = "recheck";
         } else bn.hidden = true;
+        $("#banner-msg").title = $("#banner-msg").textContent;
+        // 后台没连上：所有要用到 AE 的按键都显示成「现在不可用」，悬停写明原因
+        document.body.classList.toggle("backend-down", !!bannerState.down);
+        if (typeof applyNeeds === "function") applyNeeds();
+        requestAnimationFrame(measureScrollbar);
     }
     var resyncing = null;
     // 共用列表读完后，写磁盘失败要报出来（读不到时已经退回本机缓存，不算失败）

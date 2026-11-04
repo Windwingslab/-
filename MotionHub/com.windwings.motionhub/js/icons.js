@@ -1,4 +1,5 @@
 /* MotionHub 图标：16×16 网格的矢量指令，渲染为内联 SVG（颜色跟随 currentColor）
+   描边不随图标缩放（vector-effect: non-scaling-stroke）：16px 图标 1.5px，12px 图标 1.25px（CSS 里改）
      ["l", x,y, x,y …] 折线描边    ["p", x,y …] 填充多边形
      ["r", x,y,w,h] 矩形描边       ["R", x,y,w,h] 矩形填充
      ["c", cx,cy,r] 圆描边         ["C", cx,cy,r] 圆填充 */
@@ -125,7 +126,17 @@
         fx: [["l", 2, 14, 4, 3.5, 7.5, 3.5], ["l", 2.5, 8, 6, 8], ["l", 8.5, 7, 14, 14], ["l", 14, 7, 8.5, 14]],
         save: [["l", 2, 2, 11.5, 2, 14, 4.5, 14, 14, 2, 14, 2, 2], ["r", 4.5, 9, 7, 5], ["R", 5, 2, 5, 3.5]],
         read: [["l", 8, 1.5, 8, 10], ["l", 4.5, 6.5, 8, 10, 11.5, 6.5], ["l", 2, 12, 2, 14.5, 14, 14.5, 14, 12]],
-        command: [["r", 1.5, 3, 13, 10], ["l", 4, 6.5, 6, 8, 4, 9.5], ["l", 7.5, 10, 11.5, 10]]
+        command: [["r", 1.5, 3, 13, 10], ["l", 4, 6.5, 6, 8, 4, 9.5], ["l", 7.5, 10, 11.5, 10]],
+        palette: [["c", 8, 8, 6], ["C", 5.4, 6.6, 1.1], ["C", 8.6, 4.9, 1.1], ["C", 10.9, 7.6, 1.1]],
+        copy: [["r", 5.5, 5.5, 8, 8], ["l", 3.5, 10.5, 2.5, 10.5, 2.5, 2.5, 10.5, 2.5, 10.5, 3.5]],
+        check: [["l", 3, 8.5, 6.5, 12, 13, 4.5]],
+        alert: [["c", 8, 8, 6.5], ["l", 8, 4.6, 8, 8.8], ["C", 8, 11.3, 0.9]],
+        // 修饰键（提示栏的键帽里用；Geist 字体里没有 ⌥ ⌘ ⌃，不能靠字体）
+        opt: [["l", 2, 4.5, 6, 4.5, 10, 11.5, 14, 11.5], ["l", 10, 4.5, 14, 4.5]],
+        shift: [["l", 8, 2.5, 13.5, 8.5, 10.5, 8.5, 10.5, 13.5, 5.5, 13.5, 5.5, 8.5, 2.5, 8.5, 8, 2.5]],
+        ctrl: [["l", 3.5, 10, 8, 5.5, 12.5, 10]],
+        cmd: [["l", 5.5, 3.5, 5.5, 12.5], ["l", 10.5, 3.5, 10.5, 12.5], ["l", 3.5, 5.5, 12.5, 5.5], ["l", 3.5, 10.5, 12.5, 10.5],
+            arc(3.5, 3.5, 2, 0, -270, 12), arc(12.5, 3.5, 2, 180, 450, 12), arc(3.5, 12.5, 2, 0, 270, 12), arc(12.5, 12.5, 2, 180, -90, 12)]
     };
 
     // 九宫格锚点：外框 + 目标位置的实心方块
@@ -148,16 +159,16 @@
                 for (var j = 3; j < c.length; j += 2) d += "L" + f(c[j]) + " " + f(c[j + 1]);
                 out.push(op === "p"
                     ? '<path d="' + d + 'Z" fill="currentColor"/>'
-                    : '<path d="' + d + '" fill="none" stroke="currentColor"/>');
+                    : '<path d="' + d + '" fill="none" stroke="currentColor" vector-effect="non-scaling-stroke"/>');
             } else if (op === "r" || op === "R") {
                 out.push('<rect x="' + c[1] + '" y="' + c[2] + '" width="' + c[3] + '" height="' + c[4] + '" ' +
-                    (op === "R" ? 'fill="currentColor"' : 'fill="none" stroke="currentColor"') + '/>');
+                    (op === "R" ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" vector-effect="non-scaling-stroke"') + '/>');
             } else if (op === "c" || op === "C") {
                 out.push('<circle cx="' + c[1] + '" cy="' + c[2] + '" r="' + c[3] + '" ' +
-                    (op === "C" ? 'fill="currentColor"' : 'fill="none" stroke="currentColor"') + '/>');
+                    (op === "C" ? 'fill="currentColor"' : 'fill="none" stroke="currentColor" vector-effect="non-scaling-stroke"') + '/>');
             }
         }
-        return '<svg viewBox="0 0 16 16" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' + out.join("") + "</svg>";
+        return '<svg viewBox="0 0 16 16" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + out.join("") + "</svg>";
     }
 
     window.MHIcons = { svg: svg, names: I };

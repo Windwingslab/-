@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.7.2"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.windwings.motionhub" ExtensionBundleVersion="3.8.0"
     ExtensionBundleName="MotionHub" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <ExtensionList>
-        <Extension Id="com.windwings.motionhub.panel1" Version="3.7.2" />
-        <Extension Id="com.windwings.motionhub.panel2" Version="3.7.2" />
-        <Extension Id="com.windwings.motionhub.panel3" Version="3.7.2" />
-        <Extension Id="com.windwings.motionhub.panel4" Version="3.7.2" />
-        <Extension Id="com.windwings.motionhub.studio" Version="3.7.2" />
+        <Extension Id="com.windwings.motionhub.panel1" Version="3.8.0" />
+        <Extension Id="com.windwings.motionhub.panel2" Version="3.8.0" />
+        <Extension Id="com.windwings.motionhub.panel3" Version="3.8.0" />
+        <Extension Id="com.windwings.motionhub.panel4" Version="3.8.0" />
+        <Extension Id="com.windwings.motionhub.studio" Version="3.8.0" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>
@@ -41,7 +41,7 @@
                     <Menu>MotionHub</Menu>
                     <Geometry>
                         <Size><Height>720</Height><Width>300</Width></Size>
-                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MinSize><Height>200</Height><Width>240</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
                     </Geometry>
                 </UI>
@@ -66,7 +66,7 @@
                     <Menu>MotionHub 2</Menu>
                     <Geometry>
                         <Size><Height>720</Height><Width>300</Width></Size>
-                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MinSize><Height>200</Height><Width>240</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
                     </Geometry>
                 </UI>
@@ -91,7 +91,7 @@
                     <Menu>MotionHub 3</Menu>
                     <Geometry>
                         <Size><Height>720</Height><Width>300</Width></Size>
-                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MinSize><Height>200</Height><Width>240</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
                     </Geometry>
                 </UI>
@@ -116,7 +116,7 @@
                     <Menu>MotionHub 4</Menu>
                     <Geometry>
                         <Size><Height>720</Height><Width>300</Width></Size>
-                        <MinSize><Height>200</Height><Width>180</Width></MinSize>
+                        <MinSize><Height>200</Height><Width>240</Width></MinSize>
                         <MaxSize><Height>3000</Height><Width>1600</Width></MaxSize>
                     </Geometry>
                 </UI>

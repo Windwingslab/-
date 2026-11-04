@@ -4,7 +4,7 @@
 */
 
 var MH = (function () {
-    var VERSION = "3.7.2";
+    var VERSION = "3.8.0";
     var EXT_RE = /\.(jsx|jsxbin|ffx)$/i;
     var IS_WIN = $.os.indexOf("Windows") !== -1;
     var EXT_ROOT = null;

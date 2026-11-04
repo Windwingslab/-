@@ -137,15 +137,15 @@ async function addSnippet(p, name, code) {
     await p.page.locator("#lib-snippets .lib-group").nth(0).locator(".act").click();
     await p.page.fill("#dlg-body input[type=text]", name);
     await p.page.fill("#dlg-body textarea", code);
-    await p.page.click("#dlg-btns .btn.accent");
+    await p.page.click("#dlg-btns .btn:last-child");
     await p.page.waitForTimeout(400);
 }
 async function deleteSnippet(p, name) {
     await gotoSnippets(p);
     const row = p.page.locator("#lib-snippets .lib-item", { has: p.page.locator(".nm", { hasText: name }) }).first();
     await row.hover();
-    await row.locator(".acts .act").nth(2).click();   // 放到面板、编辑、删除、运行
-    await p.page.click("#dlg-btns .btn.accent");
+    await row.locator('.acts .act[aria-label="删除"]').click();
+    await p.page.click("#dlg-btns .btn:last-child");
     await p.page.waitForTimeout(400);
 }
 async function renamePanel(p, name) {
@@ -326,13 +326,13 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const c = await openPanel(browser, { panel: 1, disk: base, canWrite: true, node: true, local: {} });
         await gotoSnippets(c);
         const row = c.page.locator("#lib-snippets .lib-item", { has: c.page.locator(".nm", { hasText: "片段甲" }) }).first();
-        await row.hover(); await row.locator(".acts .act").nth(2).click();   // 打开删除确认
+        await row.hover(); await row.locator('.acts .act[aria-label="删除"]').click();   // 打开删除确认
         await c.page.evaluate(() => {   // 别的面板加了一条；这个面板拿到焦点，列表跟着更新
             const p = "/lib/_snippets.json", l = JSON.parse(window.__mem[p]); l.push({ id: "z", kind: "expr", name: "别的面板加的", code: "9" }); window.__mem[p] = JSON.stringify(l);
             window.dispatchEvent(new Event("focus"));
         });
         await c.page.waitForTimeout(200);
-        await c.page.click("#dlg-btns .btn.accent");
+        await c.page.click("#dlg-btns .btn:last-child");
         await c.page.waitForTimeout(400);
         const dc = names(J(await c.disk(), SNIP));
         check("对话框开着时列表更新过：删掉的是「片段甲」，别的面板加的还在", !dc.includes("片段甲") && dc.includes("别的面板加的") && dc.includes("片段乙"), JSON.stringify(dc));
@@ -356,15 +356,15 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const fb = await openPanel(browser, { panel: 4, disk: f0, canWrite: true, node: true, local: {} });
         await gotoSnippets(fa);
         const ra = fa.page.locator("#lib-snippets .lib-item", { has: fa.page.locator(".nm", { hasText: "片段甲" }) }).first();
-        await ra.hover(); await ra.locator(".acts .act").nth(1).click();
+        await ra.hover(); await ra.locator('.acts .act[aria-label="编辑"]').click();
         await fa.page.fill("#dlg-body textarea", "value + 100 // 面板1改的");
-        await fa.page.click("#dlg-btns .btn.accent"); await fa.page.waitForTimeout(300);
+        await fa.page.click("#dlg-btns .btn:last-child"); await fa.page.waitForTimeout(300);
         await fb.page.evaluate((m) => { Object.assign(window.__mem, m); }, await fa.disk());
         await gotoSnippets(fb);
         const rb = fb.page.locator("#lib-snippets .lib-item", { has: fb.page.locator(".nm", { hasText: "片段甲" }) }).first();
-        await rb.hover(); await rb.locator(".acts .act").nth(1).click();
+        await rb.hover(); await rb.locator('.acts .act[aria-label="编辑"]').click();
         await fb.page.fill("#dlg-body input[type=text]", "片段甲（面板4改名）");
-        await fb.page.click("#dlg-btns .btn.accent"); await fb.page.waitForTimeout(400);
+        await fb.page.click("#dlg-btns .btn:last-child"); await fb.page.waitForTimeout(400);
         const df = J(await fb.disk(), SNIP), bf = await fb.bubble();
         check("同一条片段两边都改了：面板 1 的代码修改还在，面板 4 的改名另存了一份", df.some(x => x.code === "value + 100 // 面板1改的") && df.some(x => /面板4改名/.test(x.name)), JSON.stringify(df));
         check("气泡说明两份都留下了", /两份都留下了/.test(bf), bf);
@@ -424,7 +424,7 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
             local: { panel1: cur, cfgOnDisk1: true, cfgBackups1: [{ name: "panel1-backup-1", label: "备份里的布局" }], seeded: true } });
         await rb.page.click(".tab[data-tab=settings]");
         await rb.page.click("#set-preset");
-        await rb.page.click("#dlg-btns .btn.accent");   // 备份排在最前面、默认选中
+        await rb.page.click("#dlg-btns .btn:last-child");   // 备份排在最前面、默认选中
         await rb.page.waitForTimeout(400);
         const rbb = await rb.bubble(), rbc = await rb.config();
         check("当前布局的备份写不进去时不换回备份，并说明原因", rbc.name === "我现在的布局" && /没有换/.test(rbb), rbb + " | " + rbc.name);
@@ -454,9 +454,9 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         const kd = await openPanel(browser, { panel: 1, disk: { [SNIP]: JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1" }]) }, canWrite: true, node: true, local: {} });
         await gotoSnippets(kd);
         const kr = kd.page.locator("#lib-snippets .lib-item", { has: kd.page.locator(".nm", { hasText: "片段甲" }) }).first();
-        await kr.hover(); await kr.locator(".acts .act").nth(2).click();
+        await kr.hover(); await kr.locator('.acts .act[aria-label="删除"]').click();
         await kd.page.evaluate(() => { window.__mem["/lib/_snippets.json"] = JSON.stringify([{ id: "a", kind: "expr", name: "片段甲", code: "1 // 别的面板改过" }]); });
-        await kd.page.click("#dlg-btns .btn.accent"); await kd.page.waitForTimeout(400);
+        await kd.page.click("#dlg-btns .btn:last-child"); await kd.page.waitForTimeout(400);
         const kb = await kd.bubble(), kdd = J(await kd.disk(), SNIP);
         check("要删的片段刚在别的面板改过：没有删，气泡报「没有删除」而不是「已删除」", kdd.length === 1 && /没有删除/.test(kb) && !/已删除/.test(kb), kb + " " + JSON.stringify(kdd));
         await kd.close();

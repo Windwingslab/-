@@ -3,75 +3,82 @@
 <head>
     <meta charset="utf-8">
     <title>MotionHub</title>
-    <link rel="stylesheet" href="css/style.css?v=3.7.2">
+    <link rel="stylesheet" href="css/style.css?v=3.8.0">
 </head>
 <body>
+    <!-- 一条 40px 的顶栏：品牌方块、三个标签（第一个是面板名）、命令搜索、编辑布局 -->
     <header class="top">
-        <div class="brand"><i class="mark"></i><span>MOTIONHUB</span><em id="panel-name"></em></div>
+        <i class="mark" aria-hidden="true"></i>
+        <nav class="tabs" id="tabs">
+            <button data-tab="panel" class="tab"><span id="panel-name">面板</span></button>
+            <button data-tab="library" class="tab">脚本库</button>
+            <button data-tab="settings" class="tab">设置</button>
+        </nav>
         <div class="top-acts">
-            <button class="icon-btn" id="btn-edit" data-icon="pencil"></button>
+            <button class="icon-btn" id="btn-search" data-icon="search" aria-label="搜索命令"></button>
+            <button class="icon-btn" id="btn-edit" data-icon="pencil" aria-label="编辑布局"></button>
         </div>
     </header>
-    <div class="banner" id="banner" role="alert" hidden><span id="banner-msg"></span><button class="btn sm" id="banner-btn"></button></div>
-
-    <nav class="tabs" id="tabs">
-        <button data-tab="panel" class="tab">面板</button>
-        <button data-tab="library" class="tab">脚本库</button>
-        <button data-tab="settings" class="tab">设置</button>
-    </nav>
+    <div class="banner" id="banner" role="alert" hidden><span id="banner-msg"></span><button class="btn ghost-accent" id="banner-btn"></button></div>
 
     <main id="pages">
         <section class="page" id="page-panel">
             <div class="edit-bar" id="edit-bar">
-                <span class="eb-tip">拖动排序 · <b>●</b> 换色 · <b>×</b> 删除</span>
-                <button class="btn sm" id="eb-add"><span class="ico" data-icon="plus"></span>添加组件</button>
+                <div class="eb-sel" id="eb-sel">
+                    <button class="icon-btn sm" id="eb-color" data-icon="palette" aria-label="组件颜色"></button>
+                    <button class="icon-btn sm" id="eb-title" data-icon="pencil" aria-label="编辑标题"></button>
+                    <button class="icon-btn sm" id="eb-up" data-icon="arrowUp" aria-label="上移"></button>
+                    <button class="icon-btn sm" id="eb-down" data-icon="arrowDown" aria-label="下移"></button>
+                    <button class="icon-btn sm danger" id="eb-del" data-icon="trash" aria-label="从面板删除"></button>
+                </div>
+                <span class="eb-tip" id="eb-tip">点选组件，或直接拖动排序</span>
+                <button class="btn sm" id="eb-add"><span class="ico" data-icon="plus"></span>添加</button>
                 <button class="btn sm accent" id="eb-done">完成</button>
             </div>
             <div class="layout" id="layout"></div>
         </section>
 
         <section class="page" id="page-library">
-            <div class="seg" id="lib-seg">
-                <button data-seg="files" class="on">脚本文件</button>
-                <button data-seg="snippets">代码片段</button>
+            <div class="lib-tools">
+                <div class="seg" id="lib-seg">
+                    <button data-seg="files" class="on">脚本文件</button>
+                    <button data-seg="snippets">代码片段</button>
+                </div>
+                <span class="sp"></span>
+                <button class="icon-btn sm" id="lib-add" data-icon="plus" aria-label="添加脚本"></button>
+                <button class="icon-btn sm" id="lib-refresh" data-icon="refresh" aria-label="刷新"></button>
+                <button class="icon-btn sm" id="lib-open" data-icon="folder" aria-label="打开脚本库文件夹"></button>
             </div>
             <div id="lib-files">
                 <div class="lib-bar">
-                    <select id="lib-cat"></select>
                     <label class="search">
                         <span class="ico" data-icon="search"></span>
-                        <input id="lib-q" type="text" placeholder="搜索名称 / 描述 / 分类">
+                        <input id="lib-q" type="text" placeholder="搜索名称、描述、分类" spellcheck="false">
                     </label>
+                    <select id="lib-cat" aria-label="分类"></select>
                 </div>
                 <ul class="lib-list" id="lib-list"></ul>
-                <div class="lib-foot">
-                    <button class="btn accent" id="lib-add"><span class="ico" data-icon="plus"></span>添加脚本</button>
-                    <button class="btn icon-only" id="lib-refresh"><span class="ico" data-icon="refresh"></span></button>
-                    <button class="btn icon-only" id="lib-open"><span class="ico" data-icon="folder"></span></button>
-                </div>
-                <p class="drop-tip">也可以直接把 .jsx / .jsxbin / .ffx 文件拖进面板。</p>
+                <p class="drop-tip">把 .jsx / .jsxbin / .ffx 拖进面板，也能加进脚本库</p>
             </div>
             <div id="lib-snippets" hidden></div>
         </section>
 
         <section class="page" id="page-settings">
             <div class="sec-head"><span class="num">(01) — THIS PANEL</span><span class="zh">当前面板</span></div>
-            <label class="field">面板名称<input type="text" id="set-name"></label>
-            <div class="field">主题色<div class="swatches" id="set-accent"></div></div>
-            <div class="btn-row">
-                <button class="btn" id="set-preset"><span class="ico" data-icon="widgets"></span>载入预设布局</button>
-            </div>
+            <div class="set-row"><label class="set-k" for="set-name">名称</label><div class="set-v"><input type="text" id="set-name" spellcheck="false"></div></div>
+            <div class="set-row"><span class="set-k">主题色</span><div class="set-v"><div class="swatches" id="set-accent"></div></div></div>
+            <div class="set-row"><span class="set-k">布局</span><div class="set-v"><button class="btn" id="set-preset"><span class="ico" data-icon="widgets"></span>载入预设 / 备份</button></div></div>
 
-            <div class="sec-head"><span class="num">(02) — LIBRARY PATH</span><span class="zh">脚本库文件夹</span></div>
-            <div class="path mono" id="set-path">—</div>
-            <div class="btn-row">
+            <div class="sec-head"><span class="num">(02) — LIBRARY</span><span class="zh">脚本库文件夹</span></div>
+            <div class="set-row"><span class="set-k">位置</span><div class="set-v path-v"><span class="path" id="set-path">—</span><button class="icon-btn sm" id="set-copy" data-icon="copy" aria-label="复制路径"></button></div></div>
+            <div class="set-row"><span class="set-k"></span><div class="set-v btn-row">
                 <button class="btn" id="set-change"><span class="ico" data-icon="swap"></span>更换</button>
                 <button class="btn" id="set-open"><span class="ico" data-icon="folder"></span>打开</button>
                 <button class="btn" id="set-samples"><span class="ico" data-icon="plus"></span>导入示例</button>
-            </div>
+            </div></div>
 
             <div class="sec-head"><span class="num">(03) — SELF CHECK</span><span class="zh">自检</span></div>
-            <p class="status" id="set-perm">—</p>
+            <p class="status" id="set-perm" hidden></p>
             <ul class="checks" id="set-check"><li class="muted">点「自检」逐项检查连接、版本、权限、文件夹、Node 和字体</li></ul>
             <div class="btn-row">
                 <button class="btn" id="set-recheck"><span class="ico" data-icon="refresh"></span>自检</button>
@@ -79,34 +86,37 @@
             </div>
 
             <div class="sec-head"><span class="num">(04) — USAGE</span><span class="zh">使用统计 · 只存在本机</span></div>
-            <div class="usage" id="set-usage"><p class="muted">还没有记录。</p></div>
+            <div class="usage" id="set-usage"><p class="muted">还没有记录</p></div>
             <div class="btn-row">
                 <button class="btn" id="set-usage-reset"><span class="ico" data-icon="trash"></span>清空统计</button>
             </div>
 
             <div class="sec-head"><span class="num">(05) — ABOUT</span><span class="zh">关于</span></div>
-            <p class="muted mono" id="set-about">MOTIONHUB</p>
+            <p class="about-v" id="set-about">MOTIONHUB</p>
             <p class="muted">一共有 4 个独立面板：窗口 → 扩展 → MotionHub / MotionHub 2 / 3 / 4，每个面板的布局和主题色单独保存。</p>
             <p class="muted">脚本开头的注释里写 <code>@name</code> / <code>@desc</code> / <code>@author</code>，脚本库就会显示名称和说明。</p>
         </section>
     </main>
 
-    <footer class="hint" id="hint"></footer>
+    <!-- 固定 64px、3 行：标题 · 单击做什么 / 修饰键 / 说明或「现在不可用」 -->
+    <footer class="hint" id="hint" aria-live="polite"></footer>
 
-    <div class="drop-overlay" id="drop-overlay" hidden><div>松开鼠标，把文件添加到脚本库</div></div>
+    <div class="drop-overlay" id="drop-overlay" hidden>
+        <div class="do-in"><span class="ico" data-icon="read"></span><b>松开以添加到脚本库</b><span class="do-meta" id="drop-meta">支持 .jsx · .jsxbin · .ffx</span></div>
+    </div>
 
     <div class="pop" id="pop" hidden></div>
 
     <div class="modal" id="modal" hidden>
-        <div class="dialog">
-            <div class="dlg-title" id="dlg-title"></div>
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dlg-title">
+            <div class="dlg-head" id="dlg-head"><div class="dlg-title" id="dlg-title"></div><button class="icon-btn sm" id="dlg-x" data-icon="close" aria-label="关闭"></button></div>
             <div class="dlg-body" id="dlg-body"></div>
             <div class="dlg-btns" id="dlg-btns"></div>
         </div>
     </div>
 
-    <script src="js/icons.js?v=3.7.2"></script>
-    <script src="js/bridge.js?v=3.7.2"></script>
-    <script src="js/main.js?v=3.7.2"></script>
+    <script src="js/icons.js?v=3.8.0"></script>
+    <script src="js/bridge.js?v=3.8.0"></script>
+    <script src="js/main.js?v=3.8.0"></script>
 </body>
 </html>

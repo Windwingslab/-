@@ -136,7 +136,8 @@ async function runPanel(browser, n, opts) {
         const before = await page.evaluate((sel) => ({
             calls: window.__calls.length,
             cls: document.querySelector(sel).className,
-            layoutHTML: document.querySelector("#layout").innerHTML.length
+            layoutHTML: document.querySelector("#layout").innerHTML.length,
+            tab: (document.querySelector(".tab.on") || {}).dataset ? document.querySelector(".tab.on").dataset.tab : ""
         }), sel);
         try { await page.click(sel, { timeout: 1500 }); } catch (e) { results.push({ i, info, error: "点不到：" + e.message.split("\n")[0] }); continue; }
         await page.waitForTimeout(140);   // 原则 1：150ms 内要有反馈
@@ -151,15 +152,19 @@ async function runPanel(browser, n, opts) {
                 pop: !document.querySelector("#pop").hidden,
                 cls: el ? el.className : "(重绘)",
                 layoutHTML: document.querySelector("#layout").innerHTML.length,
-                hint: document.querySelector("#hint").className
+                hint: document.querySelector("#hint").className,
+                tab: (document.querySelector(".tab.on") || {}).dataset ? document.querySelector(".tab.on").dataset.tab : ""
             };
         }, [sel, before.calls]);
-        const visible = !!(after.bubble || after.modal || after.pop || after.cls !== before.cls || after.layoutHTML !== before.layoutHTML || after.pending);
+        // 切到了别的标签页（比如空分组里的「打开脚本库」）也算有反应
+        const visible = !!(after.bubble || after.modal || after.pop || after.cls !== before.cls || after.layoutHTML !== before.layoutHTML || after.pending || after.tab !== before.tab);
         const r = { i, info, calls: after.calls, bubble: after.bubble, modal: after.modal, pop: after.pop, reacted: after.calls.length > 0 || visible };
         results.push(r);
         // 收尾：关掉弹窗 / 浮层，等气泡消失，不影响下一个按钮
         if (after.modal) await page.evaluate(() => { const m = document.querySelector("#modal"); if (m.closeWith) m.closeWith(null); else m.hidden = true; });
         if (after.pop) await page.evaluate(() => { document.querySelector("#pop").hidden = true; });
+        // 空分组里的「打开脚本库」会切到脚本库页：切回面板页，后面的按钮才点得到
+        await page.evaluate(() => { if (!document.querySelector("#page-panel").classList.contains("on")) document.querySelector(".tab[data-tab=panel]").click(); });
         await page.waitForTimeout(20);
     }
     await page.close();
@@ -197,7 +202,8 @@ async function runRegressions(browser) {
     const before = await page.evaluate(() => document.querySelectorAll("#layout .cell").length);
     // 后台不在时编辑布局：删掉第一个组件
     await page.click("#btn-edit");
-    await page.click("#layout .cell .cell-ctl button[title='从面板删除']");
+    await page.click("#layout .cell >> nth=0");   // 编辑模式：点选第一个组件，再点编辑条上的「从面板删除」
+    await page.click("#eb-del");
     await page.click("#btn-edit");
     await page.waitForTimeout(400);
     const after = await page.evaluate(() => document.querySelectorAll("#layout .cell").length);
@@ -440,9 +446,9 @@ async function runNeeds(browser) {
     const chk = await page.evaluate(() => Array.from(document.querySelectorAll("#set-check li")).map(li => li.className + "|" + li.textContent));
     const names = ["后台连接", "前后端版本", "AE 版本", "写入权限", "脚本库文件夹", "Node.js", "本地字体"];
     const allThere = names.every(n => chk.some(c => c.indexOf(n) !== -1));
-    const fontOk = chk.some(c => /^ok\|✓本地字体/.test(c));
-    const verOk = chk.some(c => /^ok\|✓前后端版本/.test(c));
-    const nodeBad = chk.some(c => /^bad\|!Node\.js/.test(c));   // 浏览器里没有 Node，应当如实报 !
+    const fontOk = chk.some(c => /^ok\|本地字体/.test(c));
+    const verOk = chk.some(c => /^ok\|前后端版本/.test(c));
+    const nodeBad = chk.some(c => /^bad\|Node\.js/.test(c));   // 浏览器里没有 Node，应当如实报「需要处理」
     out.push({ name: "自检列出 7 项；字体和版本 ✓，浏览器里 Node 如实显示 !", ok: allThere && chk.length === 7 && fontOk && verOk && nodeBad, detail: JSON.stringify(chk) });
 
     // 审查回归：后台没连上时，自检仍列出 7 项

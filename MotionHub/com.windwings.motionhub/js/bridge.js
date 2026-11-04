@@ -94,12 +94,13 @@
     // 按键：面板获得焦点时 AE 默认会吃掉快捷键，先登记要用的组合
     // macOS 用 Mac 虚拟键码，Windows 用 VK 键码
     // =====================================================================
-    var KEYCODES = IS_WIN ? { k: 75, esc: 27, space: 32 } : { k: 40, esc: 53, space: 49 };
+    var KEYCODES = IS_WIN ? { k: 75, esc: 27, space: 32, up: 38, down: 40, del: 46, bksp: 8 } : { k: 40, esc: 53, space: 49, up: 126, down: 125, del: 117, bksp: 51 };
     function registerKeys(names) {
         if (!CEP || !CEP.registerKeyEventsInterest) return false;
         var list = [];
         names.forEach(function (n) {
             if (n === "cmdK") list.push(IS_WIN ? { keyCode: KEYCODES.k, ctrlKey: true } : { keyCode: KEYCODES.k, metaKey: true });
+            else if (n === "altUp" || n === "altDown") list.push({ keyCode: KEYCODES[n === "altUp" ? "up" : "down"], altKey: true });
             else if (KEYCODES[n] !== undefined) list.push({ keyCode: KEYCODES[n] });
         });
         try { CEP.registerKeyEventsInterest(JSON.stringify(list)); return true; } catch (e) { return false; }
@@ -128,8 +129,10 @@
         // 先放回左上角再量：固定定位元素的宽度会受当前位置限制，停在旧位置量会偏窄
         b.style.left = "0px"; b.style.top = "0px";
         var bw = b.offsetWidth, bh = b.offsetHeight;
-        var x = Math.min(W - bw - 6, Math.max(6, r.left + r.width / 2 - bw / 2));
-        var y = r.bottom + 6;
+        var x = Math.min(W - bw - 12, Math.max(12, r.left + r.width / 2 - bw / 2));
+        // 按钮在面板下面 40% 的地方：气泡放到按钮上面（不盖住下一行，也不压在提示栏上）
+        var y = r.bottom > H * 0.6 ? r.top - bh - 6 : r.bottom + 6;
+        if (y < 6) y = r.bottom + 6;
         if (y + bh > H - 6) y = Math.max(6, r.top - bh - 6);
         b.style.left = Math.round(x) + "px";
         b.style.top = Math.round(y) + "px";
@@ -207,7 +210,9 @@
             if (btn) { btn._mhBusy = false; btn.classList.remove("busy", "pending"); }
             if (!r) { hideBubble(); return r; }
             var ok = r.ok !== false;
-            show(btn, ok ? "ok" : "err", r.msg || (ok ? (opts.doneText || "完成") : "没有完成"), rect);
+            // 成功但没有要说的：不弹气泡，只让按钮描一下边（不打扰）
+            if (ok && !r.msg && !opts.doneText) hideBubble();
+            else show(btn, ok ? "ok" : "err", r.msg || (ok ? opts.doneText : "没有完成"), rect);
             mark(btn, ok ? "ok" : "err");
             if (opts.toast) opts.toast(r);
             return r;
@@ -342,7 +347,7 @@
     })();
 
     window.MHBridge = {
-        version: "3.7.2",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
+        version: "3.8.0",   // 前端版本：自检时和后台 host.jsx 的 VERSION 比对
         disk: disk,
         host: host,
         reconnect: reconnect,
