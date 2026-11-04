@@ -192,14 +192,17 @@ AE 里的图层边框、锚点、运动路径只是界面显示，渲染出去�
 MotionHub/
 ├── com.windwings.motionhub/   插件本体
 │   ├── CSXS/manifest.xml      扩展声明（4 个面板）
-│   ├── index.html · css/ · js/  面板界面（布局引擎、组件、脚本库）
+│   ├── index.html · css/style.css · js/main.js  面板界面（布局引擎、组件、脚本库）；js/icons.js 图标
 │   ├── js/bridge.js           前后端通信（自动恢复）、按键登记、点击反馈气泡，面板和 Studio 共用
 │   ├── fonts/                 Geist / Geist Mono 字体（SIL OFL 1.1，见 fonts/OFL.txt），不依赖网络
-│   ├── studio.html · js/studio.js  Studio 剪辑排版（js/grade.js 调色、js/gif.js GIF 编码、js/livephoto.js 实况照片）
+│   ├── studio.html · js/studio.js  Studio 剪辑排版（js/grade.js 调色、js/gif.js GIF 编码、js/livephoto.js 实况照片；
+│   │                          css/studio-base.css 是 3.7.2 的样式，Studio 第 2 阶段重做前一直用它）
 │   ├── third_party/           第三方许可证
 │   ├── jsx/host.jsx           在 AE 里执行的工具和脚本库逻辑
 │   └── library_seed/          首次启动导入的示例脚本
-├── tests/                     验收测试（不进安装包）：clicktest.js、es3check.js
+├── tests/                     验收测试（不进安装包）：run-all.sh 一次跑完——es3check（后台只用 ES3）、hosttest（后台）、
+│                              tooltest（图层工具几何：遮罩、父级、3D）、migrationtest（布局迁移）、disktest（磁盘数据安全）、
+│                              colortest（配色比例）、layouttest（版式规格）、sharedsim（4 面板共用磁盘）、clicktest（每个按钮都有反馈）
 ├── 安装-Mac.command
 └── 安装-Windows.bat
 ```
