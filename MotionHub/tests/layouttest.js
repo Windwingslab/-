@@ -29,17 +29,20 @@ function fakeHost(name) {
         case "loadConfig": return ok({ text: null });
         case "loadSnippets": return ok({ text: null, libPath: "/lib" });
         case "listEffects": return ok({ effects: [] });
+        case "pickFiles": return ok({ files: [{ name: "新脚本.jsx", path: "/Downloads/新脚本.jsx" }] });
+        case "install": return ok({ keys: ["/动画/弹跳.jsx"] }, "已添加 1 个脚本");
         default: return ok({}, "已完成：" + name);
     }
 }
 
-async function open(browser, n, width, height) {
+async function open(browser, n, width, height, init) {
     const page = await browser.newPage({ viewport: { width, height: height || 900 }, deviceScaleFactor: 1 });
     const errors = [];
     page.on("pageerror", e => errors.push(e.message));
     await page.exposeFunction("__mhHost", (name) => JSON.stringify(fakeHost(name)));
-    await page.addInitScript((n) => {
+    await page.addInitScript(([n, init]) => {
         try { localStorage.clear(); } catch (e) {}
+        if (init) for (const k in init) localStorage.setItem(k, JSON.stringify(init[k]));
         window.__adobe_cep__ = {
             getExtensionId: () => "com.windwings.motionhub.panel" + n, getSystemPath: () => "", registerKeyEventsInterest() {},
             evalScript(code, cb) {
@@ -49,7 +52,7 @@ async function open(browser, n, width, height) {
                 window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 1));
             }
         };
-    }, n);
+    }, [n, init || null]);
     await page.goto("file://" + EXT + "/index.html");
     await page.waitForTimeout(500);
     page.__errors = errors;
@@ -67,7 +70,7 @@ async function open(browser, n, width, height) {
             const m = await page.evaluate(() => {
                 const L = document.querySelector("#layout"), r = L.getBoundingClientRect(), cs = getComputedStyle(L);
                 // 1×1 的工具键：分组网格里直接放着的、不跨列的按键
-                const keys = Array.from(document.querySelectorAll("#layout .sec-grid > .cell:not(.full)")).filter(c => !c.style.gridColumn || /span 1$/.test(c.style.gridColumn))
+                const keys = Array.from(document.querySelectorAll("#layout .key-grid > .cell")).filter(c => !c.style.gridColumn || /span 1$/.test(c.style.gridColumn))
                     .map(c => c.querySelector(".tile")).filter(Boolean).map(t => t.getBoundingClientRect());
                 const notSquare = keys.filter(k => Math.abs(k.width - k.height) > 0.6).length;
                 return { left: r.left, right: window.innerWidth - r.right, cols: +cs.getPropertyValue("--cols"), key: parseFloat(cs.getPropertyValue("--key")), keys: keys.length, notSquare };
@@ -205,6 +208,116 @@ async function open(browser, n, width, height) {
         const done = await page.evaluate(() => !document.body.classList.contains("editing"));
         check("编辑模式：Esc 退出", done);
         check("编辑模式没有 JS 错误", !page.__errors.length, page.__errors.join(" | "));
+        await page.close();
+    }
+
+    console.log("审查回归（3.8.0）：");
+    const layout = (items) => ({ "mh.panel3": { schema: 2, name: "测试", accent: "#FF5900", items: items.map((it, i) => Object.assign({ id: "i" + i }, it)) } });
+    {
+        // 宽面板：小按键和成对的组件不挤在同一行（按键不会被拉成长条）；奇数列时右边的组件也贴到右边距
+        for (const w of [560, 520, 600]) {
+            const page = await open(browser, 3, w, 900, layout([{ type: "heading", en: "A", zh: "甲" }, { type: "ease" }, { type: "keys" }, { type: "alignLeft" }, { type: "alignRight" }, { type: "distH" }, { type: "quick" }]));
+            const m = await page.evaluate(() => {
+                const keys = Array.from(document.querySelectorAll("#layout .sec .key-grid .tile")).map(t => t.getBoundingClientRect());
+                const L = document.querySelector("#layout").getBoundingClientRect();
+                const pairs = Array.from(document.querySelectorAll("#layout .pair-grid > .cell")).map(c => c.getBoundingClientRect());
+                return { keys: keys.map(k => [Math.round(k.width), Math.round(k.height)]), right: pairs.length ? Math.round(L.right - Math.max(...pairs.map(r => r.right))) : -1, n: pairs.length };
+            });
+            check("宽面板 " + w + "px：按键都是正方形（不和组件挤在一行），成对的右边那个、单独的那个都贴到右边距", m.keys.length === 3 && m.keys.every(k => Math.abs(k[0] - k[1]) <= 1) && m.right === 0 && m.n === 3, JSON.stringify(m));
+            await page.close();
+        }
+    }
+    {
+        // 编辑模式：把按键往上挪过一个组件，画面上一定看得出来
+        const page = await open(browser, 3, 320, 900, layout([{ type: "heading", en: "A", zh: "甲" }, { type: "alignLeft" }, { type: "ease" }, { type: "alignRight" }, { type: "alignTop" }]));
+        await page.click("#btn-edit");
+        await page.click('#layout .cell[data-id="i3"]');
+        const y0 = await page.evaluate(() => document.querySelector('#layout .cell[data-id="i3"]').getBoundingClientRect().top);
+        await page.keyboard.press("Alt+ArrowUp");
+        const y1 = await page.evaluate(() => document.querySelector('#layout .cell[data-id="i3"]').getBoundingClientRect().top);
+        check("编辑模式：按键往上挪过一个组件，画面上真的移上去了", y1 < y0 - 20, JSON.stringify({ y0, y1 }));
+        // 窄面板的编辑条：选中分组标题时「完成」也完整可见
+        await page.setViewportSize({ width: 240, height: 900 });
+        await page.click('#layout .cell[data-id="i0"]');
+        const eb = await page.evaluate(() => { const d = document.querySelector("#eb-done").getBoundingClientRect(); return { right: d.right, w: d.width, vw: window.innerWidth }; });
+        check("240px：编辑条里的「完成」完整可见", eb.right <= eb.vw - 4 && eb.w >= 30, JSON.stringify(eb));
+        await page.close();
+    }
+    {
+        // 删除类确认：焦点不在按钮上时按回车，不会确认
+        const page = await open(browser, 1, 320, 720);
+        await page.click(".tab[data-tab=settings]");
+        await page.click("#set-usage-reset");
+        await page.waitForTimeout(100);
+        await page.click("#dlg-body p");
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(100);
+        const stillOpen = await page.evaluate(() => !document.querySelector("#modal").hidden);
+        check("删除类确认：点了说明文字再按回车，不会确认（对话框还开着）", stillOpen);
+        await page.keyboard.press("Escape");
+        // 添加脚本：对话框打开后焦点在对话框里，回车 = 添加，不会再点一次背后的按钮
+        await page.click(".tab[data-tab=library]");
+        await page.click("#lib-add");
+        await page.waitForTimeout(150);
+        const f = await page.evaluate(() => ({ inside: document.querySelector(".dialog").contains(document.activeElement), label: document.activeElement.textContent }));
+        await page.keyboard.press("Enter");
+        await page.waitForTimeout(250);
+        const closed = await page.evaluate(() => document.querySelector("#modal").hidden);
+        check("添加脚本：焦点落在对话框里，回车就是「添加」", f.inside && /添加/.test(f.label) && closed, JSON.stringify({ f, closed }));
+        // 命令搜索：Tab 不跑出对话框
+        await page.click("#btn-search");
+        await page.waitForTimeout(100);
+        const ins = [];
+        for (let i = 0; i < 4; i++) { await page.keyboard.press("Tab"); ins.push(await page.evaluate(() => !!document.activeElement.closest(".dialog"))); }
+        check("命令搜索：连按 Tab 焦点一直在对话框里", ins.every(Boolean), JSON.stringify(ins));
+        await page.keyboard.press("Escape");
+        check("审查回归场景没有 JS 错误", !page.__errors.length, page.__errors.join(" | "));
+        await page.close();
+    }
+    {
+        // 后台消息不会被鼠标一扫就清掉
+        const page = await open(browser, 1, 320, 900);
+        await page.evaluate(() => window.MHDebug.note({ ok: false, msg: "测试：后台消息要留满时间" }));
+        const tiles = await page.$$("#layout .tile");
+        await tiles[2].hover(); await tiles[5].hover();
+        const h = await page.textContent("#hint");
+        check("后台消息：鼠标移过两个按钮后还在提示栏里", /后台消息要留满时间/.test(h), h);
+        await page.close();
+    }
+    {
+        // 「我的脚本」分组里的「添加脚本」：脚本放进「我的脚本」，不是放到「代码片段」下面
+        const page = await open(browser, 4, 320, 900);
+        await page.click("#layout .sec-empty .btn.accent");
+        await page.waitForTimeout(150);
+        await page.click("#dlg-btns .btn:last-child");
+        await page.waitForTimeout(300);
+        const order = await page.evaluate(() => window.MHDebug.config().items.map(i => i.type === "heading" ? "H:" + i.en : i.type));
+        check("「我的脚本」里添加的脚本放进「我的脚本」分组", order.indexOf("script") > order.indexOf("H:MY SCRIPTS") && order.indexOf("script") < order.indexOf("H:SNIPPETS"), JSON.stringify(order));
+        await page.close();
+    }
+    {
+        // 脚本库的行内按钮：键盘能 Tab 到
+        const page = await open(browser, 1, 320, 900);
+        await page.click(".tab[data-tab=library]");
+        await page.focus("#lib-q");
+        let reached = false;
+        for (let i = 0; i < 6 && !reached; i++) { await page.keyboard.press("Tab"); reached = await page.evaluate(() => !!document.activeElement.closest(".lib-item .acts")); }
+        check("脚本库：键盘能 Tab 到行内的按钮", reached);
+        await page.close();
+    }
+    {
+        // 在片段编辑框里拖选文字、松手在遮罩上：对话框不关
+        const page = await open(browser, 1, 320, 800);
+        await page.click(".tab[data-tab=library]");
+        await page.click("#lib-seg button[data-seg=snippets]");
+        await page.locator("#lib-snippets .lib-group").nth(0).locator(".act").click();
+        await page.waitForTimeout(100);
+        const ta = await page.$("#dlg-body textarea");
+        const b = await ta.boundingBox();
+        await page.mouse.move(b.x + 20, b.y + 20); await page.mouse.down();
+        await page.mouse.move(b.x + 20, 780, { steps: 4 }); await page.mouse.up();
+        const open2 = await page.evaluate(() => !document.querySelector("#modal").hidden);
+        check("片段编辑：拖选文字松手在遮罩上，对话框不关（没保存的内容还在）", open2);
         await page.close();
     }
 

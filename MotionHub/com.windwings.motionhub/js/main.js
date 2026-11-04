@@ -261,7 +261,7 @@
             // 换之前的脚本库打不开：那边的改动留着重试，说一次
             if (x.other) {
                 retryLater();
-                if (o.otherNote && !S.told[x.other.f]) { S.told[x.other.f] = true; toast(o.otherNote(x.other.f, x.other.r)); }
+                if (o.otherNote && !S.told[x.other.f]) { S.told[x.other.f] = true; note(o.otherNote(x.other.f, x.other.r)); }
             }
             if (x.ok && x.list) {
                 S.synced = true; S.bad = false;
@@ -285,7 +285,7 @@
         // bg = 不是用户点出来的（自动重试、拿到焦点、启动）：别的面板的改动被保留 / 另存时，在提示栏说一声
         S.sync = function (bg) {
             return queued(function () { return attempt(0).then(finish); }).then(function (r) {
-                if (bg && r && r.notes && r.notes.length) toast({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
+                if (bg && r && r.notes && r.notes.length) note({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
                 return r;
             });
         };
@@ -314,7 +314,7 @@
                 local.set(o.tag + "Merged", true);   // 合并这一步已经记成操作了，写不进去也会一直留着重试
                 return attempt(0).then(finish);
             }).then(function (r) {
-                if (r && r.notes && r.notes.length) toast({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
+                if (r && r.notes && r.notes.length) note({ ok: true, msg: r.notes.map(function (n) { return n.text; }).filter(Boolean).join("；") });
                 return r;
             });
         };
@@ -456,6 +456,7 @@
         hintEl.className = "hint";
         hintEl.innerHTML = hintHTML(h);
     }
+    function clickToast(r) { return toast(r, false); }
     var errParts = [], errAt = 0;
     // 几个错误前后脚出现（比如启动时两个文件夹都写不进去）：合成一句显示，不互相覆盖；几处写盘失败只说一次怎么办
     function errText(parts) {
@@ -480,7 +481,10 @@
         }
         return texts.slice(-3).join("；");
     }
-    function toast(r) {
+    // sticky = 后台来的消息（启动失败、同步说明、写盘失败）：旁边没有气泡，留满时间，不被鼠标移动清掉
+    var toastSticky = false, toastFull = "";
+    function note(r) { return toast(r, true); }
+    function toast(r, sticky) {
         if (!r || (!r.msg && r.ok)) return r;
         var msg = r.msg;
         if (!r.ok) {
@@ -489,11 +493,24 @@
             msg = errText(errParts);
         } else errParts = [];
         clearTimeout(toastTimer);
+        toastSticky = !!sticky;
+        toastFull = msg;
         hintEl.className = "hint " + (r.ok ? "ok" : "err");
         hintEl.innerHTML = '<div class="h-row h-wrap ' + (r.ok ? "h-ok" : "h-err") + '"><span class="h-msg">' + esc(msg) + "</span></div>";
-        toastTimer = setTimeout(function () { toastTimer = null; paintHover(); }, r.ok ? 2600 : 4200);
+        // 3 行放不下：可以点提示栏看全文
+        var row = hintEl.firstChild;
+        hintEl.classList.toggle("more", !!row && row.scrollHeight > row.clientHeight + 1);
+        hintEl.title = hintEl.classList.contains("more") ? "点一下看全文" : "";
+        toastTimer = setTimeout(function () { toastTimer = null; toastSticky = false; paintHover(); }, (r.ok ? 2600 : 4200) + (sticky ? 1800 : 0));
         return r;
     }
+    hintEl.addEventListener("click", function () {
+        if (!toastTimer || !hintEl.classList.contains("more")) return;
+        var msg = toastFull, ok = hintEl.classList.contains("ok");
+        clearTimeout(toastTimer); toastTimer = null; toastSticky = false;
+        dialog(ok ? "消息" : "出了点问题", [el("p", "", esc(msg))], [{ label: "知道了", accent: true, value: function () { return true; } }]);
+        paintHover();
+    });
     // 提示统一由一个监听器负责：元素 → 提示（对象，或返回对象的函数）记在 WeakMap 里。
     // 鼠标移到另一个按钮（或键盘焦点移过去）的同一帧就换；列表重绘后按鼠标现在的位置重新找，不会停在已经不存在的按钮上
     var HINTS = new WeakMap(), hoverNode = null, lastXY = null;
@@ -512,11 +529,17 @@
         var raw = HINTS.get(node);
         return withNa(node, typeof raw === "function" ? raw() : raw);
     }
-    function paintHover() { if (!toastTimer) showHint(hintFor(hoverNode && hoverNode.isConnected ? hoverNode : null)); }
+    function paintHover() {
+        if (toastTimer) return;
+        hintEl.title = "";
+        hintEl.classList.remove("more");
+        showHint(hintFor(hoverNode && hoverNode.isConnected ? hoverNode : null));
+    }
     function hoverTo(node, keepToast) {
         if (node === hoverNode) return;
         hoverNode = node;
-        if (!keepToast && toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+        // 点击的结果：换了悬停就让位给新按钮的用法（结果还在气泡里）；后台消息：留满时间
+        if (!keepToast && toastTimer && !toastSticky) { clearTimeout(toastTimer); toastTimer = null; }
         paintHover();
     }
     document.addEventListener("mouseover", function (e) { lastXY = [e.clientX, e.clientY]; hoverTo(hintNode(e.target)); }, true);
@@ -569,7 +592,7 @@
     }
     // 一次点击：按钮旁出气泡（进行中 / 成功 / 失败），结果同时记在底部提示栏；执行期间忽略重复点击
     function act0(btn, fn) {
-        return B.run(btn, fn, { toast: toast }).then(function (r) { refreshCtx(true); return r; });
+        return B.run(btn, fn, { toast: clickToast }).then(function (r) { refreshCtx(true); return r; });
     }
 
     function numInput(value, onChange, cls) {
@@ -613,18 +636,29 @@
                 resolve(v);
                 setTimeout(syncHover, 0);
             }
+            // Tab 能停的地方：tabindex ≥ 0、没禁用、看得见（命令搜索的行是 tabindex=-1，不算；<summary> 算）
             function focusables() {
-                return $$('button:not([disabled]), input:not([disabled]), select, textarea, [tabindex="0"]', box).filter(function (n) { return n.offsetParent !== null; });
+                return $$("button, input, select, textarea, summary, [tabindex]", box).filter(function (n) {
+                    return n.tabIndex >= 0 && !n.disabled && n.offsetParent !== null;
+                });
             }
             function onKey(e) {
                 if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(null); return; }
+                var inside = box.contains(document.activeElement);
                 if (e.key === "Tab") {
                     var f = focusables(), i = f.indexOf(document.activeElement);
-                    if (!f.length) return;
-                    if (i === -1 || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+                    e.stopPropagation();
+                    if (!f.length) { e.preventDefault(); return; }
+                    if (!inside || i === -1 || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
                     return;
                 }
-                if (e.key === "Enter" && !o.noEnter && buttons.length && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "BUTTON") {
+                if (e.key === "Enter") {
+                    // 焦点跑到了对话框外面（比如还在打开它的按钮上）：回车不能再点一次那个按钮
+                    if (!inside) { e.preventDefault(); e.stopPropagation(); if (!o.danger && !o.noEnter && buttons.length) close(buttons[buttons.length - 1].value()); return; }
+                    var tag = e.target.tagName;
+                    if (o.noEnter || !buttons.length || tag === "TEXTAREA" || tag === "BUTTON" || tag === "SUMMARY" || tag === "SELECT") return;
+                    // 删除类确认：回车不默认确认，要按在「删除」按钮上
+                    if (o.danger) { e.preventDefault(); return; }
                     e.preventDefault(); close(buttons[buttons.length - 1].value());
                 }
             }
@@ -636,13 +670,21 @@
             });
             $("#dlg-x").onclick = function () { close(null); };
             m.hidden = false;
-            m.onclick = function (e) { if (e.target === m) close(null); };
+            // 只有在遮罩上按下、又在遮罩上松开才关（在输入框里拖选文字、松手在遮罩上，不会把没保存的内容关掉）
+            var downOnScrim = false;
+            m.onmousedown = function (e) { downOnScrim = e.target === m; };
+            m.onclick = function (e) { if (e.target === m && downOnScrim) close(null); downOnScrim = false; };
             m.closeWith = close;
             document.addEventListener("keydown", onKey, true);
-            var first = o.headNode && o.headNode.matches && o.headNode.matches("input") ? o.headNode : body.querySelector("input[type=text], textarea");
+            // 焦点一定落在对话框里：第一个看得见的输入框；没有就落在默认按钮上（删除类落在「取消」上）
+            var first = null;
+            if (o.headNode && o.headNode.matches && o.headNode.matches("input")) first = o.headNode;
+            else $$("input[type=text], textarea", body).some(function (n) { if (n.offsetParent !== null) { first = n; return true; } return false; });
             if (first) { first.focus(); if (first.select) first.select(); }
-            else if (btnEls.length) btnEls[o.danger ? 0 : btnEls.length - 1].focus();
-            else $("#dlg-x").focus();
+            if (!box.contains(document.activeElement)) {
+                if (btnEls.length) btnEls[o.danger ? 0 : btnEls.length - 1].focus();
+                else $("#dlg-x").focus();
+            }
         });
     }
     function ask(title, labelText, def, okLabel) {
@@ -905,7 +947,7 @@
                 cfgUnsaved(true);
                 if (B.disk.ok()) {
                     // 有 Node 时还写不进去，多半是暂时的（文件正被别的程序占用、磁盘满了）：提示一次，过一会儿自动重试
-                    if (!cfgWarned) { cfgWarned = true; toast(diskFail("面板布局", (r && r.msg) || "没有返回")); }
+                    if (!cfgWarned) { cfgWarned = true; note(diskFail("面板布局", (r && r.msg) || "没有返回")); }
                     clearTimeout(cfgRetryTimer);
                     cfgRetryTimer = setTimeout(saveConfig, [1000, 2000, 5000, 10000][cfgRetry] || 30000);
                     cfgRetry++;
@@ -923,7 +965,7 @@
             // 布局文件坏了（写到一半断电等）：挪到旁边留着，用这台电脑缓存里的布局重新写好，并说一声
             if (bad && B.disk.ok()) {
                 var moved = B.disk.moveAside(B.disk.configPath("panel" + PANEL), "bad-" + timeStamp());
-                if (moved) { bad = false; c = null; toast({ ok: false, msg: "面板布局文件损坏：已改名为「" + moved.replace(/^.*[\\\/]/, "") + "」留在原处，现在用这台电脑缓存里的布局并重新写好" }); }
+                if (moved) { bad = false; c = null; note({ ok: false, msg: "面板布局文件损坏：已改名为「" + moved.replace(/^.*[\\\/]/, "") + "」留在原处，现在用这台电脑缓存里的布局并重新写好" }); }
             }
             cfgSynced = r.ok && !bad;
             cfgBad = bad;
@@ -962,7 +1004,7 @@
         if (!pend || !pend.items) return Promise.resolve();
         return backupLayout(pend).then(function (b) {
             if (!b.ok) {
-                if (!pendWarned) { pendWarned = true; toast({ ok: false, msg: "这个 AE 版本里原来的面板布局还没备份上（" + b.msg + "）：先单独留在这台电脑的缓存里，下次打开面板会再试；检查 MotionHub 文件夹是否可写" }); }
+                if (!pendWarned) { pendWarned = true; note({ ok: false, msg: "这个 AE 版本里原来的面板布局还没备份上（" + b.msg + "）：先单独留在这台电脑的缓存里，下次打开面板会再试；检查 MotionHub 文件夹是否可写" }); }
                 return;
             }
             local.set("cfgPendingBackup" + PANEL, null);
@@ -1030,11 +1072,32 @@
 
     function findItem(id) { for (var i = 0; i < cfg.items.length; i++) if (cfg.items[i].id === id) return i; return -1; }
 
+    // 新加的脚本放进「我的脚本」分组的末尾，片段放进「代码片段」（没有就「表达式」）分组的末尾；
+    // 找不到对应的分组才放到整个面板的最后。返回放进去的分组名（中文说明），用在提示里
+    function sectionEnd(re, notRe) {
+        var at = -1;
+        for (var i = 0; i < cfg.items.length; i++) {
+            var it = cfg.items[i];
+            if (it.type !== "heading") continue;
+            if (at !== -1) return { i: i, h: cfg.items[at] };
+            var en = String(it.en || "").toUpperCase();
+            if (re.test(en) && !(notRe && notRe.test(en))) at = i;
+        }
+        return at === -1 ? null : { i: cfg.items.length, h: cfg.items[at] };
+    }
+    function insertItem(obj) {
+        if (!obj.id) obj.id = uid();
+        var place = obj.type === "script" ? sectionEnd(/SCRIPT/, /SNIPPET/) : obj.type === "snippet" ? (sectionEnd(/SNIPPET/) || sectionEnd(/EXPRESSION/)) : null;
+        if (place) { cfg.items.splice(place.i, 0, obj); return place.h.zh || place.h.en || ""; }
+        cfg.items.push(obj);
+        return "";
+    }
     function addItem(obj) {
         obj.id = uid();
-        cfg.items.push(obj);
+        var where = insertItem(obj);
         saveConfig();
         renderLayout();
+        return where;
     }
 
     // =====================================================================
@@ -1224,7 +1287,7 @@
                         if (r && r.ok) bumpUsage("ease");
                         return r;
                     });
-                }, { toast: toast }).then(function () {
+                }, { toast: clickToast }).then(function () {
                     running = false;
                     if (again) { again = false; live(anchor); }
                 });
@@ -2015,7 +2078,6 @@
         layoutEl.style.setProperty("--key", k);
         layoutEl.style.setProperty("--half", Math.floor(cols / 2));
         layoutEl.classList.toggle("wide", cols >= 10);
-        requestAnimationFrame(markColumns);
     }
     if (window.ResizeObserver) new ResizeObserver(function () { measureGrid(); }).observe(layoutEl);
     window.addEventListener("resize", measureGrid);
@@ -2031,18 +2093,21 @@
     var COMPACT = { ease: 1, keys: 1, quick: 1, arrange: 1, style: 1, effects: 1, beat: 1, wire: 1, graph: 1 };
     var RUN_TYPES = { script: 1, snippet: 1 };
 
+    // 一个分组拆成几块：按键网格（key-grid，同一块里补空位）、成对的小组件（pair-grid，宽面板两列）、
+    // 整行组件（full-block）、脚本 / 片段（run-grid）。小按键不会和组件挤在同一行里被拉长；
+    // 补空位只在一块按键里发生，不会跨过组件把按键挪到前面去
     function renderLayout() {
         measureGrid();
         layoutEl.innerHTML = "";
         var hn = 0, cur = null, secs = [];
         function open(headCell, headItem) {
-            var sec = el("div", "sec"), grid = el("div", "sec-grid");
+            var sec = el("div", "sec");
             if (headCell) sec.appendChild(headCell);
-            sec.appendChild(grid);
             layoutEl.appendChild(sec);
-            cur = { grid: grid, run: null, n: 0, head: headItem };
+            cur = { sec: sec, keys: null, pair: null, run: null, n: 0, head: headItem };
             secs.push(cur);
         }
+        function blk(cls) { var b = el("div", "blk " + cls); cur.sec.appendChild(b); return b; }
         cfg.items.forEach(function (item) {
             var def = W[item.type];
             if (!def) return;
@@ -2065,33 +2130,31 @@
             if (item.type === "heading") { open(cell, item); return; }
             if (!cur) open(null, null);
             if (RUN_TYPES[item.type]) {
-                if (!cur.run) { cur.run = el("div", "run-grid"); cur.grid.appendChild(cur.run); }
+                cur.keys = cur.pair = null;
+                if (!cur.run) cur.run = blk("run-grid");
                 cur.run.appendChild(cell);
-            } else { cur.run = null; cur.grid.appendChild(cell); }
+            } else if (def.size === "full") {
+                cur.keys = cur.run = null;
+                if (COMPACT[item.type]) { if (!cur.pair) cur.pair = blk("pair-grid"); cur.pair.appendChild(cell); }
+                else { cur.pair = null; blk("full-block").appendChild(cell); }
+            } else {
+                cur.run = cur.pair = null;
+                if (!cur.keys) cur.keys = blk("key-grid");
+                cur.keys.appendChild(cell);
+            }
             cur.n++;
         });
         if (!cur) open(null, null);
-        secs.forEach(function (sc) { if (!sc.n) sc.grid.appendChild(emptySection(sc.head)); });
+        secs.forEach(function (sc) { if (!sc.n) { cur = sc; blk("sec-empty-wrap").appendChild(emptySection(sc.head)); } });
         if (!editing) {
             // 「＋」单独占一行放在最后（放进分组的网格会被填空位的规则挪到前面去）
-            var tail = el("div", "sec-grid add-row"), add = el("div", "cell");
+            var tail = el("div", "key-grid add-row"), add = el("div", "cell");
             add.appendChild(tile({ icon: "plus", cls: "add", hint: { title: "添加", click: "往这个面板加组件、工具、脚本或片段" }, run: function () { openCatalog(); return null; } }));
             tail.appendChild(add);
             layoutEl.appendChild(tail);
         }
         applyNeeds();
-        markColumns();
         syncHover();
-    }
-    // 宽面板（两个小组件并排）：左边的留 12px，右边的前面加一条线
-    function markColumns() {
-        var wide = layoutEl.classList.contains("wide"), mid = 0;
-        if (wide) { var lr = layoutEl.getBoundingClientRect(); mid = lr.left + lr.width / 2; }
-        $$(".cell.compact", layoutEl).forEach(function (c) {
-            var right = wide && c.getBoundingClientRect().left > mid - 4;
-            c.classList.toggle("c-r", right);
-            c.classList.toggle("c-l", wide && !right);
-        });
     }
 
     // 空分组：说清楚这里放什么、怎么放进来（「我的脚本」「代码片段」有专门的说明）
@@ -2267,9 +2330,9 @@
             var b = el("button", "cat-item",
                 '<span class="ci">' + svg(icon) + '</span><span style="min-width:0"><div class="cn">' + esc(name) + '</div><div class="cd">' + esc(desc || "") + '</div></span><span class="cs">' + esc(size) + "</span>");
             b.addEventListener("click", function () {
-                onAdd();
+                var where = onAdd();
                 $("#modal").closeWith(null);
-                toast({ ok: true, msg: "已添加「" + name + "」到面板末尾" + (editing ? "" : "，右上角「编辑」可以调整位置") });
+                toast({ ok: true, msg: "已添加「" + name + "」" + (where ? "到「" + where + "」分组" : "到面板末尾") + (editing ? "" : "，右上角「编辑」可以调整位置") });
             });
             return b;
         }
@@ -2280,20 +2343,20 @@
                 var d = W[type];
                 if (d.cat !== cat || d.more) return;
                 list.appendChild(item(d.icon, d.name, d.desc, sizeLabel(d.size), function () {
-                    addItem(type === "heading" ? { type: type, en: "SECTION", zh: "新分组" } : { type: type });
+                    return addItem(type === "heading" ? { type: type, en: "SECTION", zh: "新分组" } : { type: type });
                 }));
             });
             if (list.children.length) nodes.push(el("div", "cat-title", esc(cat)), list);
         });
         var sl = el("div", "cat-list");
         lib.items.forEach(function (it) {
-            sl.appendChild(item(it.ext === "ffx" ? "preset" : "script", it.name, it.cat + " · " + it.type, "3×1", function () { addItem({ type: "script", key: it.key }); }));
+            sl.appendChild(item(it.ext === "ffx" ? "preset" : "script", it.name, it.cat + " · " + it.type, "3×1", function () { return addItem({ type: "script", key: it.key }); }));
         });
         if (!lib.items.length) sl.appendChild(el("div", "pal-empty", "脚本库是空的：在「脚本库」页添加，或者把 .jsx 拖进面板"));
         nodes.push(el("div", "cat-title", "我的脚本"), sl);
         var cl = el("div", "cat-list");
         visibleSnippets().forEach(function (s) {
-            cl.appendChild(item(s.kind === "expr" ? "exprSnippet" : "codeSnippet", s.name, (s.builtin ? "内置 · " : "") + (s.kind === "expr" ? "表达式" : "脚本"), "3×1", function () { addItem({ type: "snippet", sid: s.id }); }));
+            cl.appendChild(item(s.kind === "expr" ? "exprSnippet" : "codeSnippet", s.name, (s.builtin ? "内置 · " : "") + (s.kind === "expr" ? "表达式" : "脚本"), "3×1", function () { return addItem({ type: "snippet", sid: s.id }); }));
         });
         nodes.push(el("div", "cat-title", "代码片段"), cl);
         // 更多：复刻 AE 原生快捷键的小工具，默认不放在面板上
@@ -2302,7 +2365,7 @@
         Object.keys(W).forEach(function (type) {
             var d = W[type];
             if (!d.more) return;
-            ml.appendChild(item(d.icon, d.name, d.desc, sizeLabel(d.size), function () { addItem({ type: type }); }));
+            ml.appendChild(item(d.icon, d.name, d.desc, sizeLabel(d.size), function () { return addItem({ type: type }); }));
         });
         more.appendChild(ml);
         nodes.push(more);
@@ -2329,8 +2392,8 @@
         if (B.disk.ok()) snippetStore.retarget(B.disk.join(was, "_snippets.json"), B.disk.join(p, "_snippets.json"));
         loadSnippets().then(function (r) {
             var who = mine ? "脚本库已换成「" + p + "」" : "脚本库已在别的面板换成「" + p + "」";
-            if (r && r.ok === false && !r.later) toast({ ok: false, msg: who + "，但新库里的代码片段读不到（" + ((r.disk && r.disk.why) || r.msg) + "）：这里暂时显示的是换之前的片段，会自动重试" });
-            else if (!mine) toast({ ok: true, msg: who + "：这里的脚本和代码片段也换成了新库里的" });
+            if (r && r.ok === false && !r.later) note({ ok: false, msg: who + "，但新库里的代码片段读不到（" + ((r.disk && r.disk.why) || r.msg) + "）：这里暂时显示的是换之前的片段，会自动重试" });
+            else if (!mine) note({ ok: true, msg: who + "：这里的脚本和代码片段也换成了新库里的" });
         });
         if (!mine) refreshLibrary().then(null, function () {});
     }
@@ -2388,7 +2451,7 @@
     }
 
     function afterInstall(keys, v) {
-        if (v.pin) keys.forEach(function (k) { if (!onPanel("script", "key", k)) cfg.items.push({ id: uid(), type: "script", key: k }); });
+        if (v.pin) keys.forEach(function (k) { if (!onPanel("script", "key", k)) insertItem({ type: "script", key: k }); });
         saveConfig();
         return refreshLibrary();
     }
@@ -3203,7 +3266,7 @@
         resyncing = Promise.all(jobs).then(function (rs) {
             resyncing = null;
             var bad = rs.filter(function (r) { return r && r.ok === false; });
-            bad.forEach(function (r) { toast(r); });
+            bad.forEach(function (r) { note(r); });
             return bad;
         });
         return resyncing;
@@ -3252,7 +3315,7 @@
             updatePerm(d.canWrite);
             bannerState.perm = !d.canWrite;
             renderBanner();
-            if (d.libReady === false) toast({ ok: false, msg: "没法创建脚本库文件夹：" + d.libPath + (d.canWrite ? "。在设置页「更换文件夹」换一个位置" : "。先允许脚本写入文件") });
+            if (d.libReady === false) note({ ok: false, msg: "没法创建脚本库文件夹：" + d.libPath + (d.canWrite ? "。在设置页「更换文件夹」换一个位置" : "。先允许脚本写入文件") });
             return d;
         });
     }
@@ -3327,7 +3390,7 @@
                 showMigrationNotice();
                 showBackupNotice();
                 var bad = [initRes].concat(rs).filter(function (r) { return r && r.ok === false; });
-                bad.forEach(function (r) { toast(r); });
+                bad.forEach(function (r) { note(r); });
                 return bad;
             });
         });
@@ -3340,7 +3403,9 @@
         migrate: function (c) { var x = copy(c); var m = migrateConfig(x); return { cfg: x, moves: m }; },
         snippets: function () { return copy(snippets); }, curves: function () { return copy(userCurves); }, hidden: function () { return copy(snipPrefs.hidden); },
         // 测试用：换主题色看效果（和设置页点色块一样，但不保存）
-        accent: function (hex) { cfg.accent = hex; applyAccent(hex); renderLayout(); }
+        accent: function (hex) { cfg.accent = hex; applyAccent(hex); renderLayout(); },
+        // 测试用：模拟一条后台来的消息（启动失败、同步说明）
+        note: function (r) { note(r); }
     };
 
     B.registerKeys(["cmdK", "esc"]);
