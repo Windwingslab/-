@@ -30,11 +30,13 @@ function LightLayer() {}
 function prop(value, o) {
     o = o || {};
     const p = {
-        _v: value, _keys: [], expression: "", expressionError: "", dimensionsSeparated: !!o.separated, name: o.name || "",
+        _v: value, _keys: [], expression: o.exprFn ? "模拟的表达式" : "", expressionError: "", dimensionsSeparated: !!o.separated, name: o.name || "",
+        canSetExpression: true, expressionEnabled: !!o.exprFn,
         get numKeys() { return this._keys.length; },
         get value() { return this.valueAtTime(0, false); },
         valueAtTime(t, pre) {
             if (this.expression && o.evalExpr && !pre) return o.evalExpr(this.expression, t);
+            if (o.exprFn && !pre) return o.exprFn(t, this.valueAtTime(t, true));
             if (!this._keys.length) return clone(this._v);
             // 测试里只在关键帧上取值：取最近的那个
             let best = this._keys[0];
@@ -67,8 +69,8 @@ function makeLayer(o) {
     const sep = !!o.separated;
     const pos = vec(o.pos || [0, 0], o.z);
     const tr = {
-        anchorPoint: prop(vec(o.anchor || [0, 0])),
-        position: prop(pos, { separated: sep }),
+        anchorPoint: prop(vec(o.anchor || [0, 0]), { exprFn: o.anchorExpr ? (t, v) => o.anchorExpr(L, t, v) : null }),
+        position: prop(pos, { separated: sep, exprFn: o.posExpr ? (t, v) => o.posExpr(L, t, v) : null }),
         scale: prop(vec(o.scale || [100, 100], 100)),
         opacity: prop(100)
     };
@@ -153,12 +155,33 @@ function vecFromWorld(L, w, t) {
     return [0, 1, 2].map(i => inv[i][0] * w[0] + inv[i][1] * w[1] + inv[i][2] * w[2]);
 }
 // 后台的探针表达式：var v = thisLayer.toWorldVec([x, y, z], t); thisLayer.hasParent ? thisLayer.parent.fromWorldVec(v, t) : v;
+let CUR_COMP = null;
+function project(P) {
+    const W = CUR_COMP ? CUR_COMP.width : 1920, H = CUR_COMP ? CUR_COMP.height : 1080, zoom = W * 50 / 36, k = zoom / ((P[2] || 0) + zoom);
+    return [W / 2 + (P[0] - W / 2) * k, H / 2 + (P[1] - H / 2) * k];
+}
+// 图层上一点画在合成画面上的位置（3D 链 + 默认摄像机透视；2D 图层不受摄像机影响）
+function drawnOf(L, p, t) { const w = toComp(L, p, t); return L.threeDLayer ? project(w) : [w[0], w[1]]; }
+// 后台的三种探针表达式：toWorldVec + parent.fromWorldVec / parent.fromWorldVec([dx, dy, 0]) / toComp
 function evalProbe(L, expr, t) {
-    const m = /toWorldVec\(\[([^\]]+)\],\s*([^)]+)\)/.exec(expr);
-    if (!m || !/hasParent \? thisLayer\.parent\.fromWorldVec\(v, /.test(expr)) throw new Error("看不懂的表达式：" + expr);
-    const v = m[1].split(",").map(Number), tt = Number(m[2]);
-    const w = vecToWorld(L, v, tt);
-    return L.parent ? vecFromWorld(L.parent, w, tt) : w;
+    let m = /toWorldVec\(\[([^\]]+)\],\s*([^)]+)\)/.exec(expr);
+    if (m && /hasParent \? thisLayer\.parent\.fromWorldVec\(v, /.test(expr)) {
+        const v = m[1].split(",").map(Number), tt = Number(m[2]);
+        const w = vecToWorld(L, v, tt);
+        return L.parent ? vecFromWorld(L.parent, w, tt) : w;
+    }
+    m = /^thisLayer\.hasParent \? thisLayer\.parent\.fromWorldVec\(\[([^\]]+)\],\s*([^)]+)\) :/.exec(expr);
+    if (m) {
+        const v = m[1].split(",").map(Number), tt = Number(m[2]);
+        return L.parent ? vecFromWorld(L.parent, v, tt) : v;
+    }
+    m = /thisLayer\.toComp\(\[([^\]]+)\],\s*([^)]+)\)/.exec(expr);
+    if (m) {
+        const v = m[1].split(",").map(Number), tt = Number(m[2]);
+        const d = drawnOf(L, v, tt);
+        return [d[0], d[1], 0];
+    }
+    throw new Error("看不懂的表达式：" + expr);
 }
 
 function makeComp(layers, o) {
@@ -177,6 +200,7 @@ function makeComp(layers, o) {
             }
         }
     });
+    CUR_COMP = comp;
     // Object.assign 会把 getter 抄成当时的值：图层数要用 defineProperty 才能跟着变
     Object.defineProperty(comp, "numLayers", { get() { return ALL_LAYERS.length; } });
     ALL_LAYERS = layers.slice();
@@ -515,14 +539,16 @@ function run(layers, sel, name, args, compOpts) {
     // ⌥ 贴到合成：没有父级、自己转过 X 的 3D 图层（3.7.2 能贴，3.8 一开始退化成跳过）
     const L = makeLayer({ three: true, rect: [0, 0, 400, 300], anchor: [0, 0, 0], pos: [960, 540], rotX: 30 });
     const r = run([L], [L], "anchor", { fx: 1, fy: 1, mods: { alt: true } }).r;
-    check("⌥ 贴到合成：自己转过 X 的 3D 图层也贴上了（锚点在合成右下角）", r.ok && nearV(anchorComp(L).slice(0, 2), [1920, 1080]) && !/没贴到合成/.test(r.msg), JSON.stringify(r) + " " + fmt(anchorComp(L)));
+    const dr = drawnOf(L, L.transform.anchorPoint.value);
+    check("⌥ 贴到合成：自己转过 X 的 3D 图层也贴上了（画面上锚点在合成右下角，透视算上）", r.ok && nearV(dr, [1920, 1080], 0.5) && !/没贴上/.test(r.msg), JSON.stringify(r) + " " + fmt(dr));
     // 居中：转过 Y 的 3D 图层挂在普通 2D 父级下
     const P = makeLayer({ name: "P", rect: [0, 0, 10, 10], anchor: [0, 0], pos: [100, 50], scale: [50, 50] });
     const C = makeLayer({ three: true, rect: [0, 0, 200, 100], anchor: [0, 0, 0], pos: [40, 40], rotY: 40 });
     C.parent = P;
     const before = snapshot(C);
     const r2 = run([C, P], [C], "centerComp", {}).r;
-    check("居中：转过 Y 的 3D 图层挂在 2D 父级下也能居中（锚点到合成中心）", r2.ok && nearV(anchorComp(C).slice(0, 2), [960, 540]) && /已居中：1 个图层/.test(r2.msg), JSON.stringify(r2) + " " + fmt(anchorComp(C)));
+    const dc = drawnOf(C, C.transform.anchorPoint.value);
+    check("居中：转过 Y 的 3D 图层挂在 2D 父级下也能居中（画面上锚点到合成中心）", r2.ok && nearV(dc, [960, 540], 0.5) && /已居中：1 个图层/.test(r2.msg), JSON.stringify(r2) + " " + fmt(dc));
     void before;
 }
 {
@@ -539,6 +565,84 @@ function run(layers, sel, name, args, compOpts) {
     comp.selectedProperties = [one];
     const r = loadHost(comp).call("bounce", { mods: {} });
     check("弹性：只有 1 个关键帧时也提示「至少 2 个关键帧」", r.ok && /至少 2 个关键帧/.test(r.msg), r.msg);
+}
+
+// 19. 第二轮复核回归（3.8.0）
+{
+    // 透视：3D 卡片转过 Y，⌥ 贴右上——画面上锚点正好在合成右上角（以前差 117 px 还说贴上了）
+    const L = makeLayer({ three: true, rect: [0, 0, 400, 300], anchor: [0, 0, 0], pos: [960, 540], rotY: 40 });
+    const r = run([L], [L], "anchor", { fx: 1, fy: 0, mods: { alt: true } }).r;
+    const d = drawnOf(L, L.transform.anchorPoint.value);
+    check("透视：转过 Y 的 3D 卡片 ⌥ 贴右上，画面上正好在合成右上角", r.ok && nearV(d, [1920, 0], 0.5), JSON.stringify(r) + " " + fmt(d));
+    // 只转了 Z、但在 z = 500 的 3D 图层：居中后画面上的锚点在合成中心
+    const Z = makeLayer({ three: true, rect: [0, 0, 200, 200], anchor: [0, 0, 0], pos: [300, 200], z: 500 });
+    run([Z], [Z], "centerComp", {});
+    const dz = drawnOf(Z, Z.transform.anchorPoint.value);
+    check("透视：z = 500 的 3D 图层居中，画面上的锚点在合成中心", nearV(dz, [960, 540], 0.5), fmt(dz));
+}
+{
+    // 锚点由表达式控制（文字自动居中）：改了画面会跳，所以不改，并说明
+    const expr = (L) => { const r = L._rect; return [r[0] + r[2] / 2, r[1] + r[3] / 2]; };
+    const T = makeLayer({ kind: "text", rect: [0, -80, 600, 100], anchor: [0, 0], pos: [960, 540], anchorExpr: (L) => expr(L) });
+    const before = snapshot(T);
+    const r = run([T], [T], "anchor", { fx: 0, fy: 0 }).r;
+    check("锚点由表达式控制：画面不动，并说明没改", same(before, snapshot(T)) && !r.ok && /表达式/.test(r.msg), JSON.stringify(r));
+    // 跟着数值走的表达式（value + [5, 0]）：照常改，画面不动
+    const V = makeLayer({ rect: [0, 0, 200, 100], anchor: [0, 0], pos: [300, 300], anchorExpr: (L, t, v) => [v[0] + 5, v[1]] });
+    const bv = snapshot(V);
+    const r2 = run([V], [V], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    check("跟着数值走的锚点表达式：照常改，画面不动", r2.ok && same(bv, snapshot(V)) && /锚点已移到中心：1 个图层/.test(r2.msg), JSON.stringify(r2));
+    // 位置由不看数值的表达式控制：改了会跳，还原
+    const P = makeLayer({ rect: [0, 0, 200, 100], anchor: [0, 0], pos: [300, 300], posExpr: () => [500, 500] });
+    const bp = snapshot(P);
+    const r3 = run([P], [P], "anchor", { fx: 0.5, fy: 0.5 }).r;
+    check("位置由不看数值的表达式控制：还原、画面不动，并说明", same(bp, snapshot(P)) && /表达式/.test(r3.msg) && nearV(P.transform.anchorPoint.valueAtTime(0, true), [0, 0]), JSON.stringify(r3));
+}
+{
+    // 旋转过的图层上的圆形遮罩：左对齐后，画面上圆的最左边正好在 x = 0
+    const L = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [500, 500], pos: [900, 500], rot: 45, masks: [{ shape: ellipseShape(500, 500, 100, 100) }] });
+    run([L], [L], "align", { mode: "left" });
+    let minX = Infinity;
+    for (let i = 0; i < 720; i++) { const a = i / 720 * Math.PI * 2; minX = Math.min(minX, toComp(L, [500 + 100 * Math.cos(a), 500 + 100 * Math.sin(a)])[0]); }
+    check("旋转 45° 的图层上的圆形遮罩：左对齐后圆的最左边在 x = 0（以前差 41 px）", Math.abs(minX) < 0.2, minX);
+}
+{
+    // 遮罩：相交只碰到边（零面积），之后再相加——只算后加的
+    const L = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [
+        { shape: rectShape(0, 0, 100, 100) }, { shape: rectShape(100, 0, 200, 100), mode: MaskMode.INTERSECT }, { shape: rectShape(500, 500, 600, 600) }] });
+    run([L], [L], "anchor", { fx: 0.5, fy: 0.5 });
+    check("遮罩：相交只碰到边以后再相加，按后加的算 (550, 550)", nearV(L.transform.anchorPoint.value, [550, 550]), fmt(L.transform.anchorPoint.value));
+}
+{
+    // ⌥ 空对象：挂在 2D 父级下、转过 Y 的两张 3D 卡片——空对象放在它们画面上的中间（以前掉到合成中心）
+    const rig = makeLayer({ name: "rig", rect: [0, 0, 10, 10], anchor: [0, 0], pos: [1500, 800] });
+    const A = makeLayer({ name: "A", three: true, rect: [0, 0, 100, 100], anchor: [0, 0, 0], pos: [0, 0], rotY: 30 });
+    const Bc = makeLayer({ name: "B", three: true, rect: [0, 0, 100, 100], anchor: [0, 0, 0], pos: [200, 0], rotY: -30 });
+    A.parent = rig; Bc.parent = rig;
+    const { comp } = run([A, Bc, rig], [A, Bc], "nullLayer", { mods: { alt: true } });
+    const nl = comp.layer(1), w = toComp(nl, nl.transform.anchorPoint.value);
+    check("⌥ 空对象：转过 Y 的 3D 卡片挂在父级下，空对象在它们画面上的中间 (1600, 800)", nearV(w.slice(0, 2), [1600, 800], 0.5), fmt(w));
+}
+{
+    // 滑动入场：父级是转过 Y、缩放 50% 的 3D 图层——在合成（世界）里还是滑合成宽度的 1/4，不跑到纵深里
+    const P = makeLayer({ name: "P", three: true, rect: [0, 0, 10, 10], anchor: [0, 0, 0], pos: [960, 540], rotY: 60, scale: [50, 50] });
+    const C = makeLayer({ three: true, rect: [0, 0, 100, 100], anchor: [0, 0, 0], pos: [0, 0] });
+    C.parent = P;
+    run([C, P], [C], "quickAnim", { kind: "slide", dir: "left", frames: 12 });
+    const k1 = C.transform.position.keyValue(1), k2 = C.transform.position.keyValue(2);
+    const w1 = toComp(P, k1), w2 = toComp(P, k2);
+    check("滑动入场：3D 父级下在世界里横着滑 480 px、不往纵深跑", near(w2[0] - w1[0], 480, 0.01) && near(w2[2] - w1[2], 0, 0.01) && near(w2[1] - w1[1], 0, 0.01), fmt(w1) + " → " + fmt(w2));
+}
+{
+    // 跳过时说真实原因：父级是摄像机、开了自动定向，不再一律说「3D 旋转」
+    const cam = makeLayer({ kind: "camera", name: "摄像机" });
+    const H = makeLayer({ name: "HUD", rect: [0, 0, 100, 50], anchor: [0, 0], pos: [0, 0] });
+    H.parent = cam;
+    const r = run([H, cam], [H], "align", { mode: "left" }).r;
+    check("对齐：父级是摄像机时说「父级是摄像机或灯光」", !r.ok && /父级是摄像机或灯光/.test(r.msg) && !/3D 旋转/.test(r.msg), r.msg);
+    const O = makeLayer({ name: "定向", rect: [0, 0, 100, 50], anchor: [0, 0], pos: [100, 100], autoOrient: AutoOrientType.ALONG_PATH });
+    const r2 = run([O], [O], "align", { mode: "left" }).r;
+    check("对齐：开了自动定向时说「开了自动定向」", !r2.ok && /开了自动定向/.test(r2.msg), r2.msg);
 }
 
 console.log(failures ? "✗ 图层工具测试：" + failures + " 项没通过" : "✓ 图层工具测试全部通过");

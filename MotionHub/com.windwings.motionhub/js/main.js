@@ -486,6 +486,8 @@
     function note(r) { return toast(r, true); }
     function toast(r, sticky) {
         if (!r || (!r.msg && r.ok)) return r;
+        // 后台消息还在显示：点击的结果已经在按钮旁的气泡里，不顶掉它
+        if (toastTimer && toastSticky && !sticky) return r;
         var msg = r.msg;
         if (!r.ok) {
             if (Date.now() - errAt > 4000) { errParts = []; errAt = Date.now(); }
@@ -497,18 +499,25 @@
         toastFull = msg;
         hintEl.className = "hint " + (r.ok ? "ok" : "err");
         hintEl.innerHTML = '<div class="h-row h-wrap ' + (r.ok ? "h-ok" : "h-err") + '"><span class="h-msg">' + esc(msg) + "</span></div>";
-        // 3 行放不下：可以点提示栏看全文
-        var row = hintEl.firstChild;
-        hintEl.classList.toggle("more", !!row && row.scrollHeight > row.clientHeight + 1);
-        hintEl.title = hintEl.classList.contains("more") ? "点一下看全文" : "";
+        markMore();
         toastTimer = setTimeout(function () { toastTimer = null; toastSticky = false; paintHover(); }, (r.ok ? 2600 : 4200) + (sticky ? 1800 : 0));
         return r;
     }
+    // 3 行放不下（高度或宽度）：提示栏可以点开看全文，键盘也能 Tab 到它按 Enter
+    function markMore() {
+        var row = hintEl.firstChild, more = !!row && (row.scrollHeight > row.clientHeight + 1 || row.scrollWidth > row.clientWidth + 1);
+        hintEl.classList.toggle("more", more);
+        hintEl.title = more ? "点一下看全文" : "";
+        if (more) { hintEl.tabIndex = 0; hintEl.setAttribute("role", "button"); }
+        else { hintEl.removeAttribute("tabindex"); hintEl.removeAttribute("role"); }
+    }
+    window.addEventListener("resize", function () { if (toastTimer) markMore(); });
+    hintEl.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && hintEl.classList.contains("more")) { e.preventDefault(); hintEl.click(); } });
     hintEl.addEventListener("click", function () {
         if (!toastTimer || !hintEl.classList.contains("more")) return;
         var msg = toastFull, ok = hintEl.classList.contains("ok");
         clearTimeout(toastTimer); toastTimer = null; toastSticky = false;
-        dialog(ok ? "消息" : "出了点问题", [el("p", "", esc(msg))], [{ label: "知道了", accent: true, value: function () { return true; } }]);
+        dialog(ok ? "消息" : "出了点问题", [el("p", "full-msg", esc(msg))], [{ label: "知道了", accent: true, value: function () { return true; } }]);
         paintHover();
     });
     // 提示统一由一个监听器负责：元素 → 提示（对象，或返回对象的函数）记在 WeakMap 里。
@@ -533,6 +542,7 @@
         if (toastTimer) return;
         hintEl.title = "";
         hintEl.classList.remove("more");
+        hintEl.removeAttribute("tabindex"); hintEl.removeAttribute("role");
         showHint(hintFor(hoverNode && hoverNode.isConnected ? hoverNode : null));
     }
     function hoverTo(node, keepToast) {
@@ -607,12 +617,26 @@
     // =====================================================================
     // 对话框 / 浮层
     // =====================================================================
+    // 双击对话框里的列表项：第一下就关了对话框，第二下会落在下面的面板按钮上——关掉后 0.6 秒内的「双击的第二下」不算
+    var shieldUntil = 0;
+    document.addEventListener("click", function (e) {
+        if (e.detail >= 2 && Date.now() < shieldUntil && !(e.target.closest && e.target.closest("#modal"))) { e.stopPropagation(); e.preventDefault(); }
+    }, true);
+    // 控件被重绘换掉以后，找新的那一个：data-focus-key（「+」、编辑条按钮）；脚本库的行按「行的 key + 第几个按钮」
+    function sameControl(n) {
+        if (!n || !n.dataset) return null;
+        if (n.dataset.focusKey) return document.querySelector('[data-focus-key="' + n.dataset.focusKey + '"]');
+        if (n.dataset.actKey) return document.querySelector('[data-act-key="' + n.dataset.actKey.replace(/"/g, '\\"') + '"]');
+        return null;
+    }
+
     // 对话框：贴着面板顶部的抽屉（不在高高的停靠面板中间飘着）。标题栏 40px + 关闭按钮，按钮栏 48px，中间滚动。
     // Tab 只在对话框里转；关掉以后焦点回到打开它的按钮。Enter = 最后一个按钮（焦点在按钮上时按那个按钮自己的）
     // o.full：占满高度（命令搜索、组件库）；o.headNode：放在标题栏里代替标题（命令搜索的输入框）；o.footNode：最下面一行说明
     // o.bodyCls：给中间区域加的类；o.danger：默认焦点放在「取消」上（删除类的确认，免得一下回车就删了）
     function dialog(title, bodyNodes, buttons, o) {
         o = o || {};
+        if (!$("#modal").hidden && $("#modal").closeWith) $("#modal").closeWith(null);
         return new Promise(function (resolve) {
             var m = $("#modal"), box = $(".dialog", m), head = $("#dlg-head"), body = $("#dlg-body"), btns = $("#dlg-btns");
             var back = document.activeElement;
@@ -632,39 +656,56 @@
                 done = true;
                 m.hidden = true;
                 document.removeEventListener("keydown", onKey, true);
-                if (back && back.isConnected && back.focus) { try { back.focus({ preventScroll: true }); } catch (e) {} }
+                shieldUntil = Date.now() + 600;
+                var target = back && back.isConnected ? back : sameControl(back);
+                if (target && target.focus) { try { target.focus({ preventScroll: true }); } catch (e) {} }
                 resolve(v);
                 setTimeout(syncHover, 0);
             }
             // Tab 能停的地方：tabindex ≥ 0、没禁用、看得见（命令搜索的行是 tabindex=-1，不算；<summary> 算）
             function focusables() {
                 return $$("button, input, select, textarea, summary, [tabindex]", box).filter(function (n) {
-                    return n.tabIndex >= 0 && !n.disabled && n.offsetParent !== null;
+                    if (n.tabIndex < 0 || n.disabled || n.offsetParent === null) return false;
+                    // 收起的「更多」里面的（新版 Chromium 里它们仍然有 offsetParent）
+                    var d = n.parentNode && n.parentNode.closest ? n.parentNode.closest("details") : null;
+                    return !(d && !d.open && n.tagName !== "SUMMARY");
                 });
             }
             function onKey(e) {
+                if (done || m.hidden) return;                         // 已经关掉的对话框不再管按键
+                if (e.isComposing || e.keyCode === 229) return;       // 输入法正在组字：回车 / Esc 是给输入法的
                 if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); close(null); return; }
                 var inside = box.contains(document.activeElement);
                 if (e.key === "Tab") {
+                    // 代码框自己处理 Tab（插入缩进）
+                    if (inside && e.target.tagName === "TEXTAREA") return;
                     var f = focusables(), i = f.indexOf(document.activeElement);
-                    e.stopPropagation();
                     if (!f.length) { e.preventDefault(); return; }
-                    if (!inside || i === -1 || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
+                    // 焦点在对话框里、但不在列表里（比如可以滚动的文件列表）：交给浏览器
+                    if (inside && i === -1) return;
+                    e.stopPropagation();
+                    if (!inside || (e.shiftKey ? i === 0 : i === f.length - 1)) { e.preventDefault(); (e.shiftKey ? f[f.length - 1] : f[0]).focus(); }
                     return;
                 }
                 if (e.key === "Enter") {
                     // 焦点跑到了对话框外面（比如还在打开它的按钮上）：回车不能再点一次那个按钮
-                    if (!inside) { e.preventDefault(); e.stopPropagation(); if (!o.danger && !o.noEnter && buttons.length) close(buttons[buttons.length - 1].value()); return; }
+                    if (!inside) { e.preventDefault(); e.stopPropagation(); if (!o.danger && !o.noEnter && buttons.length) fire(buttons[buttons.length - 1], btnEls[btnEls.length - 1]); return; }
                     var tag = e.target.tagName;
                     if (o.noEnter || !buttons.length || tag === "TEXTAREA" || tag === "BUTTON" || tag === "SUMMARY" || tag === "SELECT") return;
                     // 删除类确认：回车不默认确认，要按在「删除」按钮上
                     if (o.danger) { e.preventDefault(); return; }
-                    e.preventDefault(); close(buttons[buttons.length - 1].value());
+                    e.preventDefault(); fire(buttons[buttons.length - 1], btnEls[btnEls.length - 1]);
                 }
+            }
+            // 按钮可以带 check()：返回一句话就不关，在按钮旁边说哪里不对（比如名称没填，免得写好的代码跟着对话框一起没了）
+            function fire(b, x) {
+                var bad = b.check ? b.check() : "";
+                if (bad) { B.show(x, "err", bad); return; }
+                close(b.value());
             }
             var btnEls = buttons.map(function (b) {
                 var x = el("button", "btn" + (b.accent ? " accent" : "") + (b.danger ? " danger" : ""), esc(b.label));
-                x.addEventListener("click", function () { close(b.value()); });
+                x.addEventListener("click", function () { fire(b, x); });
                 btns.appendChild(x);
                 return x;
             });
@@ -943,11 +984,17 @@
             var text = JSON.stringify(cfg);
             if (!cfgSynced) { cfgDirty = true; return; }   // 没连上磁盘时的改动，恢复连接后推到磁盘
             writeConfigText("panel" + PANEL, text).then(function (r) {
-                if (r && r.ok) { cfgRetry = 0; cfgWarned = false; clearTimeout(cfgRetryTimer); cfgUnsaved(false); return; }
+                if (r && r.ok) {
+                    cfgRetry = 0; cfgWarned = false; clearTimeout(cfgRetryTimer); cfgUnsaved(false);
+                    if (bannerState.disk) { bannerState.disk = null; renderBanner(); }
+                    return;
+                }
                 cfgUnsaved(true);
                 if (B.disk.ok()) {
-                    // 有 Node 时还写不进去，多半是暂时的（文件正被别的程序占用、磁盘满了）：提示一次，过一会儿自动重试
-                    if (!cfgWarned) { cfgWarned = true; note(diskFail("面板布局", (r && r.msg) || "没有返回")); }
+                    // 有 Node 时还写不进去，多半是暂时的（文件正被别的程序占用、磁盘满了）：顶部横幅一直说着，过一会儿自动重试，写进去就消失
+                    var why = (r && r.msg) || "没有返回";
+                    if (!cfgWarned) { cfgWarned = true; note(diskFail("面板布局", why)); }
+                    bannerState.disk = why; renderBanner();
                     clearTimeout(cfgRetryTimer);
                     cfgRetryTimer = setTimeout(saveConfig, [1000, 2000, 5000, 10000][cfgRetry] || 30000);
                     cfgRetry++;
@@ -1750,7 +1797,7 @@
             bindHint(cv, { title: beat.info.name, click: "点波形从这个位置试听，再点一次停止", note: "橙色竖线是检测到的节拍，只分析图层可见的那一段" });
 
             var r1 = row(w);
-            r1.appendChild(el("span", "k", "灵敏"));
+            r1.appendChild(el("span", "unit", "灵敏"));
             var sens = el("input");
             sens.type = "range"; sens.min = 0.3; sens.max = 3; sens.step = 0.1; sens.value = item.sens || 1.4;
             sens.title = "越往左节拍越多";
@@ -2133,9 +2180,10 @@
                 cur.keys = cur.pair = null;
                 if (!cur.run) cur.run = blk("run-grid");
                 cur.run.appendChild(cell);
-            } else if (def.size === "full") {
+            } else if (def.size === "full" || cell.classList.contains("broken")) {
                 cur.keys = cur.run = null;
-                if (COMPACT[item.type]) { if (!cur.pair) cur.pair = blk("pair-grid"); cur.pair.appendChild(cell); }
+                if (cell.classList.contains("broken")) { cell.style.gridColumn = ""; cell.style.gridRow = ""; }
+                if (COMPACT[item.type] && !cell.classList.contains("broken")) { if (!cur.pair) cur.pair = blk("pair-grid"); cur.pair.appendChild(cell); }
                 else { cur.pair = null; blk("full-block").appendChild(cell); }
             } else {
                 cur.run = cur.pair = null;
@@ -2150,6 +2198,7 @@
             // 「＋」单独占一行放在最后（放进分组的网格会被填空位的规则挪到前面去）
             var tail = el("div", "key-grid add-row"), add = el("div", "cell");
             add.appendChild(tile({ icon: "plus", cls: "add", hint: { title: "添加", click: "往这个面板加组件、工具、脚本或片段" }, run: function () { openCatalog(); return null; } }));
+            add.firstChild.dataset.focusKey = "add-tile";
             tail.appendChild(add);
             layoutEl.appendChild(tail);
         }
@@ -2242,6 +2291,9 @@
         updateEditBar();
     }
     function updateEditBar() {
+        // 吸顶的编辑条有多高，滚动定位时就让出多少（被选中的组件不会滚到编辑条下面）
+        var bar = $("#edit-bar");
+        $("#page-panel").style.scrollPaddingTop = editing && bar && bar.offsetHeight ? (bar.offsetHeight + 8) + "px" : "";
         var i = selId ? findItem(selId) : -1, it = i >= 0 ? cfg.items[i] : null, def = it ? W[it.type] : null;
         $("#eb-sel").classList.toggle("on", !!it);
         $("#eb-tip").textContent = it ? (def ? def.name : it.type) + (it.type === "heading" && (it.zh || it.en) ? "「" + (it.zh || it.en) + "」" : "") : "点选组件，或直接拖动排序";
@@ -2255,6 +2307,7 @@
         var x = cfg.items.splice(i, 1)[0];
         cfg.items.splice(j, 0, x);
         saveConfig(); renderLayout();
+        updateEditBar();
         var c = cellOf(selId);
         if (c) { c.focus({ preventScroll: true }); if (c.scrollIntoView) c.scrollIntoView({ block: "nearest" }); }
     }
@@ -2281,7 +2334,7 @@
         B.registerKeys(on ? ["cmdK", "esc", "altUp", "altDown", "del", "bksp"] : ["cmdK", "esc"]);
         renderLayout();
         updateEditBar();
-        showHint(null);
+        paintHover();   // 正在显示后台消息时不打断它
     }
 
     $("#btn-edit").addEventListener("click", function () { setEditing(!editing); });
@@ -2290,6 +2343,7 @@
     bindHint($("#btn-search"), { title: "搜索命令", click: "搜索全部工具、脚本和代码片段", note: modName("ctrl") + "+K 也能打开" });
     $("#eb-done").addEventListener("click", function () { setEditing(false); });
     $("#eb-add").addEventListener("click", function () { openCatalog(); });
+    $("#eb-add").dataset.focusKey = "eb-add";
     bindHint($("#eb-add"), { title: "添加组件", click: "加到面板末尾，再拖到想要的位置" });
     $("#eb-up").addEventListener("click", function () { moveSel(-1); });
     $("#eb-down").addEventListener("click", function () { moveSel(1); });
@@ -2307,6 +2361,7 @@
         showPop(btn, [el("div", "p-title", "组件颜色：主按钮和标题跟着变"), swatches(it.color, function (hex) {
             if (hex) it.color = hex; else delete it.color;
             hidePop(); saveConfig(); renderLayout();
+            $("#eb-color").focus();
         }, true)]);
     });
     bindHint($("#eb-color"), { title: "组件颜色", click: "给选中的组件换颜色", note: "主按钮和标题编号跟着变" });
@@ -2490,7 +2545,7 @@
     var dropDepth = 0, overlay = $("#drop-overlay");
     function isFileDrag(e) { return !dragId && e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1; }
     document.addEventListener("dragenter", function (e) {
-        if (!isFileDrag(e)) return;
+        if (!isFileDrag(e) || !$("#modal").hidden) return;
         dropDepth++;
         var n = e.dataTransfer.items ? e.dataTransfer.items.length : 0;
         $("#drop-meta").textContent = "支持 .jsx · .jsxbin · .ffx" + (n ? " · " + n + " 个文件" : "");
@@ -2502,6 +2557,7 @@
         if (!isFileDrag(e)) return;
         e.preventDefault();
         dropDepth = 0; overlay.hidden = true;
+        if (!$("#modal").hidden) { B.show(null, "err", "先关掉当前的窗口，再把文件拖进来"); return; }
         var all = e.dataTransfer.files;
         var files = Array.prototype.filter.call(all, function (f) { return /\.(jsx|jsxbin|ffx)$/i.test(f.name); });
         var skipped = all.length - files.length;
@@ -2550,7 +2606,17 @@
     function act(parent, icon, cls, h, fn) {
         var b = el("button", "act " + (cls || ""), svg(icon));
         bindHint(b, h);
-        b.addEventListener("click", function (e) { e.stopPropagation(); lastActClick = Date.now(); var m = mods(e); act0(b, function () { return fn(m); }); });
+        var row = parent.parentNode && parent.parentNode.dataset ? parent.parentNode : null;
+        b.addEventListener("click", function (e) {
+            e.stopPropagation(); lastActClick = Date.now();
+            var m = mods(e), key = b.dataset.actKey, kb = !e.detail;
+            act0(b, function () { return fn(m); }).then(function () {
+                // 键盘按的：列表重绘后焦点回到同一行的同一个按钮（不然掉到 <body>，下一个 Tab 从第一行开始）
+                if (kb && key && !b.isConnected && document.activeElement === document.body) { var n = document.querySelector('[data-act-key="' + key.replace(/"/g, '\\"') + '"]'); if (n) n.focus(); }
+            });
+            if (!kb) b.blur();   // 鼠标点的：不留焦点（不然鼠标移开了这一行还亮着）
+        });
+        if (row && row.dataset.key) b.dataset.actKey = row.dataset.key + "#" + parent.children.length;
         // 双击按钮时，不能顺带触发整行的「双击运行」
         b.addEventListener("dblclick", function (e) { e.stopPropagation(); });
         parent.appendChild(b);
@@ -2574,9 +2640,11 @@
         items.forEach(function (it) {
             if (cat === "全部" && it.cat !== lastCat) { lastCat = it.cat; listEl.appendChild(el("li", "lib-group", "<span>" + esc(it.cat) + '</span><span class="n">' + counts[it.cat] + "</span>")); }
             var li = el("li", "lib-item");
+            li.dataset.key = "f:" + it.key;
             var tag = it.type === "面板" || it.type === "预设" ? '<span class="tag">' + esc(it.type) + "</span>" : "";
             li.innerHTML = '<div class="nm">' + esc(it.name) + '</div><div class="ds">' + esc(it.desc || it.file) + "</div>" + tag;
             var acts = el("div", "acts");
+            li.appendChild(acts);
             var here = onPanel("script", "key", it.key);
             act(acts, here ? "close" : "pin", "", { title: here ? "从当前面板拿掉" : "放到当前面板", click: "在「面板」页显示为按钮" }, function () {
                 var added = togglePanel("script", "key", it.key);
@@ -2742,7 +2810,9 @@
         c.appendChild(code);
         return dialog(isNew ? "新建片段" : "编辑片段「" + s.name + "」", [a, b, c], [
             { label: "取消", value: function () { return null; } },
-            { label: "保存", accent: true, value: function () { return { name: name.value.trim(), kind: sel.value, code: code.value }; } }
+            { label: "保存", accent: true,
+              check: function () { if (!name.value.trim()) { name.focus(); return "先填名称"; } if (!code.value.trim()) { code.focus(); return "先填代码"; } return ""; },
+              value: function () { return { name: name.value.trim(), kind: sel.value, code: code.value }; } }
         ]).then(function (v) {
             if (!v) return null;
             if (!v.name || !v.code.trim()) return { ok: false, msg: "名称和代码都不能为空" };
@@ -2772,9 +2842,11 @@
             list.forEach(function (s) {
                 var hidden = isHiddenBuiltin(s);
                 var li = el("li", "lib-item" + (hidden ? " is-hidden" : ""));
+                li.dataset.key = "s:" + s.id;
                 li.innerHTML = '<div class="nm">' + esc(s.name) + "</div>" +
                     (s.builtin ? '<div class="ds">内置 · 修饰键可用' + (hidden ? " · 已隐藏" : "") + "</div>" : '<div class="ds mono">' + esc(s.code.split("\n")[0]) + "</div>");
                 var acts = el("div", "acts");
+                li.appendChild(acts);
                 if (s.builtin) {
                     act(acts, hidden ? "refresh" : "close", "", { title: hidden ? "恢复显示" : "隐藏这个内置片段", click: hidden ? "重新出现在命令搜索和组件库里" : "不再出现在命令搜索和组件库里（已经放在面板上的不受影响）" }, function () {
                         var i = snipPrefs.hidden.indexOf(s.id);
@@ -2833,9 +2905,11 @@
         var box = $("#set-accent");
         box.innerHTML = "";
         box.appendChild(swatches(cfg.accent, function (hex) {
+            var kb = document.activeElement && box.contains(document.activeElement);
             cfg.accent = hex || "#FF5900";
             applyAccent(cfg.accent);
             saveConfig(); renderSettings();
+            if (kb) { var on = $("#set-accent .sw.on"); if (on) on.focus(); }
         }, false));
     }
     $("#set-name").addEventListener("change", function () {
@@ -3123,6 +3197,7 @@
         q.addEventListener("input", function () { sel = 0; draw(); });
         q.addEventListener("keydown", function (e) {
             e.stopPropagation();
+            if (e.isComposing || e.keyCode === 229) return;
             if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(shown.length - 1, sel + 1); mark(); }
             if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); mark(); }
             if (e.key === "Enter" && shown[sel]) { e.preventDefault(); go(shown[sel].c, mods(e)); }
@@ -3215,7 +3290,7 @@
     // =====================================================================
     // 顶部横幅：后台没连上 / 没有写入权限，第一屏就告诉用户怎么解决
     // =====================================================================
-    var bannerState = { down: false, perm: false };
+    var bannerState = { down: false, perm: false, disk: null };
     function renderBanner() {
         var bn = $("#banner");
         if (bannerState.down) {
@@ -3223,6 +3298,12 @@
             $("#banner-msg").textContent = "后台没连上 AE · 面板里的工具暂时用不了";
             $("#banner-btn").textContent = "重新连接";
             $("#banner-btn").dataset.act = "reconnect";
+        } else if (bannerState.disk) {
+            // 写盘失败排在「没写入权限」前面：这是数据有风险
+            bn.hidden = false;
+            $("#banner-msg").textContent = "面板布局没写进磁盘（" + bannerState.disk + "）· 改动先存在这台电脑的缓存里，会自动重试";
+            $("#banner-btn").textContent = "现在重试";
+            $("#banner-btn").dataset.act = "resave";
         } else if (bannerState.perm) {
             bn.hidden = false;
             $("#banner-msg").textContent = "AE 没允许脚本写入文件 · 首选项 → 脚本和表达式里勾选「允许脚本写入文件和访问网络」";
@@ -3274,6 +3355,7 @@
     B.onBackend(function (down) {
         bannerState.down = down;
         renderBanner();
+        if (!down && toastSticky) { clearTimeout(toastTimer); toastTimer = null; toastSticky = false; paintHover(); }   // 「后台没连上」之类的消息过时了
         if (!down) resync();   // 自动恢复或点「重新连接」后，把离线期间的改动同步到磁盘
     });
     $("#banner-btn").addEventListener("click", function () {
@@ -3287,6 +3369,8 @@
                     });
                 });
             });
+        } else if (btn.dataset.act === "resave") {
+            act0(btn, function () { cfgRetry = 0; saveConfig(); return { ok: true, msg: "正在重新写面板布局：写进去后横幅会自己消失" }; });
         } else act0(btn, recheck);
     });
     function recheck() {

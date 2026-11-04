@@ -49,6 +49,7 @@ async function open(browser, n, width, height, init) {
                 if (code === "typeof MH") return setTimeout(() => cb("object"), 1);
                 const m = /^MH\.call\("([^"]+)",([\s\S]*)\)$/.exec(code);
                 if (!m) return setTimeout(() => cb("undefined"), 1);
+                (window.__calls = window.__calls || []).push(m[1]);
                 window.__mhHost(m[1], m[2]).then(r => setTimeout(() => cb(r), 1));
             }
         };
@@ -318,6 +319,100 @@ async function open(browser, n, width, height, init) {
         await page.mouse.move(b.x + 20, 780, { steps: 4 }); await page.mouse.up();
         const open2 = await page.evaluate(() => !document.querySelector("#modal").hidden);
         check("片段编辑：拖选文字松手在遮罩上，对话框不关（没保存的内容还在）", open2);
+        await page.close();
+    }
+
+    console.log("第二轮复核回归（3.8.0）：");
+    {
+        // 片段编辑：Tab 在代码框里插入缩进；名称没填时点保存不关（写好的代码还在）；输入法组字时的回车不算
+        const page = await open(browser, 1, 320, 800);
+        await page.click(".tab[data-tab=library]");
+        await page.click("#lib-seg button[data-seg=snippets]");
+        await page.locator("#lib-snippets .lib-group").nth(0).locator(".act").click();
+        await page.waitForTimeout(100);
+        await page.click("#dlg-body textarea");
+        await page.keyboard.type("if (a) {");
+        await page.keyboard.press("Enter");
+        await page.keyboard.press("Tab");
+        const ta = await page.evaluate(() => ({ v: document.querySelector("#dlg-body textarea").value, focus: document.activeElement.tagName }));
+        check("片段编辑：Tab 在代码框里插入 4 个空格，焦点不跑", ta.v === "if (a) {\n    " && ta.focus === "TEXTAREA", JSON.stringify(ta));
+        await page.click("#dlg-btns .btn:last-child");
+        await page.waitForTimeout(120);
+        const kept = await page.evaluate(() => ({ open: !document.querySelector("#modal").hidden, v: document.querySelector("#dlg-body textarea").value }));
+        check("片段编辑：名称没填就点保存，对话框不关、代码还在", kept.open && /if \(a\)/.test(kept.v), JSON.stringify(kept));
+        await page.evaluate(() => { const n = document.querySelector("#dlg-body input[type=text]"); n.focus(); n.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, isComposing: true, bubbles: true, cancelable: true })); });
+        await page.waitForTimeout(60);
+        const ime = await page.evaluate(() => !document.querySelector("#modal").hidden);
+        check("输入法组字时按回车（确认拼音）：对话框不关", ime);
+        // 有对话框开着时拖文件进来：不叠第二个对话框，原来的还在
+        await page.evaluate(() => {
+            const dt = new DataTransfer();
+            dt.items.add(new File(["// x"], "拖进来.jsx", { type: "text/plain" }));
+            document.body.dispatchEvent(new DragEvent("dragenter", { bubbles: true, dataTransfer: dt }));
+            document.body.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+        });
+        await page.waitForTimeout(120);
+        const drop = await page.evaluate(() => ({ title: document.querySelector("#dlg-title").textContent, v: document.querySelector("#dlg-body textarea") ? document.querySelector("#dlg-body textarea").value : "" }));
+        check("对话框开着时拖文件进来：原来的对话框和写好的代码都还在", /片段/.test(drop.title) && /if \(a\)/.test(drop.v), JSON.stringify(drop));
+        await page.keyboard.press("Escape");
+        check("片段编辑场景没有 JS 错误", !page.__errors.length, page.__errors.join(" | "));
+        await page.close();
+    }
+    {
+        // 双击组件库里的一项：只加组件，第二下不会落到面板上的按钮上
+        const page = await open(browser, 3, 320, 900);
+        await page.click("#layout .add-row .tile");
+        await page.waitForTimeout(150);
+        await page.evaluate(() => { window.__calls = []; });
+        await page.dblclick("#dlg-body .cat-item >> nth=0");
+        await page.waitForTimeout(300);
+        // 加组件会保存布局（saveConfig），那不算；不能有任何工具调用
+        const calls = await page.evaluate(() => window.__calls.filter(c => !/^(ctx|saveConfig|loadConfig|saveSnippets|loadSnippets)$/.test(c)));
+        const added = await page.evaluate(() => window.MHDebug.config().items.length);
+        check("双击组件库里的一项：只加了组件，面板上的按钮没被顺带点到", calls.length === 0 && added > 0, JSON.stringify({ calls, added }));
+        await page.close();
+    }
+    {
+        // 进出编辑模式不打断后台消息
+        const page = await open(browser, 1, 320, 900);
+        await page.evaluate(() => window.MHDebug.note({ ok: false, msg: "测试：后台消息要留满时间" }));
+        await page.click("#btn-edit");
+        await page.waitForTimeout(80);
+        const h = await page.textContent("#hint");
+        check("进入编辑模式时，正在显示的后台消息不被打断", /后台消息要留满时间/.test(h), h);
+        await page.close();
+    }
+    {
+        // 300px：选中组件时「完成」仍然靠右（12px 边距），编辑条不变高
+        const page = await open(browser, 3, 300, 900);
+        await page.click("#btn-edit");
+        const r0 = await page.evaluate(() => ({ r: document.querySelector("#eb-done").getBoundingClientRect().right, h: document.querySelector("#edit-bar").offsetHeight }));
+        await page.click("#layout .key-grid .cell >> nth=0");
+        const r1 = await page.evaluate(() => ({ r: document.querySelector("#eb-done").getBoundingClientRect().right, h: document.querySelector("#edit-bar").offsetHeight }));
+        check("300px 编辑条：选中组件前后「完成」都贴着右边距、编辑条高度不变", Math.abs(r0.r - 288) < 1 && Math.abs(r1.r - 288) < 1 && r0.h === r1.h, JSON.stringify({ r0, r1 }));
+        await page.close();
+    }
+    {
+        // 命令搜索、组件库、设置页、片段页：中文也不放进等宽字体
+        const page = await open(browser, 1, 320, 800);
+        const scan = () => page.evaluate(() => {
+            const CJK = /[\u3400-\u9fff]/, bad = [];
+            const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let t;
+            while ((t = tw.nextNode())) {
+                const el = t.parentElement;
+                if (!el || !el.getClientRects().length || !CJK.test(t.nodeValue)) continue;
+                if (/^"?Geist Mono/.test(getComputedStyle(el).fontFamily)) bad.push(t.nodeValue.trim().slice(0, 12));
+            }
+            return bad;
+        });
+        await page.click("#btn-search"); await page.waitForTimeout(100);
+        const a = await scan(); await page.keyboard.press("Escape");
+        await page.click("#layout .add-row .tile"); await page.waitForTimeout(100);
+        const b = await scan(); await page.keyboard.press("Escape");
+        await page.click(".tab[data-tab=settings]"); await page.waitForTimeout(100);
+        const c = await scan();
+        check("命令搜索、组件库、设置页：中文没有放进等宽字体", !a.length && !b.length && !c.length, JSON.stringify({ a, b, c }));
         await page.close();
     }
 

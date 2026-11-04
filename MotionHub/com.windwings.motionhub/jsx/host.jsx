@@ -93,7 +93,8 @@ var MH = (function () {
 
     function offsetProp(prop, d) {
         if (prop.numKeys === 0) {
-            prop.setValue(addVec(prop.value, d));
+            // 用表达式之前的值：有表达式时 .value 是表达式算出来的，拿它加位移再写回去会多加一次（比如 value + [5, 0]）
+            prop.setValue(addVec(prop.valueAtTime(0, true), d));
         } else {
             for (var k = 1; k <= prop.numKeys; k++) prop.setValueAtKey(k, addVec(prop.keyValue(k), d));
         }
@@ -135,6 +136,7 @@ var MH = (function () {
         if (y > b.b) b.b = y;
     }
     function boxOk(b) { return !!b && b.r >= b.l && b.b >= b.t; }
+    function hasArea(b) { return !!b && b.r > b.l && b.b > b.t; }
     function boxSize(b) { return Math.max(0, b.r - b.l) + Math.max(0, b.b - b.t); }
     function unionBox(a, b) {
         if (!boxOk(a)) return b;   // 空的（比如没有重叠的交集）：不能把它的四个角当成真的点
@@ -174,10 +176,24 @@ var MH = (function () {
         return b;
     }
 
-    // 遮罩露出来的范围（图层坐标）。返回 null：没有起作用的遮罩
+    // 路径（顶点 + 切线手柄）经过 2D 变换：仿射变换后的贝塞尔还是贝塞尔，变换控制点就够了
+    function mapShape(sh, M) {
+        if (!M || !sh || !sh.vertices) return sh;
+        var v = sh.vertices, tin = sh.inTangents || [], tout = sh.outTangents || [], o = { vertices: [], inTangents: [], outTangents: [], closed: sh.closed }, i;
+        for (i = 0; i < v.length; i++) {
+            var a = tin[i] || [0, 0], b = tout[i] || [0, 0];
+            o.vertices.push(applyM(M, v[i][0], v[i][1]));
+            o.inTangents.push([M[0] * a[0] + M[2] * a[1], M[1] * a[0] + M[3] * a[1]]);
+            o.outTangents.push([M[0] * b[0] + M[2] * b[1], M[1] * b[0] + M[3] * b[1]]);
+        }
+        return o;
+    }
+
+    // 遮罩露出来的范围。返回 null：没有起作用的遮罩
+    // M：可选的 2D 变换（图层坐标 → 合成坐标）；给了就在合成坐标里算（旋转、缩放过的图层上的曲线遮罩也精确）
     // 选中了遮罩：只看选中的（包括模式是「无」的参考遮罩）；否则按遮罩模式从上往下合起来：
     // 相加 / 变亮 / 差值 = 并上，相交 / 变暗 / 反转的相减 = 交上，相减 = 范围不会变大，反转的相加 / 相交 = 整个图层
-    function maskInfo(layer, t) {
+    function maskInfo(layer, t, M) {
         var g = null, n = 0, i;
         try { g = layer.property("ADBE Mask Parade"); n = g ? g.numProperties : 0; } catch (e) { return null; }
         if (!n) return null;
@@ -189,9 +205,10 @@ var MH = (function () {
                 mode = m.maskMode;
                 try { isSel = !!m.selected; } catch (e1) {}
                 if (mode === MaskMode.NONE && !isSel) continue;
-                box = shapeBox(m.property("ADBE Mask Shape").valueAtTime(t, false));
+                box = shapeBox(mapShape(m.property("ADBE Mask Shape").valueAtTime(t, false), M));
                 var ex = 0;
                 try { ex = m.property("ADBE Mask Offset").valueAtTime(t, false) || 0; } catch (e2) {}   // 「蒙版扩展」的 matchName
+                if (ex && M) ex *= Math.sqrt(Math.abs(M[0] * M[3] - M[2] * M[1]));   // 扩展量跟着缩放
                 if (box && ex) { box.l -= ex; box.t -= ex; box.r += ex; box.b += ex; }
             } catch (e3) { continue; }
             if (!boxOk(box)) continue;
@@ -220,7 +237,7 @@ var MH = (function () {
             }
             if (kind === "all") { ALL = true; R = null; }
             else if (kind === "union") { if (!ALL) R = unionBox(R, x.box); }
-            else if (kind === "cross") { R = ALL ? x.box : crossBox(R, x.box); ALL = false; }
+            else if (kind === "cross") { R = ALL ? x.box : crossBox(R, x.box); ALL = false; if (!hasArea(R)) R = emptyBox(); }   // 只碰到边、角：什么都露不出来
         }
         if (ALL || !R) return null;
         return { box: R, sel: false, empty: !boxOk(R) };
@@ -241,14 +258,34 @@ var MH = (function () {
         return { box: boxOk(x) && boxSize(x) > 0 ? x : m.box, via: "mask" };
     }
 
-    // 能不能按 2D 算：2D 图层；或者 3D 图层但只转了 Z、没有方向、没开自动定向（x、y 不受 z 影响）
-    function flat(L, t) {
-        if (L instanceof CameraLayer || L instanceof LightLayer) return false;
-        try { if (L.autoOrient !== AutoOrientType.NO_AUTO_ORIENT) return false; } catch (e) {}
-        if (!L.threeDLayer) return true;
+    // 为什么不能按 2D 算：cam 摄像机 / 灯光，orient 开了自动定向，rot 3D 图层转过 X / Y 或有方向；能算返回 ""
+    // （3D 图层只转了 Z、没有方向、没开自动定向时，x、y 不受 z 影响，可以按 2D 算）
+    function notFlatWhy(L, t) {
+        if (L instanceof CameraLayer || L instanceof LightLayer) return "cam";
+        try { if (L.autoOrient !== AutoOrientType.NO_AUTO_ORIENT) return "orient"; } catch (e) {}
+        if (!L.threeDLayer) return "";
         var tr = L.transform, o = tr.property("ADBE Orientation").valueAtTime(t, false);
-        return !tr.property("ADBE Rotate X").valueAtTime(t, false) && !tr.property("ADBE Rotate Y").valueAtTime(t, false) && !o[0] && !o[1] && !o[2];
+        return tr.property("ADBE Rotate X").valueAtTime(t, false) || tr.property("ADBE Rotate Y").valueAtTime(t, false) || o[0] || o[1] || o[2] ? "rot" : "";
     }
+    function flat(L, t) { return !notFlatWhy(L, t); }
+    // 整条父级链里第一个不能按 2D 算的原因，带上是图层自己还是父级："self:rot"、"parent:cam" …；都能算返回 ""
+    function chainWhy(L, t) {
+        var c = L, g = 0;
+        while (c && g++ < 64) { var w = notFlatWhy(c, t); if (w) return (c === L ? "self:" : "parent:") + w; c = c.parent; }
+        return "";
+    }
+    var WHY_TEXT = {
+        "self:rot": "带 X / Y 旋转", "self:orient": "开了自动定向", "self:cam": "是摄像机或灯光",
+        "parent:rot": "的父级带 X / Y 旋转", "parent:orient": "的父级开了自动定向", "parent:cam": "的父级是摄像机或灯光"
+    };
+    // 跳过的原因汇总成提示里的几句：「2 个图层的父级是摄像机或灯光，没动」
+    function whyNotes(why, tail) {
+        var out = [];
+        for (var k in why) if (why.hasOwnProperty(k) && why[k]) out.push([why[k], "图层" + (WHY_TEXT[k] || "在合成里的位置算不出来") + "，" + tail]);
+        return out;
+    }
+    function countWhy(why, L, t) { var k = chainWhy(L, t) || "?"; why[k] = (why[k] || 0) + 1; }
+    function firstWhy(why) { for (var k in why) if (why.hasOwnProperty(k)) return WHY_TEXT[k] || "的位置算不出来"; return "的位置算不出来"; }
 
     // 图层自己的 2D 变换（图层坐标 → 父级坐标）：[a, b, c, d, e, f]，x' = a·x + c·y + e，y' = b·x + d·y + f
     function localMatrix(L, t) {
@@ -278,14 +315,19 @@ var MH = (function () {
         return m;
     }
 
-    // 看得见的部分在合成里的外框；算不准时返回 null
+    // 看得见的部分在合成里的外框；算不准时返回 null。
+    // 遮罩路径先变换到合成坐标再算外框（不是把图层坐标里的外框四个角变换过去——那样旋转后的圆会大一圈）
     function compBox(L, t) {
         var m = compMatrix(L, t);
         if (!m) return null;
-        var v = visibleBox(L, t), b = v.box, out = emptyBox(), c = [[b.l, b.t], [b.r, b.t], [b.l, b.b], [b.r, b.b]];
-        for (var i = 0; i < 4; i++) { var p = applyM(m, c[i][0], c[i][1]); addPt(out, p[0], p[1]); }
-        out.via = v.via;
-        return out;
+        var c = contentBox(L, t), cb = emptyBox(), k = [[c.l, c.t], [c.r, c.t], [c.l, c.b], [c.r, c.b]], i;
+        for (i = 0; i < 4; i++) { var p = applyM(m, k[i][0], k[i][1]); addPt(cb, p[0], p[1]); }
+        var mi = maskInfo(L, t, m), out = cb, via = "content";
+        if (mi && !mi.empty) {
+            if (mi.sel) { out = mi.box; via = "selMask"; }
+            else { var x = crossBox(cb, mi.box); out = boxOk(x) && boxSize(x) > 0 ? x : mi.box; via = "mask"; }
+        }
+        return { l: out.l, t: out.t, r: out.r, b: out.b, via: via };
     }
 
     // 合成坐标里的一段位移 → 这个图层的父级坐标里的位移（没有父级就是它本身）；父级缩放成 0、带 3D 旋转时返回 null
@@ -321,21 +363,34 @@ var MH = (function () {
         return failed;
     }
 
-    // 让 AE 自己算：图层坐标里的一段位移，在父级坐标里是多少（含图层自己的缩放、XYZ 旋转、方向、自动定向）。
-    // 临时加一个 3D 点控制、用表达式求值，读完就删掉（都在同一个撤销组里）。算不出来返回 null
-    function probeVec(L, v, t) {
+    // 让 AE 自己算一个表达式（结果 3 个数）：临时加一个 3D 点控制、用表达式求值，读完就删掉（都在同一个撤销组里）。
+    // 加过效果以后，这个图层之前取到的属性对象会失效：调用的地方都重新从 L.transform 取。算不出来返回 null
+    function probe(L, expr, t) {
         var fx, p = null, out = null;
         try {
             fx = L.property("ADBE Effect Parade");
             p = fx.addProperty("ADBE Point3D Control");
             var prop = p.property(1);
-            prop.expression = "var v = thisLayer.toWorldVec([" + v[0] + ", " + v[1] + ", " + (v[2] || 0) + "], " + t + ");\n" +
-                "thisLayer.hasParent ? thisLayer.parent.fromWorldVec(v, " + t + ") : v;";
+            prop.expression = expr;
             out = prop.valueAtTime(t, false);
             if (prop.expressionError) out = null;
         } catch (e) { out = null; }
         try { if (p) p.remove(); } catch (e2) {}
         return out && out.length >= 3 ? [out[0], out[1], out[2]] : null;
+    }
+    // 图层坐标里的一段位移，在父级坐标里是多少（含图层自己的缩放、XYZ 旋转、方向、自动定向）
+    function probeVec(L, v, t) {
+        return probe(L, "var v = thisLayer.toWorldVec([" + v[0] + ", " + v[1] + ", " + (v[2] || 0) + "], " + t + ");\n" +
+            "thisLayer.hasParent ? thisLayer.parent.fromWorldVec(v, " + t + ") : v;", t);
+    }
+    // 合成（世界）里的一段位移，在父级坐标里是多少（父级带 3D 旋转、是摄像机时也行）
+    function probeParentVec(L, dx, dy, t) {
+        return probe(L, "thisLayer.hasParent ? thisLayer.parent.fromWorldVec([" + dx + ", " + dy + ", 0], " + t + ") : [" + dx + ", " + dy + ", 0];", t);
+    }
+    // 图层上的一点画在合成画面里的哪里（含摄像机 / 默认摄像机的透视）
+    function probeToComp(L, x, y, t) {
+        var r = probe(L, "var c = thisLayer.toComp([" + x + ", " + y + ", 0], " + t + ");\n[c[0], c[1], 0];", t);
+        return r ? [r[0], r[1]] : null;
     }
 
     // 图层坐标里的位移 → 父级坐标（锚点挪了多少，位置就要补多少）
@@ -356,15 +411,73 @@ var MH = (function () {
         return pm ? applyM(pm, pos[0], pos[1]) : null;
     }
 
-    // 把锚点放到图层坐标 (x, y)，画面不动。没变化时返回 false
+    // 合成里的一段位移 → 父级坐标里的位移：父级链能按 2D 算就直接算，否则让 AE 算（3D 父级、摄像机父级）
+    function parentVec(L, dx, dy, t) {
+        var v = compToParentVec(L, dx, dy, t);
+        if (v) return [v[0], v[1], 0];
+        return L.parent ? probeParentVec(L, dx, dy, t) : null;
+    }
+    // 图层坐标里的一点画在合成里的哪里：2D 图层、整条链能按 2D 算就直接算；3D 图层用 AE 的 toComp（透视、摄像机都算上）
+    function drawnPoint(L, x, y, t) {
+        if (!L.threeDLayer) { var m = compMatrix(L, t); if (m) return applyM(m, x, y); }
+        return probeToComp(L, x, y, t);
+    }
+    function hasExpr(p) { try { return !!p && p.canSetExpression && p.expressionEnabled && p.expression !== ""; } catch (e) { return false; } }
+    function posHasExpr(L) {
+        var tr = L.transform;
+        if (tr.position.dimensionsSeparated) return hasExpr(tr.property("ADBE Position_0")) || hasExpr(tr.property("ADBE Position_1")) || (L.threeDLayer && hasExpr(tr.property("ADBE Position_2")));
+        return hasExpr(tr.position);
+    }
+
+    // 把锚点放到图层坐标 (x, y)，画面不动。返回 "" 改好了 / "same" 本来就在那里 /
+    // "expr" 锚点或位置由表达式控制（比如文字自动居中的表达式），改了画面会跳——已经还原，没改
     function anchorTo(L, x, y, t) {
         var a = L.transform.anchorPoint.valueAtTime(t, false);
         var dx = x - a[0], dy = y - a[1];
-        if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return false;
+        if (Math.abs(dx) < 1e-6 && Math.abs(dy) < 1e-6) return "same";
+        // 有表达式时先记下这一点画在哪里，改完再量一次：表达式不跟着数值走（画面动了）就还原
+        var guard = hasExpr(L.transform.anchorPoint) || posHasExpr(L);
+        var before = guard ? drawnPoint(L, x, y, t) : null;
         var d = toParentVec(L, dx, dy, t);          // 可能临时加过效果：下面的属性重新取
         offsetProp(L.transform.anchorPoint, [dx, dy]);
         moveLayerBy(L, d[0], d[1], d[2]);
-        return true;
+        if (guard) {
+            var after = drawnPoint(L, x, y, t);
+            if (!before || !after || Math.abs(after[0] - before[0]) > 0.5 || Math.abs(after[1] - before[1]) > 0.5) {
+                offsetProp(L.transform.anchorPoint, [-dx, -dy]);
+                moveLayerBy(L, -d[0], -d[1], -(d[2] || 0));
+                return "expr";
+            }
+        }
+        return "";
+    }
+
+    // 把图层的锚点（画在合成里的位置）移到 (tx, ty)：量一次、按量出来的比例挪一次，直到差不到 0.25 px。
+    // 2D 一次就准；3D 有透视（默认摄像机或摄像机图层）时，屏幕上动的距离和位置动的距离不一样，最多修正 5 次
+    function snapAnchor(L, tx, ty, t) {
+        var a = L.transform.anchorPoint.valueAtTime(t, false), cur = drawnPoint(L, a[0], a[1], t), gx = 1, gy = 1, k;
+        if (!cur) return false;
+        for (k = 0; k < 6; k++) {
+            var ex = tx - cur[0], ey = ty - cur[1];
+            if (Math.abs(ex) < 0.25 && Math.abs(ey) < 0.25) return true;
+            var mx = ex / gx, my = ey / gy, v = parentVec(L, mx, my, t);
+            if (!v) return false;
+            moveLayerBy(L, v[0], v[1], v[2] || 0);
+            a = L.transform.anchorPoint.valueAtTime(t, false);
+            var nxt = drawnPoint(L, a[0], a[1], t);
+            if (!nxt) return false;
+            if (Math.abs(mx) > 1e-6) { var rx = (nxt[0] - cur[0]) / mx; if (Math.abs(rx) > 1e-3) gx = rx; }
+            if (Math.abs(my) > 1e-6) { var ry = (nxt[1] - cur[1]) / my; if (Math.abs(ry) > 1e-3) gy = ry; }
+            cur = nxt;
+        }
+        return Math.abs(tx - cur[0]) < 0.5 && Math.abs(ty - cur[1]) < 0.5;
+    }
+    function depthOf(L) { var d = 0, p = L.parent; while (p && d < 64) { d++; p = p.parent; } return d; }
+    // 图层（的锚点）画在合成里的哪里：外框算不出来时用（3D 转过、父级是摄像机；摄像机、灯光用它的位置）
+    function whereInComp(L, t) {
+        if (!isTransformable(L)) return anchorInComp(L, t);
+        var a = L.transform.anchorPoint.valueAtTime(t, false);
+        return drawnPoint(L, a[0], a[1], t) || anchorInComp(L, t);
     }
 
     // 属性的“地址”：图层 + 从图层开始的属性序号。
@@ -461,49 +574,53 @@ var MH = (function () {
     // 锚点九宫格：按看得见的部分（有遮罩按遮罩）放锚点，画面不动；⌥ 再把图层贴到合成的同一个位置
     T.anchor = function (a) {
         var comp = activeComp(), layers = needLayers(comp, 1), t = comp.time, n = 0, i;
-        var viaMask = 0, viaSel = 0, cams = 0, empty = 0, moves = [], noSnap = 0;
+        var viaMask = 0, viaSel = 0, cams = 0, empty = 0, exprN = 0, moves = [], snaps = [], noSnap = 0;
+        var tx = comp.width * a.fx, ty = comp.height * a.fy;
         for (i = 0; i < layers.length; i++) {
             var L = layers[i];
             if (!isTransformable(L)) { cams++; continue; }
             var v = visibleBox(L, t), b = v.box;
             if (!boxOk(b) || boxSize(b) <= 0) { empty++; continue; }
-            var x = b.l + (b.r - b.l) * a.fx, y = b.t + (b.b - b.t) * a.fy;
-            anchorTo(L, x, y, t);
+            if (anchorTo(L, b.l + (b.r - b.l) * a.fx, b.t + (b.b - b.t) * a.fy, t) === "expr") { exprN++; continue; }
             if (v.via === "mask") viaMask++;
             if (v.via === "selMask") viaSel++;
             n++;
             if (a.mods.alt) {
-                var p = anchorInComp(L, t);
-                if (!p) { noSnap++; continue; }
-                moves.push({ L: L, dx: comp.width * a.fx - p[0], dy: comp.height * a.fy - p[1] });
+                // 2D：直接算，一批里父子一起选中也不会移两次；3D（透视、摄像机）或父级链不能按 2D 算：量着贴
+                var p = L.threeDLayer ? null : anchorInComp(L, t);
+                if (p) moves.push({ L: L, dx: tx - p[0], dy: ty - p[1] });
+                else snaps.push(L);
             }
         }
-        if (!n) fail(empty ? "选中的图层没有画面（比如空文字），锚点没法放" : "摄像机和灯光没有锚点：请选中其他图层");
+        if (!n) fail(exprN && !empty && !cams ? "选中图层的锚点或位置由表达式控制，改了画面会跳，所以没改：先关掉表达式再试" :
+            empty ? "选中的图层没有画面（比如空文字），锚点没法放" : "摄像机和灯光没有锚点：请选中其他图层");
         if (moves.length) noSnap += moveAll(moves, t);
+        snaps.sort(function (x, y) { return depthOf(x) - depthOf(y); });
+        for (i = 0; i < snaps.length; i++) if (!snapAnchor(snaps[i], tx, ty, t)) noSnap++;
         var where = gridName(a.fx, a.fy);
         return (a.mods.alt ? "锚点已移到" + where + "并贴到合成的" + where : "锚点已移到" + where) + "：" + n + " 个图层" +
             viaNote(n, viaMask, viaSel) +
-            skipNote([[cams, "摄像机 / 灯光没有锚点"], [empty, "图层没有画面，没动"], [noSnap, "图层的父级带 3D 旋转，没贴到合成"]]);
+            skipNote([[cams, "摄像机 / 灯光没有锚点"], [empty, "图层没有画面，没动"], [exprN, "图层的锚点或位置由表达式控制，没改"], [noSnap, "图层没贴上合成（AE 算不出它在画面上的位置）"]]);
     };
 
     // 居中到合成：锚点放到看得见的部分的中心，再把这个点移到合成中心；⌥ 不改锚点，按外框居中
     T.centerComp = function (a) {
-        var comp = activeComp(), layers = needLayers(comp, 1), t = comp.time, moves = [], i;
-        var cx = comp.width / 2, cy = comp.height / 2, n = 0, viaMask = 0, viaSel = 0, rotated = 0, empty = 0;
+        var comp = activeComp(), layers = needLayers(comp, 1), t = comp.time, moves = [], snaps = [], i;
+        var cx = comp.width / 2, cy = comp.height / 2, n = 0, viaMask = 0, viaSel = 0, empty = 0, exprN = 0, why = {};
         for (i = 0; i < layers.length; i++) {
             var L = layers[i];
             if (!isTransformable(L)) continue;
             var v = visibleBox(L, t), b = v.box;
             if (!boxOk(b) || boxSize(b) <= 0) { empty++; continue; }
             if (!a.mods.alt) {
-                // 锚点放到中心，再把锚点（就在「位置」上）移到合成中心：图层自己转过 X / Y 也行，只要父级链能按 2D 算
-                if (L.parent && !compMatrix(L.parent, t)) { rotated++; continue; }
-                anchorTo(L, (b.l + b.r) / 2, (b.t + b.b) / 2, t);
-                var p = anchorInComp(L, t);
-                moves.push({ L: L, dx: cx - p[0], dy: cy - p[1] });
+                // 锚点放到中心，再把锚点移到合成中心（3D、父级链不能按 2D 算时量着移）
+                if (anchorTo(L, (b.l + b.r) / 2, (b.t + b.b) / 2, t) === "expr") { exprN++; continue; }
+                var p = L.threeDLayer ? null : anchorInComp(L, t);
+                if (p) moves.push({ L: L, dx: cx - p[0], dy: cy - p[1] });
+                else snaps.push(L);
             } else {
-                if (!compMatrix(L, t)) { rotated++; continue; }
                 var cb = compBox(L, t);
+                if (!cb) { countWhy(why, L, t); continue; }
                 moves.push({ L: L, dx: cx - (cb.l + cb.r) / 2, dy: cy - (cb.t + cb.b) / 2 });
             }
             if (v.via === "mask") viaMask++;
@@ -511,9 +628,17 @@ var MH = (function () {
             n++;
         }
         var stuck = moveAll(moves, t);
-        if (!n) fail(empty && !rotated ? "选中的图层没有画面（比如空文字），没法居中" : rotated ? (a.mods.alt ? "选中的图层带 3D 旋转（或父级带），按外框居中算不准：去掉 ⌥，按锚点居中" : "选中图层的父级带 3D 旋转，没法换算到合成中心：先解除父级再居中") : "请选中要居中的图层（摄像机、灯光除外）");
+        snaps.sort(function (x, y) { return depthOf(x) - depthOf(y); });
+        for (i = 0; i < snaps.length; i++) if (!snapAnchor(snaps[i], cx, cy, t)) stuck++;
+        if (!n) {
+            var w = "";
+            for (var k in why) if (why.hasOwnProperty(k)) { w = WHY_TEXT[k] || ""; break; }
+            fail(exprN ? "选中图层的锚点或位置由表达式控制，改了画面会跳，所以没改：先关掉表达式再试" :
+                w ? "选中的图层" + w + "，按外框居中算不准：去掉 ⌥，按锚点居中" :
+                empty ? "选中的图层没有画面（比如空文字），没法居中" : "请选中要居中的图层（摄像机、灯光除外）");
+        }
         return (a.mods.alt ? "已按外框居中：" : "已居中：") + (n - stuck) + " 个图层" + viaNote(n, viaMask, viaSel) +
-            skipNote([[rotated + stuck, a.mods.alt ? "图层带 3D 旋转（或父级带），没动" : "图层的父级带 3D 旋转，没动"], [empty, "图层没有画面，没动"]]);
+            skipNote(whyNotes(why, "没动").concat([[stuck, "图层没居中（AE 算不出它在画面上的位置）"], [exprN, "图层的锚点或位置由表达式控制，没改"], [empty, "图层没有画面，没动"]]));
     };
 
     // 空对象。⌥：放到选中图层（看得见的部分）的中心并设为它们的父级——
@@ -528,7 +653,7 @@ var MH = (function () {
                 if (L.threeDLayer) any3D = true;
                 var cb = isTransformable(L) ? compBox(L, t) : null;
                 if (cb && boxOk(cb)) { addPt(box, cb.l, cb.t); addPt(box, cb.r, cb.b); }
-                else if (!L.parent) { var pp = layerPosition(L, t); addPt(box, pp[0], pp[1]); }
+                else { var pp = whereInComp(L, t); if (pp) addPt(box, pp[0], pp[1]); }
             }
         }
         var nl = comp.layers.addNull();
@@ -664,24 +789,24 @@ var MH = (function () {
 
     // 选中图层在合成里看得见的外框（带父级的也算；3D 旋转过的算不准，记在 rotated 里）
     function boxesOf(layers, t) {
-        var list = [], rotated = 0, empty = 0, viaMask = 0;
+        var list = [], rotated = 0, empty = 0, viaMask = 0, why = {};
         for (var i = 0; i < layers.length; i++) {
             var L = layers[i];
             if (!isTransformable(L)) continue;
             var b = compBox(L, t);
-            if (!b) { rotated++; continue; }
+            if (!b) { rotated++; countWhy(why, L, t); continue; }
             if (boxSize(b) <= 0) { empty++; continue; }
             if (b.via !== "content") viaMask++;
             list.push({ L: L, b: b });
         }
-        return { list: list, rotated: rotated, empty: empty, viaMask: viaMask };
+        return { list: list, rotated: rotated, empty: empty, viaMask: viaMask, why: why };
     }
 
     // 对齐：默认对齐到合成；⌥ 对齐到选区（选中图层的整体外框）；⇧ 对齐到最上面那个选中的图层（它不动）
     T.align = function (a) {
         var comp = activeComp(), layers = needLayers(comp, 1), t = comp.time, i;
         var got = boxesOf(layers, t), list = got.list, key = null, to = "合成";
-        if (!list.length) fail(got.rotated ? "选中的图层带 3D 旋转（或父级带），在合成里的外框算不准，没有对齐" : "选中的图层没有可以对齐的画面");
+        if (!list.length) fail(got.rotated ? "选中的图层" + firstWhy(got.why) + "，在合成里的外框算不准，没有对齐" : "选中的图层没有可以对齐的画面");
         var ref = { l: 0, t: 0, r: comp.width, b: comp.height };
         if (a.mods.shift) {
             if (list.length < 2) fail("对齐到图层需要选中至少 2 个图层");
@@ -708,14 +833,14 @@ var MH = (function () {
         }
         var stuck = moveAll(moves, t);
         return "已对齐到" + to + "：" + (moves.length - (key ? 1 : 0) - stuck) + " 个图层" + (got.viaMask ? "（" + got.viaMask + " 个按遮罩范围）" : "") +
-            skipNote([[got.rotated + stuck, "图层带 3D 旋转（或父级带），没动"], [got.empty, "图层没有画面，没动"]]);
+            skipNote(whyNotes(got.why, "没动").concat([[stuck, "图层没能移动（父级缩放成 0？）"], [got.empty, "图层没有画面，没动"]]));
     };
 
     // 分布：默认按中心等距（两头的不动）；⌥ 按间距均分（相邻两个之间的空隙一样大）
     T.distribute = function (a) {
         var comp = activeComp(), layers = needLayers(comp, 3), t = comp.time, H = !!a.horizontal, i;
         var got = boxesOf(layers, t), list = got.list;
-        if (list.length < 3) fail("分布需要至少 3 个能算出外框的图层" + (got.rotated ? "（" + got.rotated + " 个带 3D 旋转，不算）" : ""));
+        if (list.length < 3) fail("分布需要至少 3 个能算出外框的图层" + (got.rotated ? "（" + got.rotated + " 个" + firstWhy(got.why) + "，不算）" : ""));
         var lo = function (b) { return H ? b.l : b.t; }, hi = function (b) { return H ? b.r : b.b; };
         for (i = 0; i < list.length; i++) list[i].c = (lo(list[i].b) + hi(list[i].b)) / 2;
         list.sort(function (x, y) { return x.c - y.c; });
@@ -740,7 +865,7 @@ var MH = (function () {
         }
         var stuck = moveAll(moves, t);
         return (a.mods.alt ? "已按间距均分 " : "已按中心均匀分布 ") + list.length + " 个图层" + gapText +
-            skipNote([[got.rotated + stuck, "图层带 3D 旋转（或父级带），没动"], [got.empty, "图层没有画面，没动"]]);
+            skipNote(whyNotes(got.why, "没动").concat([[stuck, "图层没能移动（父级缩放成 0？）"], [got.empty, "图层没有画面，没动"]]));
     };
 
     // 依次排列：每 num 个图层一组，组与组之间错开 step 帧
@@ -772,7 +897,7 @@ var MH = (function () {
             for (i = 0; i < layers.length; i++) {
                 var cb = isTransformable(layers[i]) ? compBox(layers[i], comp.time) : null, c;
                 if (cb && boxOk(cb)) c = [(cb.l + cb.r) / 2, (cb.t + cb.b) / 2];
-                else { try { c = layerPosition(layers[i], comp.time); } catch (eP) { c = [0, 0]; } }
+                else { try { c = whereInComp(layers[i], comp.time) || layerPosition(layers[i], comp.time); } catch (eP) { c = [0, 0]; } }
                 ctr.push(c);
                 minX = Math.min(minX, c[0]); maxX = Math.max(maxX, c[0]); minY = Math.min(minY, c[1]); maxY = Math.max(maxY, c[1]);
             }
@@ -1102,17 +1227,22 @@ var MH = (function () {
                 var dist = (a.dir === "left" || a.dir === "right") ? comp.width * 0.25 : comp.height * 0.25;
                 var dx = a.dir === "left" ? -dist : a.dir === "right" ? dist : 0;
                 var dy = a.dir === "up" ? -dist : a.dir === "down" ? dist : 0;
-                // 滑动的距离按合成算：带父级（父级缩放 / 旋转过）时换算到父级坐标，画面上滑的还是合成的 1/4
-                var pv = L.parent ? compToParentVec(L, dx, dy, tRest) : null;
-                if (pv) { dx = pv[0]; dy = pv[1]; }
+                // 滑动的距离按合成算：带父级（缩放、旋转过，或带 3D 旋转、是摄像机）时换算到父级坐标，画面上滑的还是合成的 1/4
+                var dz = 0;
+                if (L.parent) {
+                    var pv = parentVec(L, dx, dy, tRest);
+                    if (pv) { dx = pv[0]; dy = pv[1]; dz = L.threeDLayer ? (pv[2] || 0) : 0; }
+                    tr = L.transform;   // 可能临时加过效果：属性重新取
+                }
                 if (tr.position.dimensionsSeparated) {
                     var px = tr.property("ADBE Position_0"), py = tr.property("ADBE Position_1");
                     var bx = px.valueAtTime(tRest, false), by = py.valueAtTime(tRest, false);
                     if (dx) keySegments(px, [t0, t1], out ? [bx, bx + dx] : [bx + dx, bx], b);
                     if (dy) keySegments(py, [t0, t1], out ? [by, by + dy] : [by + dy, by], b);
+                    if (dz) { var pz = tr.property("ADBE Position_2"), bz = pz.valueAtTime(tRest, false); keySegments(pz, [t0, t1], out ? [bz, bz + dz] : [bz + dz, bz], b); }
                 } else {
                     p = tr.position; base = p.valueAtTime(tRest, false);
-                    var moved = addVec(base, [dx, dy]);
+                    var moved = addVec(base, dz ? [dx, dy, dz] : [dx, dy]);
                     keySegments(p, [t0, t1], out ? [base, moved] : [moved, base], b);
                 }
             } else if (a.kind === "rotate") {

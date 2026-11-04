@@ -244,9 +244,12 @@ const oldLayout = (tag, name) => ({ schema: 2, name: name, accent: "#FF5900", it
         await L.page.evaluate(() => window.__setFail({ "panel1.json": 1 }));
         await renamePanel(L, "名字二"); await L.page.waitForTimeout(500);
         const hint = await L.hint();
+        const bannerFail = await L.page.evaluate(() => { const b = document.querySelector("#banner"); return b.hidden ? "" : b.textContent; });
         await renamePanel(L, "名字三"); await L.page.waitForTimeout(2600);
         const dl = await L.disk();
+        const bannerAfter = await L.page.evaluate(() => { const b = document.querySelector("#banner"); return b.hidden || !/面板布局没写进磁盘/.test(b.textContent); });
         check("布局写不进去时提示栏说明原因", /面板布局没写进磁盘/.test(hint), hint);
+        check("布局写不进去时顶部横幅一直说着；写进去以后横幅自己消失", /面板布局没写进磁盘/.test(bannerFail) && bannerAfter, JSON.stringify({ bannerFail, bannerAfter }));
         check("一次失败之后，后面的改动仍然写进磁盘（不会整场只存本机缓存）", J(dl, CFG + "panel1.json").name === "名字三", dl[CFG + "panel1.json"]);
         await L.page.evaluate(() => window.__setFail({ "panel1.json": "always" }));
         await renamePanel(L, "名字四"); await L.page.waitForTimeout(500);
