@@ -81,7 +81,8 @@ function makeLayer(o) {
     const masks = (o.masks || []).map((m, i) => ({
         name: "蒙版 " + (i + 1), maskMode: m.mode || MaskMode.ADD, inverted: !!m.inverted, selected: !!m.selected,
         _shape: prop(m.shape), _exp: prop(m.expansion || 0),
-        property(n) { return n === "ADBE Mask Shape" ? this._shape : n === "ADBE Mask Expansion" ? this._exp : null; }
+        // 和真实 AE 一样：「蒙版扩展」的 matchName 是 ADBE Mask Offset；不认识的名字返回 null
+        property(n) { return n === "ADBE Mask Shape" ? this._shape : n === "ADBE Mask Offset" ? this._exp : null; }
     }));
     const effects = [];
     const fxParade = {
@@ -109,7 +110,9 @@ function makeLayer(o) {
             if (n === "ADBE Effect Parade") return fxParade;
             return null;
         },
-        moveBefore() {}, _masks: masks, _effects: effects
+        moveBefore() {}, _masks: masks, _effects: effects,
+        // 模拟里不换算：直接改指针（真实 AE 的 setParentWithJump 也不换算变换，所以这里是准的）
+        setParentWithJump(par) { this.parent = par; }
     });
     if (o.kind === "camera") { delete L.transform; }
     // 时间：入点 = 开始时间（模拟里图层从 0 开始，没有裁剪）
@@ -407,14 +410,16 @@ function run(layers, sel, name, args, compOpts) {
 
 // 13. ⌥ 空对象：放到选中图层看得见的范围的中心；原来有同一个父级时，空对象接到那个父级下面，画面都不动
 {
-    const P = makeLayer({ name: "总控", rect: [0, 0, 100, 100], anchor: [0, 0], pos: [200, 100], scale: [50, 50] });
+    const P = makeLayer({ name: "总控", rect: [0, 0, 100, 100], anchor: [0, 0], pos: [250, 120], scale: [50, 50] });
     const A = makeLayer({ name: "A", rect: [0, 0, 100, 100], anchor: [0, 0], pos: [0, 0] });
     const Bm = makeLayer({ name: "B", rect: [0, 0, 400, 400], anchor: [0, 0], pos: [600, 200], masks: [{ shape: rectShape(0, 0, 200, 200) }] });
     A.parent = P; Bm.parent = P;
     const { r, comp } = run([A, Bm, P], [A, Bm], "nullLayer", { mods: { alt: true } });
     const nl = comp.layer(1);
-    // A 在合成里：200..250 × 100..150；B 的遮罩部分：200+300=500..600 × 100+100=200..300 → 外框 200..600 × 100..300 → 中心 (400, 200)
-    check("⌥ 空对象：放在选中图层（按遮罩）的中心 (400, 200)", r.ok && nl._posWhenParented && nearV(nl._posWhenParented, [400, 200]), JSON.stringify(r) + " " + (nl._posWhenParented && fmt(nl._posWhenParented)));
+    // A 在合成里：250..300 × 120..170；B 的遮罩部分：250+300=550..650 × 120+100=220..320 → 外框 250..650 × 120..320 → 中心 (450, 220)
+    const nc = toComp(nl, nl.transform.anchorPoint.value);
+    check("⌥ 空对象：在合成里正好放在选中图层（按遮罩）的中心 (450, 220)", r.ok && nearV(nc.slice(0, 2), [450, 220]), JSON.stringify(r) + " " + fmt(nc));
+    check("⌥ 空对象：接到父级下面时缩放 100%、不旋转（选中的图层挂过来只换位置，不会被拉歪）", nearV(nl.transform.scale.value, [100, 100]) && near(nl.transform.property("ADBE Rotate Z").value, 0), fmt(nl.transform.scale.value));
     check("⌥ 空对象：接在原来的父级「总控」下面，A、B 挂到空对象上", nl.parent === P && A.parent === nl && Bm.parent === nl, [nl.parent && nl.parent.name, A.parent && A.parent.name, Bm.parent && Bm.parent.name].join(","));
     check("⌥ 空对象：提示里说接在原来的父级下面", /接在原来的父级「总控」下面/.test(r.msg), r.msg);
 }
@@ -481,6 +486,59 @@ function run(layers, sel, name, args, compOpts) {
     comp.selectedProperties = [q0, q2];
     h = loadHost(comp); r = h.call("bounce", { mods: {} });
     check("弹性：两个属性里 1 个没有关键帧 → 提示「1 个属性关键帧不够」", r.ok && /1 个属性关键帧不够/.test(r.msg), r.msg);
+}
+
+// 18. 审查回归（3.8.0）
+{
+    // ⇧ 对齐：参照层是另一个选中图层的子图层——参照层不能被父级带走
+    const P = makeLayer({ name: "P", rect: [0, 0, 100, 100], anchor: [0, 0], pos: [500, 0] });
+    const K = makeLayer({ name: "K", rect: [0, 0, 100, 100], anchor: [0, 0], pos: [200, 0] });   // 合成里在 700
+    K.parent = P;
+    const r = run([K, P], [K, P], "align", { mode: "left", mods: { shift: true } }).r;
+    check("⇧ 对齐：参照层是另一个选中图层的子图层时，参照层不动，另一个对齐到它", r.ok && near(toComp(K, [0, 0])[0], 700) && near(toComp(P, [0, 0])[0], 700), JSON.stringify(r) + " K " + toComp(K, [0, 0])[0] + " P " + toComp(P, [0, 0])[0]);
+}
+{
+    // 分布：一端是中间那个图层的子图层——两端都不能被带走
+    const mk = (name, x) => makeLayer({ name, rect: [0, 0, 100, 50], anchor: [0, 0], pos: [x, 0] });
+    const A = mk("A", 0), Bm = mk("B", 300), C = mk("C", 700);   // C 是 B 的子图层，合成里在 1000
+    C.parent = Bm;
+    run([A, Bm, C], [A, Bm, C], "distribute", { horizontal: true });
+    const cx = L => toComp(L, [50, 0])[0];
+    check("分布（按中心）：一端是中间图层的子图层时两端不动，中间在正中", near(cx(A), 50) && near(cx(C), 1050) && near(cx(Bm), 550), [cx(A), cx(Bm), cx(C)].join(" / "));
+    const A2 = mk("A", 0), B2 = mk("B", 300), C2 = mk("C", 700);
+    C2.parent = B2;
+    run([A2, B2, C2], [A2, B2, C2], "distribute", { horizontal: true, mods: { alt: true } });
+    const l = L => toComp(L, [0, 0])[0];
+    check("分布（⌥ 按间距）：一端是中间图层的子图层时两端不动，空隙一样大", near(l(A2), 0) && near(l(C2), 1000) && near(l(B2) - 100, 1000 - (l(B2) + 100)), [l(A2), l(B2), l(C2)].join(" / "));
+}
+{
+    // ⌥ 贴到合成：没有父级、自己转过 X 的 3D 图层（3.7.2 能贴，3.8 一开始退化成跳过）
+    const L = makeLayer({ three: true, rect: [0, 0, 400, 300], anchor: [0, 0, 0], pos: [960, 540], rotX: 30 });
+    const r = run([L], [L], "anchor", { fx: 1, fy: 1, mods: { alt: true } }).r;
+    check("⌥ 贴到合成：自己转过 X 的 3D 图层也贴上了（锚点在合成右下角）", r.ok && nearV(anchorComp(L).slice(0, 2), [1920, 1080]) && !/没贴到合成/.test(r.msg), JSON.stringify(r) + " " + fmt(anchorComp(L)));
+    // 居中：转过 Y 的 3D 图层挂在普通 2D 父级下
+    const P = makeLayer({ name: "P", rect: [0, 0, 10, 10], anchor: [0, 0], pos: [100, 50], scale: [50, 50] });
+    const C = makeLayer({ three: true, rect: [0, 0, 200, 100], anchor: [0, 0, 0], pos: [40, 40], rotY: 40 });
+    C.parent = P;
+    const before = snapshot(C);
+    const r2 = run([C, P], [C], "centerComp", {}).r;
+    check("居中：转过 Y 的 3D 图层挂在 2D 父级下也能居中（锚点到合成中心）", r2.ok && nearV(anchorComp(C).slice(0, 2), [960, 540]) && /已居中：1 个图层/.test(r2.msg), JSON.stringify(r2) + " " + fmt(anchorComp(C)));
+    void before;
+}
+{
+    // 遮罩：相交没有重叠（空）之后再相加——只算后面那个
+    const L = makeLayer({ rect: [0, 0, 1000, 1000], anchor: [0, 0], pos: [0, 0], masks: [
+        { shape: rectShape(0, 0, 100, 100) }, { shape: rectShape(200, 0, 300, 100), mode: MaskMode.INTERSECT }, { shape: rectShape(500, 500, 600, 600) }] });
+    run([L], [L], "anchor", { fx: 0.5, fy: 0.5 });
+    check("遮罩：相交没有重叠以后再相加，按后加的那个算 (550, 550)", nearV(L.transform.anchorPoint.value, [550, 550]), fmt(L.transform.anchorPoint.value));
+}
+{
+    // 弹性：只有 1 个关键帧时看不出效果，要提示
+    const comp = makeComp([]);
+    const one = { propertyType: 6212, canSetExpression: true, numKeys: 1, expression: "" };
+    comp.selectedProperties = [one];
+    const r = loadHost(comp).call("bounce", { mods: {} });
+    check("弹性：只有 1 个关键帧时也提示「至少 2 个关键帧」", r.ok && /至少 2 个关键帧/.test(r.msg), r.msg);
 }
 
 console.log(failures ? "✗ 图层工具测试：" + failures + " 项没通过" : "✓ 图层工具测试全部通过");
